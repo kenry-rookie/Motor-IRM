@@ -1,7 +1,6 @@
 ---
 project: "[[000 - Motor IRM]]"
 ---
-**[[000 - Motor IRM|← Hub]]** · **[[010 - Development - MIRM|🛠️ Centro de trabajo]]**
 
 # 📓 Motor IRM — Bitácora
 
