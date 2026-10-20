@@ -1,12 +1,3 @@
----
-project: "[[000 - Motor IRM]]"
-type: registro
-registro: reglas
-siguiente_id: RN-001
-updated:
----
-**[[000 - Motor IRM|← Hub]]** · **[[010 - Development - MIRM|🛠️ Centro de trabajo]]** · **[[Glosario - MIRM|📖 Glosario]]** · **[[Preguntas - MIRM|❓ Preguntas]]** · **[[Reglas de negocio - MIRM|📏 Reglas]]** · **[[Requisitos - MIRM|📋 Requisitos]]** · **[[Trazabilidad - MIRM|🔗 Trazabilidad]]**
-
 # 📏 Reglas de negocio — Motor IRM
 
 > [!info] Cómo usar esta nota
