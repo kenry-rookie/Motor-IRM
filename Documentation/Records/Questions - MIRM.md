@@ -1,11 +1,3 @@
----
-project: "[[000 - Motor IRM]]"
-type: registro
-registro: preguntas
-siguiente_id: Q-001
-updated:
----
-
 # ❓ Preguntas abiertas — Motor IRM
 
 > [!info] Cómo usar esta nota

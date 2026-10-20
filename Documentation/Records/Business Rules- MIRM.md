@@ -1,11 +1,3 @@
----
-project: "[[000 - Motor IRM]]"
-type: registro
-registro: reglas
-siguiente_id: RN-001
-updated:
----
-
 # 📏 Reglas de negocio — Motor IRM
 
 > [!info] Cómo usar esta nota

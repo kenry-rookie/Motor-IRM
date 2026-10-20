@@ -1,17 +1,3 @@
----
-project: "[[000 - Motor IRM - First Version]]"
-type: review
-id: REV-00
-alcance: Todo el intento 1 (S1, S2, decisiones, entregables, documentación)
-revisor: Claude (IA) — revisión crítica solicitada por Kenry
-date: 2026-10-16
-status: 🔴 Abierta — pendiente de discusión del equipo
-tags:
-  - revision
-  - motor-irm
----
-
-
 # 🔍 Revisión crítica del intento 1
 
 > [!warning] Qué es y qué NO es esta nota

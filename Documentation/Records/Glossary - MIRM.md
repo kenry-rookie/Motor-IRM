@@ -1,10 +1,3 @@
----
-project: "[[000 - Motor IRM]]"
-type: registro
-registro: glosario
-updated:
----
-
 # 📖 Glosario — Motor IRM
 
 > [!info] Cómo usar esta nota

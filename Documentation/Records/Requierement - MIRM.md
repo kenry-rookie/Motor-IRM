@@ -1,14 +1,3 @@
----
-project: "[[000 - Motor IRM]]"
-type: registro
-registro: requisitos
-siguiente_id_rf: RF-01
-siguiente_id_rnf: RNF-01
-siguiente_id_cu: CU-01
-updated:
----
-**[[000 - Motor IRM|← Hub]]** · **[[010 - Development - MIRM|🛠️ Centro de trabajo]]** · **[[Glosario - MIRM|📖 Glosario]]** · **[[Preguntas - MIRM|❓ Preguntas]]** · **[[Reglas de negocio - MIRM|📏 Reglas]]** · **[[Requisitos - MIRM|📋 Requisitos]]** · **[[Trazabilidad - MIRM|🔗 Trazabilidad]]**
-
 # 📋 Requisitos — Motor IRM
 
 > [!info] Cómo usar esta nota
