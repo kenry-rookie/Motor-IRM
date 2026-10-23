@@ -1,6 +1,6 @@
 # 📋 Requisitos — Motor IRM
 
-> [!info] Cómo usar esta nota
+> Cómo usar esta nota
 > - **Qué guarda:** lo que **el sistema** debe hacer (funcionales) y **cómo** debe comportarse (no funcionales).
 > - **Diferencia con las reglas:** la regla es del negocio (*"no se fía a quien debe"*); el requisito es del sistema (*"el sistema debe avisar al registrar un crédito a quien ya debe"*). Cada requisito debería apoyarse en al menos una regla o una fuente.
 > - **Cuándo agregar una fila:** cuando una necesidad del negocio se convierte en algo que el sistema debe hacer, o cuando aparece una condición de uso (dispositivo, velocidad, internet, quién lo usa).
