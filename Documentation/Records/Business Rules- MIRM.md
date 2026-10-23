@@ -1,6 +1,6 @@
 # 📏 Reglas de negocio — Motor IRM
 
-> [!info] Cómo usar esta nota
+> Cómo usar esta nota
 > - **Qué guarda:** afirmaciones que **definen o restringen** cómo funciona el negocio, aunque no existiera ningún sistema.
 > - **Cuándo agregar una fila:** cuando una fuente dice cómo se hace algo, qué está permitido, qué no, o cómo se calcula algo.
 > - **ID:** `RN-001`, `RN-002`… **Nunca se reutiliza.** Actualiza `siguiente_id` en las propiedades.

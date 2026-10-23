@@ -1,6 +1,6 @@
 # 🔗 Matriz de trazabilidad — Motor IRM
 
-> [!info] Cómo usar esta nota
+> Cómo usar esta nota
 > - **Qué guarda:** de dónde sale cada elemento del diseño y dónde se implementa cada regla o requisito.
 > - **Cuándo se usa:** desde la etapa del **modelo conceptual (S3)**. Antes se deja vacía.
 > - **Cómo se llena:** una fila por cada regla (`RN`) o requisito (`RF`). Las columnas se completan a medida que avanzan las etapas:

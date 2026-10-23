@@ -7,10 +7,10 @@ Poder trazar un plan coherente para empezar el ciclo 2, documentarse correctamen
 En esta etapa no se entrevista a los dueños, no se modela, escribe código ni se corrige versiones anteriores; todo es puramente el trazado de un plan funcional.
 ## Insumos
 
-- [[First Try Review - MIRM]].
+- First Try Review - MIRM.md
 - Calendario del proyecto de Bases de Datos
 - Integrantes: Devans, Gustavo, Kenry.
-- [[Plan de reinicio - MIRM]]
+- Plan de reinicio - MIRM.md
 
 ## Actividades
 
@@ -84,12 +84,12 @@ flowchart LR
 
 ### 5. Decisiones de esta etapa
 
-- [[Projects/Motor IRM/Decisions/DEC-001 - Sharing information - MIRM|Compartir información en GitHub]]
+- DEC-001 - Sharing information - MIRM.md
 
 ---
 ### Revisión de IA (Claude responde esto)
 
-> [!info] Cómo leer esta revisión
+> Cómo leer esta revisión
 > - **Revisor:** Claude (IA), como revisor crítico, no como autor. **Fecha:** 2026-10-19.
 > - **Qué se revisó:** esta nota (S0) y [[Projects/Motor IRM/Decisions/DEC-001 - Sharing information - MIRM|DEC-001]].
 > - **Contra qué:** [[Plan de reinicio - MIRM]] y [[First Try Review - MIRM]].
@@ -130,8 +130,8 @@ flowchart LR
 
 - Definición de las demás Stage, dejando el camino para luego programar.
 - Calendario para 2 semanas con mucho trabajo.
-- [[Projects/Motor IRM/Decisions/DEC-001 - Sharing information - MIRM|Compartir información en GitHub]]
-- Intento 1 en [[000 - Motor IRM - First Version]]
+- DEC-001 - Sharing information - MIRM.md
+- Intento 1 en 000 - Motor IRM - First Version.md
 - Registros vacíos en `Records/`
 
 ## Criterio de cierre
