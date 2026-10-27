@@ -20,14 +20,25 @@ También se va a definir otra tabla con calendario para las tareas posteriores c
 ## Insumos
 
 - [[Assets/Enhanced and Corroborated Domain Statement - MIRM|Enunciado nuevo]]
-- [[Sources/SRC-02 - Owners Interview - MIRM|Respuestas de dueños]]
+- [[Sources/SRC-02 - Second Interview Owners - MIRM|Respuestas de dueños]]
 - [[Sources/SRC-03 - Mechanic Interview - MIRM|Respuestas de mecánicos]]
+- [[SRC-04 - Follow-up Answers Owners - MIRM|SRC-04]] · [[SRC-05 - Owners Answers Oct 26 - MIRM|SRC-05]]
+- [[Business Rules - MIRM|Business Rules]] y decisiones DEC-003 a DEC-005
 - [[Glossary - MIRM]]
 - Recomendaciones de tecnologías para utilizar.
 - Arquitectura de software.
 ## Resultado
 
-- 
+- [[Business Rules - MIRM|Business Rules]]: 79 reglas en borrador (BR-001 a BR-079), hechas por IA, pendientes de revisión del equipo.
+- [[Traceability - MIRM|Traceability]]: una fila por regla, columna conceptual por llenar.
+- [[SRC-04 - Follow-up Answers Owners - MIRM|SRC-04]]: respuestas de seguimiento de los dueños.
+- Decisiones: [[DEC-003 - Internal Work on Own Motorcycle - MIRM|DEC-003]] · [[DEC-004 - No Product Compatibility Record - MIRM|DEC-004]] · [[DEC-005 - Managua Trip Expenses as Cash Withdrawal - MIRM|DEC-005]]
+- [[S3 - Potential Entities - MIRM|Potential Entities]]: lista del equipo revisada (aceptadas, fusionadas, descartadas, con su razón).
+- [[S3 - Conceptual Model - MIRM|Modelo conceptual]]: 25 entidades (+1 para versión 2), atributos, 34 relaciones, estados, procesos y datos derivados. Hecho por IA, pendiente de revisión.
+- [[SRC-05 - Owners Answers Oct 26 - MIRM|SRC-05]]: respuestas de los dueños del 26-oct.
+- [[S3 - Project Gaps and Technology Recommendations - MIRM|Pendientes y recomendación de tecnologías]].
+- Pendiente: Requirements, DEC-006 (tecnologías, Kenry), DEC-007 (inventario y caja) y calendario nuevo.
+
 
 ## Criterio de cierre
 
