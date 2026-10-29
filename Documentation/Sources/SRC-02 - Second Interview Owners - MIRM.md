@@ -3,9 +3,9 @@ id: SRC-02
 project: "[[Motor IRM]]"
 type: source
 date: 2026-10-23
-interviewer:
-interviewees:
-medium:
+interviewer: Kenry
+interviewees: Dueños
+medium: Llamada de WhatsApp
 ---
 
 Primero que todo, estas son preguntas que nos van a permitir avanzar en el desarrollo del proyecto, pues estamos desarrollando un sistema específicamente para su negocio, por ello se toman en cuenta distintos factores y surgen tantas preguntas, solo así podemos evaluar casos posibles, aunque no sean nada frecuentes.
@@ -50,7 +50,7 @@ Ahora algunas dudas acerca de como se manejan las cosas, aunque quizá ya se pre
 
 - (Q-009) ¿Cómo se determina el límite del crédito a un cliente?  
 
-no tienen limites, pura confianza.
+No tienen limites (siempre siendo realistas con el monto), pura confianza.
 
 - (Q-010) ¿Si no estan los dueños saben cómo se manejan los créditos?  
 
@@ -172,5 +172,5 @@ Se le paga normal la semana, depende de nosotros si damos al crédito.
 
 - (Q-036) El mecánico daña una pieza nueva durante la instalación ¿Cómo manejan esos casos?
 
-No pasa eso, los dueños la ponen, no los mecánicos.
+No pasa eso, los dueños la reponen, no los mecánicos.
 

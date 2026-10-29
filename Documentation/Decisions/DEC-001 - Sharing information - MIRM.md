@@ -1,3 +1,13 @@
+---
+id: DEC-001
+project: "[[Motor IRM]]"
+stage: S0
+status: Tomada
+date: 2026-10-19
+participants: Devans, Gustavo, Kenry
+---
+**[[Motor IRM|← Hub]]** · **[[S0 - Start Of Cycle 2 - MIRM|S0]]**
+
 # DEC-001 — Sharing information - MIRM
 
 ## Contexto

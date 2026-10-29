@@ -3,7 +3,7 @@ project: "[[Motor IRM]]"
 stage: S1
 type: stage-product
 date: 2026-10-22
-medium: WhatsApp (mensajes)
+medium: WhatsApp (llamada)
 status: ✅ Listo para enviar
 ---
 **[[Motor IRM|← Hub]]** · **[[S1 - Discovery and Interview Preparation - MIRM|← S1]]** · **[[Questions - MIRM|❓ Questions]]**

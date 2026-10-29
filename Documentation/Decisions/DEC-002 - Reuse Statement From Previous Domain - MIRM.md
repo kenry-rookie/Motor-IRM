@@ -1,3 +1,16 @@
+---
+id: DEC-002
+project: "[[Motor IRM]]"
+stage: S0
+status: Tomada
+date: 2026-10-20
+participants: Devans, Gustavo, Kenry
+source: IA (redactada por Claude a pedido de Kenry, con lo decidido por el equipo)
+ai_edit: "Claude — 2026-10-28: historial (revisada por el equipo)"
+reviewed: true
+---
+**[[Motor IRM|← Hub]]** · **[[S1 - Discovery and Interview Preparation - MIRM|S1]]** · **[[DEC-001 - Sharing information - MIRM|← DEC-001]]**
+
 # DEC-002 — Reuse Statement From Previous Domain
 
 ## Contexto
@@ -58,3 +71,8 @@
 	- *Contenido redactado por la IA sin validar* → solo pasa a S2 lo que esté marcado como respaldado.
 	- *Contradicciones entre el enunciado y SRC-01* → cada una se registra como pregunta, no se decide por intuición.
 - **Cuándo revisarla:** si la entrevista con los dueños contradice partes centrales del enunciado (taller, mecánicos o créditos), se abre una DEC nueva para reescribir esas secciones desde cero.
+
+## Historial
+
+- 20-oct — Tomada por el equipo durante S0.
+- 22-oct — Redactada por Claude a pedido de Kenry, con lo decidido por el equipo. Revisada por el equipo.

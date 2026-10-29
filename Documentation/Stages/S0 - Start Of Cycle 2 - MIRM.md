@@ -1,3 +1,13 @@
+---
+project: "[[Motor IRM]]"
+stage: S0
+status: ✅ Completada
+started: 2026-10-17
+finished: 2026-10-19
+source:
+---
+**[[Motor IRM|← Hub]]** · **[[010 - Development - MIRM|🛠️ Development]]** · **[[Restart Plan - MIRM|🔁 Restart Plan]]**
+
 # S0 - Start Of Cycle 2 - MIRM
 
 ## Objetivo de la etapa
@@ -7,10 +17,10 @@ Poder trazar un plan coherente para empezar el ciclo 2, documentarse correctamen
 En esta etapa no se entrevista a los dueños, no se modela, escribe código ni se corrige versiones anteriores; todo es puramente el trazado de un plan funcional.
 ## Insumos
 
-- First Try Review - MIRM.md
+- [[First Try Review - MIRM]].
 - Calendario del proyecto de Bases de Datos
 - Integrantes: Devans, Gustavo, Kenry.
-- Plan de reinicio - MIRM.md
+- [[Restart Plan - MIRM]]
 
 ## Actividades
 
@@ -49,7 +59,7 @@ Cambios en la documentación de GitHub los pueden hacer todos los miembros del e
 | **S4** - MER / EER: formalizar atributos, identificadores, cardinalidades y participación.                            | Viernes: 23-oct - 08:30 AM (UNI) | Viernes: 23-oct - 11:00 AM   |
 | **S5** - Modelo relacional                                                                                            | Sábado: 24-oct - 07:30 PM        | Lunes 26-oct                 |
 | **S6** - Modelo orientado a objetos                                                                                   | Martes 27-oct                    | Miércoles 28-oct             |
-| **S7** - Verificación integral: probar el modelo con datos reales.                                                                                 | Jueves 29-oct                    | Viernes 30-oct               |
+| **S7** - Verificación integral: probar el modelo con datos reales.                                                    | Jueves 29-oct                    | Viernes 30-oct               |
 | **S8** - Arquitectura y construcción:                                                                                 | Lunes 02-nov                     | -                            |
 
 ## 2. El workflow en una imagen
@@ -84,22 +94,22 @@ flowchart LR
 
 ### 5. Decisiones de esta etapa
 
-- DEC-001 - Sharing information - MIRM.md
+- [[Projects/Motor IRM/Decisions/DEC-001 - Sharing information - MIRM|Compartir información en GitHub]]
 
 ---
 ### Revisión de IA (Claude responde esto)
 
-> Cómo leer esta revisión
+> [!info] Cómo leer esta revisión
 > - **Revisor:** Claude (IA), como revisor crítico, no como autor. **Fecha:** 2026-10-19.
 > - **Qué se revisó:** esta nota (S0) y [[Projects/Motor IRM/Decisions/DEC-001 - Sharing information - MIRM|DEC-001]].
-> - **Contra qué:** [[Plan de reinicio - MIRM]] y [[First Try Review - MIRM]].
+> - **Contra qué:** [[Restart Plan - MIRM]] y [[First Try Review - MIRM]].
 > - **No incluye soluciones:** cada hallazgo termina en una pregunta para el equipo.
 > - **Severidad:** 🔴 Alta (afecta el método o puede repetir un error del intento 1) · 🟠 Media (afecta la confianza en un resultado) · 🟡 Baja (claridad u orden).
 
 | #   | Hallazgo                                                                                                                                                                                                                                                                                                                                                                                                                          | Evidencia                                                                                              | Severidad | Pregunta para el equipo                                                                                                                               |
 | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | El calendario no deja tiempo para las puertas del plan. S1 dura una mañana; S2 (entrevista + enunciado + reglas) un día; S3 y S4 un día cada una. La validación del enunciado con los dueños (puerta de S2) cae el mismo día de la entrevista, sin tiempo para escribir el enunciado y volver a validarlo.                                                                                                                        | §2 Calendario: S1 20-oct hasta 11:50 a. m.; S2 21-oct; S3 22-oct; S4 23-oct.                           | 🔴        | ¿Qué pasa con el calendario si una puerta no se cumple en la fecha? ¿Se avanza igual o se mueve todo?                                                 |
-| 2   | El calendario cambia el contenido de las etapas respecto al plan: la entrevista pasa de S1 a S2, y las reglas y requisitos pasan de S2 a S3. S7 (verificación) no aparece: se salta de S6 a S8.                                                                                                                                                                                                                                   | §2 Calendario vs. [[Plan de reinicio - MIRM]] §4.                                                      | 🔴        | ¿El equipo decidió cambiar las etapas del plan? Si es así, ¿dónde queda registrado ese cambio y por qué se hizo?                                      |
+| 2   | El calendario cambia el contenido de las etapas respecto al plan: la entrevista pasa de S1 a S2, y las reglas y requisitos pasan de S2 a S3. S7 (verificación) no aparece: se salta de S6 a S8.                                                                                                                                                                                                                                   | §2 Calendario vs. [[Restart Plan - MIRM]] §4.                                                      | 🔴        | ¿El equipo decidió cambiar las etapas del plan? Si es así, ¿dónde queda registrado ese cambio y por qué se hizo?                                      |
 | 3   | La retrospectiva, que era el insumo principal de S0, no está en la nota. La actividad dice "Empezar retrospectiva" (marcada como hecha) y el criterio "Retrospectiva escrita con al menos 3 cambios concretos" desapareció del criterio de cierre.                                                                                                                                                                                | §Actividades; §Criterio de cierre; no hay sección de retrospectiva en §Producto.                       | 🔴        | ¿Qué aprendió el equipo del intento 1 y qué va a hacer distinto? ¿Dónde lo puede leer alguien que no estuvo en la reunión?                            |
 | 4   | Una sola persona concentra la documentación y el contacto con los dueños, que son los dos problemas señalados en el intento 1 (W-06 y W-09). La DEC-001 refuerza esto: "Kenry será quien documente lo demás… al ser el único que tiene contacto directo con los dueños".                                                                                                                                                          | §1 Roles; DEC-001 §Contexto; [[First Try Review - MIRM]] W-06, W-09.                                   | 🟠        | Si Kenry no puede asistir a una entrevista o se enferma una semana, ¿quién la hace y quién la documenta?                                              |
 | 5   | El repositorio de GitHub y el vault de Obsidian pueden convertirse en **dos fuentes de verdad**: una parte se edita en GitHub (Records, Stages, Sources…) y el resto solo en el vault. No se define qué copia manda si las dos difieren.                                                                                                                                                                                          | DEC-001 §Contexto (lista de carpetas que se suben) y §Riesgos ("que no se sincronicen correctamente"). | 🟠        | Si un compañero edita una regla en GitHub y Kenry la edita en Obsidian el mismo día, ¿cuál queda como válida y cómo se entera el otro?                |
@@ -107,7 +117,7 @@ flowchart LR
 | 7   | En la DEC-001, la opción elegida no tiene desventajas reales: su columna "En contra" lista beneficios. Por eso obtiene ✅ en todo. El costo que sí se reconoce después ("doble trabajo de parte de Kenry") no aparece en las opciones ni en los criterios. La justificación ("cumple con todos los criterios más coherentes") es circular. Falta "Cuándo revisarla". Los enlaces de navegación apuntan a la panadería del ejemplo. | DEC-001 §Opciones (fila D), §Comparación, §Decisión, §Consecuencias.                                   | 🟠        | Si se escribieran las desventajas reales de D, ¿seguiría ganando con la misma claridad? ¿Qué señal concreta haría que el equipo reabra esta decisión? |
 | 8   | Los filtros de trabajo permiten que una sola persona bloquee un cambio sin plazo ("si no está de acuerdo al menos uno… hay que esperar"), con un calendario de un día por etapa. Además, las sugerencias se discuten por WhatsApp: el razonamiento queda fuera de la documentación, el mismo patrón que hizo perder la primera entrevista.                                                                                        | §1 Roles → Filtros.                                                                                    | 🟠        | Si el desacuerdo dura más de un día, ¿cómo se resuelve? ¿Dónde queda escrito lo que se discutió por WhatsApp?                                         |
 | 9   | El resultado y el criterio de cierre no coinciden con el producto y no siempre se pueden verificar. "Tabla de roles para 2 semanas" no existe (los roles son una lista fija); "Definición de las demás Stage, dejando el camino para luego programar" va más allá del objetivo de S0; "Solo quien puede escribir la documentación" sigue siendo ambiguo. Ningún criterio indica dónde está su evidencia.                          | §Resultado; §Criterio de cierre.                                                                       | 🟠        | ¿Podría alguien externo marcar cada casilla del criterio de cierre leyendo solo esta nota?                                                            |
-| 10  | El diagrama del workflow está copiado del plan dentro del producto de S0 (dos copias de lo mismo). La numeración de secciones salta ("## 2." después de "### 2.", falta el 3). `source:` está vacío. Hay mezcla de idiomas: carpetas en inglés (`Records`), pero el resultado dice "Registros vacíos en `Registros/`".                                                                                                            | §Producto; propiedades; §Resultado.                                                                    | 🟡        | ¿Qué convención de idioma y de numeración va a seguir el equipo en todas las notas?                                                                   |
+| 10  | El diagrama del workflow está copiado del plan dentro del producto de S0 (dos copias de lo mismo). La numeración de secciones salta ("## 2." después de "### 2.", falta el 3). `source:` está vacío. Hay mezcla de idiomas: carpetas en inglés (`Records`), pero el resultado dice "Registros vacíos en `Records/`".                                                                                                            | §Producto; propiedades; §Resultado.                                                                    | 🟡        | ¿Qué convención de idioma y de numeración va a seguir el equipo en todas las notas?                                                                   |
 
 **Respuesta del equipo**
 
@@ -130,8 +140,8 @@ flowchart LR
 
 - Definición de las demás Stage, dejando el camino para luego programar.
 - Calendario para 2 semanas con mucho trabajo.
-- DEC-001 - Sharing information - MIRM.md
-- Intento 1 en 000 - Motor IRM - First Version.md
+- [[Projects/Motor IRM/Decisions/DEC-001 - Sharing information - MIRM|Compartir información en GitHub]]
+- Intento 1 en [[Motor IRM - First Version]]
 - Registros vacíos en `Records/`
 
 ## Criterio de cierre
@@ -142,3 +152,4 @@ flowchart LR
 - [x] Decisión sobre como compartir documentación. ✅ 2026-10-19
 - [x] Stages definidas. ✅ 2026-10-19
 
+➡️ Siguiente etapa: [[S1 - Discovery and Interview Preparation - MIRM|S1 - Business Discovery]]

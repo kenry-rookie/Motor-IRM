@@ -1,10 +1,12 @@
 ---
 project: "[[Motor IRM]]"
 stage: S2
-status: 🟡 En progreso
+status: ✅ Cerrada
 started: 2026-10-22
-finished:
+finished: 2026-10-23
 source:
+ai_edit: "Claude — 2026-10-23: enunciado ampliado, Questions, Glossary y cierre de la etapa"
+reviewed: true
 ---
 # S2 - Interviews and Elaboration of the Statement -MIRM
 
@@ -23,17 +25,17 @@ No vamos a modelar en esta etapa, tampoco vamos a identificar reglas de negocio.
 - [[S1 - Segmented Domain Statement - MIRM]]
 ## Resultado
 
-- [[Sources/SRC-02 - Owners Interview - MIRM|Respuestas de dueños]]
+- [[SRC-02 - Second Interview Owners - MIRM|Respuestas de dueños]]
 - [[Sources/SRC-03 - Mechanic Interview - MIRM|Respuestas de mecánicos]]
 - [[Assets/Enhanced and Corroborated Domain Statement - MIRM|Enunciado nuevo]]
 
-
 ## Criterio de cierre
 
-- [ ] Tener comunicación con los clientes al menos en una llamada corta para confirmar distintas preguntas.
-- [ ] Ampliar el glosario.
-- [ ] El enunciado segmentado será complementado y una nueva nota creada guardad en Assets/
-- [ ] Formulación estratégica del enunciado segmentado para facilitar el modelado(ya está segmentado, solo falta ampliarlo manteniendo las divisiones).
-- [ ] Las preguntas registradas en su nota y respaldadas con su fuente correspondiente.
+- [x] Tener comunicación con los dueños al menos en una llamada corta para confirmar distintas preguntas. ✅ 2026-10-23
+- [x] Hablar con un mecánico al menos. ✅ 2026-10-23
+- [x] Ampliar el glosario. → [[Glossary - MIRM|Glossary]] (18 → 35 términos) ✅ 2026-10-23
+- [x] El enunciado segmentado será complementado y una nueva nota creada guardad en Assets/ → [[Assets/Enhanced and Corroborated Domain Statement - MIRM|Enunciado ampliado]] ✅ 2026-10-23
+- [x] Formulación estratégica del enunciado segmentado para facilitar el modelado(ya está segmentado, solo falta ampliarlo manteniendo las divisiones). → mismos 24 segmentos + segmento 25 (usuarios) ✅ 2026-10-23
+- [x] Las preguntas registradas en su nota y respaldadas con su fuente correspondiente. → [[Questions - MIRM|Questions]] (respuestas de SRC-02/03 y Q-045 a Q-064) ✅ 2026-10-23
 
 ➡️ Siguiente etapa: [[S3 - Develop a Conceptual Model - MIRM]]

@@ -1,19 +1,21 @@
+---
+project: "[[Motor IRM]]"
+stage: S2
+type: stage-product
+status: ✅ Revisado por el equipo
+date: 2026-10-23
+based_on: "[[S1 - Segmented Domain Statement - MIRM]]"
+evidence:
+  - SRC-01
+  - SRC-02
+  - SRC-03
+source: IA (ampliación redactada por Claude a pedido de Kenry, a partir de SRC-01, SRC-02 y SRC-03)
+ai_edit: "Claude — 2026-10-28: status alineado con reviewed"
+reviewed: true
+---
 **[[Motor IRM|← Hub]]** · **[[S2 - Interviews and Elaboration of the Statement - MIRM|← S2]]** · **[[S1 - Segmented Domain Statement - MIRM|Enunciado segmentado (S1)]]** · **[[Questions - MIRM|❓ Questions]]** · **[[Glossary - MIRM|📖 Glossary]]**
 
 # Enhanced and Corroborated Domain Statement - MIRM
-
-> [!warning] Hecho por IA — pendiente de revisión del equipo
-> Esta nota la redactó Claude a partir de las fuentes. Ninguna parte se considera definitiva hasta que el equipo la revise y marque `reviewed` en las propiedades. Si al revisar no están de acuerdo con una interpretación, se corrige el segmento y se anota en el LogBook.
-
-> [!info] Cómo leer esta nota
-> - Mantiene los **24 segmentos** del [[S1 - Segmented Domain Statement - MIRM|enunciado segmentado]], en el mismo orden y con los mismos nombres, y agrega el **segmento 25** (usuarios), que en S1 estaba en la tabla *"Lo que SRC-01 dice y el enunciado no menciona"*.
-> - Cada segmento tiene: **Enunciado ampliado** (el texto que reemplaza al borrador), **Estado**, **Cambio** respecto a S1, **Evidencia** (citas textuales), **Preguntas respondidas** y **Lo que sigue abierto**.
-> - **Regla de redacción (DEC-002):** el enunciado ampliado solo afirma lo que alguna fuente dice. Lo que no tiene fuente se quitó del texto o quedó como cita del borrador marcada *"sin fuente"*, y su duda está en [[Questions - MIRM|Questions]].
-> - **Estado:** ✅ Respaldado · 🟡 Parcial · ⚪ Sin fuente · ❌ Contradicho · — No aplica.
-> - **Cambio:** *Ampliado* (se agregó información) · *Corregido* (una fuente contradijo el borrador y se reescribió) · *Sin cambio* · *Nuevo*.
-> - **Para S3:** solo los segmentos ✅ entran al modelo conceptual → [[#Qué entra a S3]].
-
-## Resumen
 
 | #   | Segmento                                                                                         | Estado S1      | Estado S2     | Cambio     |
 | --- | ------------------------------------------------------------------------------------------------ | -------------- | ------------- | ---------- |

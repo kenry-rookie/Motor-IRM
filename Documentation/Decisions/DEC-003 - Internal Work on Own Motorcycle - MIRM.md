@@ -6,7 +6,8 @@ status: Tomada
 date: 2026-10-23
 participants: Devans, Gustavo, Kenry
 source: IA (redactada por Claude a pedido de Kenry, con lo decidido por el equipo)
-reviewed: false
+ai_edit: "Claude — 2026-10-28: reviewed alineado con el historial (confirmada por el equipo el 26-oct)"
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S3 - Develop a Conceptual Model - MIRM|S3]]** · **[[DEC-002 - Reuse Statement From Previous Domain - MIRM|← DEC-002]]** · **[[DEC-004 - No Product Compatibility Record - MIRM|DEC-004 →]]**
 
@@ -51,10 +52,13 @@ reviewed: false
 - **Lo que ganamos:** comisiones correctas e inventario que cuadra.
 - **Lo que aceptamos:** el modelo debe poder clasificar toda salida de producto según su motivo.
 - **Reglas que salen de aquí:** BR-054, BR-055 y BR-079 en [[Business Rules - MIRM|Business Rules]].
-- **Punto a revisar (equipo):** según Q-060, el mecánico **paga** los productos (*"solo sería una venta mas"*). Entonces, en este caso concreto, la salida del producto es una **venta** al mecánico y no un consumo interno sin cobro. Confirmen si "consumo interno" queda para otras salidas sin cobro (por ejemplo, algo de la tienda usado para limpieza) o si este caso se registra solo como venta.
+- **Punto a revisar (equipo) — resuelto el 27-oct, ver Historial:** según Q-060, el mecánico **paga** los productos (*"solo sería una venta mas"*). Entonces, en este caso concreto, la salida del producto es una **venta** al mecánico y no un consumo interno sin cobro. Confirmen si "consumo interno" queda para otras salidas sin cobro (por ejemplo, algo de la tienda usado para limpieza) o si este caso se registra solo como venta.
 - **Relación con lo que siguen evaluando:** usar un único *movimiento de inventario* con motivo o separar un *retiro de caja* se decide en S3/S4. Esta decisión solo fija **qué se distingue**, no **cómo se modela**.
 - **Cuándo revisarla:** si los dueños dicen que algunos productos se usan en la moto del mecánico sin cobrárselos.
 
 ## Historial
 
-- 23-oct — Tomada por el equipo al inicio de S3. Redactada por Claude a pedido de Kenry. **Pendiente de revisión del equipo** (`reviewed: false`).
+- 23-oct — Tomada por el equipo al inicio de S3. Redactada por Claude a pedido de Kenry.
+- 27-oct — **Punto a revisar resuelto por el equipo:** el consumo interno (limpieza u otro gasto) sale de un **retiro de caja** y no es una venta ni una salida de inventario. Los productos que el mecánico usa en su moto son una **venta** (BR-055). Ver [[DEC-007 - Inventory Movement and Cash Withdrawal - MIRM|DEC-007]].
+- Confirmada por el equipo - 26 - Oct - 2026
+- Revisada nuevamente y confirmada por el equipo, un mecánico al reparar su moto no genera cobro a reparaciones (no se cobra a si mismo), siempre y cuando tenga tiempo libre, si consume algo se registra como una venta, algún daño en su propia moto lo cubre el mismo. Este escenario de el mecánico reparando su moto es totalmente ageno al funcionamiento del negocio y no tiene que ser contemplado en el sistema.

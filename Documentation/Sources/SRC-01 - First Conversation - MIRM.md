@@ -2,11 +2,11 @@
 id: SRC-01
 project: "[[Motor IRM]]"
 type: source
-date: 2026-08    # intento 1; día exacto por confirmar
+date: 2026-08
 recovered: 2026-10-20
-interviewer:     # por completar
-interviewees:    # por completar (¿cuál de los dueños?)
-medium:          # presencial / llamada / mensajes
+interviewer: Kenry
+interviewees: Dueños
+medium: WhatsApp (llamada)
 ---
 **[[Motor IRM|← Hub]]** · **[[S1 - Discovery and Interview Preparation - MIRM|S1]]**
 

@@ -1,4 +1,14 @@
-# **S1 - Discovery and Interview Preparation - MIRM**
+---
+project: "[[Motor IRM]]"
+stage: S1
+status: ✅ Cerrada
+started: 2026-10-20
+finished: 2026-10-22
+source:
+---
+**[[Motor IRM|← Hub]]** · **[[010 - Development - MIRM|🛠️ Development]]** · **[[020 - LogBook - MIRM|📓 LogBook]]**
+
+# **S1 - Discovery and Interview Preparation- MIRM**
 
 ## Objetivo de la etapa
 
