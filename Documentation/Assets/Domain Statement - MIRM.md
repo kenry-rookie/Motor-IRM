@@ -6,7 +6,7 @@ source: Enunciado del intento 1, copiado de un PDF (los números sueltos, como "
 used_by: "[[DEC-002 - Reuse Statement From Previous Domain - MIRM]]"
 replaced_by: "[[Enhanced and Corroborated Domain Statement - MIRM]]"
 ai_edit: "Claude — 2026-10-28: propiedades y navegación agregadas; el texto no se tocó"
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[Assets - MIRM|🗂️ Assets]]**
 

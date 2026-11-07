@@ -6,8 +6,8 @@ status: Tomada
 date: 2026-10-28
 participants: Devans, Gustavo, Kenry
 source: IA (redactada por Claude a pedido de Kenry, con lo decidido por el equipo)
-ai_edit: "Claude — 2026-10-28: nota creada; PostgreSQL para la entrega (docente, 28-oct)"
-reviewed: false
+edit: "Kenry — 2026-10-28: cerrada"
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S5 - Relational Model and Normalization - MIRM|S5]]** · **[[DEC-009 - Credit per Operation - MIRM|← DEC-009]]**
 
@@ -53,3 +53,4 @@ reviewed: false
 
 - 28-oct — Tomada por el equipo. Redactada por Claude a pedido de Kenry; pendiente de revisión del equipo.
 - 28-oct (tarde) — La entrega pasa a PostgreSQL (el docente confirmó el 28-oct que no hace falta SQL Server: PostgreSQL sirve, porque solo pide poder hacer las consultas). Redactado por Claude; pendiente de revisión del equipo.
+- Entrega de la base de datos, consultas realizadas, todo quedó como se tenía previsto.

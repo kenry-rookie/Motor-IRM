@@ -2,16 +2,19 @@
 id: DEC-006
 project: "[[Motor IRM]]"
 stage: S4
-status: Tomada (el docente aceptó PostgreSQL y el uso local, 28-oct)
+status: Reemplazada por DEC-033 (07-nov)
 date: 2026-10-28
 participants: Devans, Gustavo, Kenry
 source: IA (redactada por Claude a pedido de Kenry, con lo decidido por el equipo)
-ai_edit: "Claude — 2026-10-28: enlace corregido e historial; respuestas del docente (sin SQL Server, sin presentar el servidor web)"
+ai_edit: "Claude — 2026-10-28: enlace corregido e historial; respuestas del docente (sin SQL Server, sin presentar el servidor web); 2026-11-07: aviso de reemplazo por DEC-033"
 reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S4 - Entity-Relationship Model and EER - MIRM|S4]]** · **[[Technology Recommendations - MIRM|Recomendación de tecnologías]]** · **[[DEC-005 - Managua Trip Expenses as Cash Withdrawal - MIRM|← DEC-005]]** · **[[DEC-007 - Inventory Movement and Cash Withdrawal - MIRM|DEC-007 →]]**
 
 # DEC-006 — Technology Stack
+
+> [!warning] Reemplazada el 07-nov por [[DEC-033 - Technology Stack Change to TypeScript and Node - MIRM|DEC-033]]
+> El equipo cambió a **TypeScript + Node.js + PostgreSQL**. Esta DEC queda como historia; no se edita su contenido. *(Aviso agregado por Claude; pendiente de revisión.)*
 
 ## Contexto
 
@@ -103,3 +106,4 @@ reviewed: true
 - 28-oct — Tomada por el equipo, sujeta a la revisión del docente. Redactada por Claude a pedido de Kenry. Revisada por el equipo.
 - 28-oct (tarde) — **Respuestas del docente** (contadas por Kenry): no es necesario SQL Server, PostgreSQL sirve porque solo pide poder hacer las consultas; y no es necesario presentar el servidor web, basta con que corra en local. Se quita SQL Server de esta decisión: un solo DDL en PostgreSQL. Redactado por Claude; pendiente de revisión del equipo.
 - Al hablar con el maestro, la opción A se cierra como la opción a utilizar, cumple con algo limpio y aceptable por el maestro, se utilizará unicamente PostgreSQL sin meterse con SQL Server. Además, deberá de haber una forma de ejecutarse desde el navegador solo para "comprobarle al maestro" lo que hicimos.
+- 07-nov — **Reemplazada** por DEC-033 (TypeScript + Node.js + PostgreSQL). Registrado por Claude a pedido de Kenry; pendiente de revisión del equipo.

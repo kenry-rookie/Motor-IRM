@@ -6,9 +6,6 @@ date: 2026-10-27
 observer: Kenry (experiencia propia en talleres y ventas de repuestos informales; su hermano trabaja en este taller)
 interviewees:
 medium: Observación y experiencia del equipo (no es respuesta directa de los dueños)
-source: IA (redactada por Claude a partir de lo que Kenry contó en el chat del 27-oct y de sus apuntes en Potential Entities)
-ai_edit: "Claude — 2026-10-28: §7 (prueba de la moto) y §8 (abonos), contados por Kenry en el chat"
-reviewed: false
 ---
 **[[Motor IRM|← Hub]]** · **[[S3 - Develop a Conceptual Model - MIRM|S3]]** · **[[Questions - MIRM|❓ Questions]]**
 
