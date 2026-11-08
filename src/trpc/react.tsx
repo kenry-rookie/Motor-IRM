@@ -1,7 +1,7 @@
 "use client";
 
 import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
-import { httpBatchStreamLink, loggerLink } from "@trpc/client";
+import { httpBatchLink, httpBatchStreamLink, loggerLink, splitLink } from "@trpc/client";
 import { createTRPCReact } from "@trpc/react-query";
 import { type inferRouterInputs, type inferRouterOutputs } from "@trpc/server";
 import { useState } from "react";
@@ -49,14 +49,13 @@ export function TRPCReactProvider(props: { children: React.ReactNode }) {
             process.env.NODE_ENV === "development" ||
             (op.direction === "down" && op.result instanceof Error),
         }),
-        httpBatchStreamLink({
-          transformer,
-          url: getBaseUrl() + "/api/trpc",
-          headers: () => {
-            const headers = new Headers();
-            headers.set("x-trpc-source", "nextjs-react");
-            return headers;
-          },
+        // auth.* (login/logout) set or clear the session cookie. A streamed response
+        // sends its headers before the procedure finishes, so the Set-Cookie would be
+        // lost: those calls go through the normal (non-streaming) batch link.
+        splitLink({
+          condition: (op) => op.path.startsWith("auth."),
+          true: httpBatchLink({ transformer, url: getBaseUrl() + "/api/trpc", headers: trpcHeaders }),
+          false: httpBatchStreamLink({ transformer, url: getBaseUrl() + "/api/trpc", headers: trpcHeaders }),
         }),
       ],
     }),
@@ -69,6 +68,12 @@ export function TRPCReactProvider(props: { children: React.ReactNode }) {
       </api.Provider>
     </QueryClientProvider>
   );
+}
+
+function trpcHeaders() {
+  const headers = new Headers();
+  headers.set("x-trpc-source", "nextjs-react");
+  return headers;
 }
 
 function getBaseUrl() {
