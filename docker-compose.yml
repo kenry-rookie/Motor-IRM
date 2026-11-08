@@ -1,0 +1,39 @@
+# Motor IRM — base de datos local para desarrollo.
+#
+#   npm run db:up      levanta PostgreSQL en segundo plano
+#   npm run db:down    lo apaga (los datos se conservan en el volumen)
+#   npm run db:reset   lo apaga Y BORRA los datos (vuelve a empezar de cero)
+#
+# El puerto de la Mac es 5433 (no 5432) para no chocar con un PostgreSQL
+# instalado directamente en la Mac. La API se conecta con DATABASE_URL (.env).
+
+name: motor-irm
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: motor-irm-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: motor_irm
+      POSTGRES_PASSWORD: motor_irm_dev # solo para desarrollo local
+      POSTGRES_DB: motor_irm
+      TZ: America/Managua
+      PGTZ: America/Managua
+    # Zona horaria del negocio para CURRENT_DATE, LOCALTIMESTAMP y los logs (DEC-038).
+    command: ["postgres", "-c", "timezone=America/Managua", "-c", "log_timezone=America/Managua"]
+    ports:
+      - "5433:5432" # Mac:contenedor
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Scripts que corren UNA sola vez, cuando el volumen está vacío.
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U motor_irm -d motor_irm"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+    name: motor-irm-pgdata

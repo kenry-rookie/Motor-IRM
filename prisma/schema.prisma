@@ -7,10 +7,13 @@
 //   - Every relation is onDelete: Restrict — business records are never silently
 //     deleted or nulled (Prisma's default for optional relations is SetNull).
 //
-// Not expressible in Prisma, so they live in prisma/migrations/0_init/migration.sql:
-//   - all CHECK constraints (ck_*)
-//   - case-insensitive unique indexes on lower(...) / upper(...)
+// Not expressible in Prisma, so they live in the hand-written SQL migrations:
+//   - all CHECK constraints (ck_*)                              0_init, 1_…
+//   - case-insensitive unique indexes on lower(...) / upper(...) 0_init
+//   - triggers: product.stock from inventory_movement (DEC-039)  1_decisions_api_001_003
+//   - database time zone America/Managua (DEC-038)               1_decisions_api_001_003
 // When you change a column covered by one of those, update the SQL migration too.
+// Dates: every instant is TIMESTAMPTZ (DEC-038); DATE columns are calendar days.
 
 generator client {
   provider = "prisma-client-js"
@@ -81,11 +84,12 @@ model AppUser {
   username     String    @db.VarChar(30) // unique on lower(username): SQL migration
   passwordHash String    @map("password_hash") @db.VarChar(255)
   active       Boolean   @default(true)
-  createdAt    DateTime  @default(dbgenerated("LOCALTIMESTAMP(0)")) @map("created_at") @db.Timestamp(0)
-  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamp(0)
+  createdAt    DateTime  @default(dbgenerated("CURRENT_TIMESTAMP(0)")) @map("created_at") @db.Timestamptz(0)
+  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz(0)
 
-  role  Role   @relation(fields: [roleId], references: [id], onDelete: Restrict, map: "fk_app_user_role_id")
-  staff Staff? @relation(fields: [staffId], references: [id], onDelete: Restrict, map: "fk_app_user_staff_id")
+  role     Role         @relation(fields: [roleId], references: [id], onDelete: Restrict, map: "fk_app_user_role_id")
+  staff    Staff?       @relation(fields: [staffId], references: [id], onDelete: Restrict, map: "fk_app_user_staff_id")
+  sessions AppSession[]
 
   // Audit back-relations: what this user registered / authorized.
   priceChanges                 ProductPriceHistory[]
@@ -105,6 +109,20 @@ model AppUser {
   inventoryMovements           InventoryMovement[]
 
   @@map("app_user")
+}
+
+/// Login session (API-004). Only the SHA-256 of the cookie token is stored.
+model AppSession {
+  id        Int      @id(map: "pk_app_session") @default(autoincrement())
+  appUserId Int      @map("app_user_id")
+  tokenHash String   @unique(map: "uq_app_session_token_hash") @map("token_hash") @db.Char(64)
+  createdAt DateTime @default(dbgenerated("CURRENT_TIMESTAMP(0)")) @map("created_at") @db.Timestamptz(0)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(0)
+
+  appUser AppUser @relation(fields: [appUserId], references: [id], onDelete: Restrict, map: "fk_app_session_app_user_id")
+
+  @@index([appUserId], map: "ix_app_session_app_user_id")
+  @@map("app_session")
 }
 
 // ============================================================
@@ -248,7 +266,7 @@ model Product {
   barcode           String? @unique(map: "uq_product_barcode") @db.VarChar(50)
   qualityTier       String  @map("quality_tier") @db.VarChar(20) // 'ALTA' | 'MEDIA' | 'BAJA'
   listPrice         Decimal @map("list_price") @db.Decimal(12, 2)
-  stock             Int     @default(0) // cache of SUM(inventory_movement); keep in sync
+  stock             Int     @default(0) // cache of SUM(inventory_movement), kept by a DB trigger (DEC-039): never write it
 
   category             ProductCategory       @relation(fields: [productCategoryId], references: [id], onDelete: Restrict, map: "fk_product_product_category_id")
   brand                ProductBrand          @relation(fields: [productBrandId], references: [id], onDelete: Restrict, map: "fk_product_product_brand_id")
@@ -263,7 +281,7 @@ model Product {
 model ProductPriceHistory {
   id              Int      @id(map: "pk_product_price_history") @default(autoincrement())
   productId       Int      @map("product_id")
-  changedAt       DateTime @default(dbgenerated("clock_timestamp()")) @map("changed_at") @db.Timestamp(6)
+  changedAt       DateTime @default(dbgenerated("clock_timestamp()")) @map("changed_at") @db.Timestamptz(6)
   newPrice        Decimal  @map("new_price") @db.Decimal(12, 2)
   changedByUserId Int?     @map("changed_by_user_id")
 
@@ -331,12 +349,12 @@ model CashWithdrawal {
 // ============================================================
 
 /// A bill to a customer: a counter sale, or the bill of a service order
-/// (a service bill is one that has a ServiceOrder with the same id).
+/// (serviceOrderId set; at most one bill per order — DEC-037).
 model SaleInvoice {
   id                       Int       @id(map: "pk_sale_invoice") @default(autoincrement())
   customerId               Int?      @map("customer_id")
   createdByUserId          Int       @map("created_by_user_id")
-  createdAt                DateTime  @default(dbgenerated("LOCALTIMESTAMP(0)")) @map("created_at") @db.Timestamp(0)
+  createdAt                DateTime  @default(dbgenerated("CURRENT_TIMESTAMP(0)")) @map("created_at") @db.Timestamptz(0)
   invoiceNumber            String?   @unique(map: "uq_sale_invoice_invoice_number") @map("invoice_number") @db.VarChar(20)
   paymentTerms             String    @map("payment_terms") @db.VarChar(20) // 'CONTADO' | 'CREDITO'
   dueDate                  DateTime? @map("due_date") @db.Date
@@ -344,16 +362,19 @@ model SaleInvoice {
   monthlyInterest          Decimal   @default(0) @map("monthly_interest") @db.Decimal(5, 4)
   creditAuthorizedByUserId Int?      @map("credit_authorized_by_user_id")
   notes                    String?   @db.VarChar(200)
+  serviceOrderId           Int?      @unique(map: "uq_sale_invoice_service_order_id") @map("service_order_id")
 
   customer           Customer?                   @relation(fields: [customerId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_customer_id")
   createdBy          AppUser                     @relation("SaleInvoiceCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_created_by_user_id")
   creditAuthorizedBy AppUser?                    @relation("SaleInvoiceCreditAuthorizedBy", fields: [creditAuthorizedByUserId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_credit_authorized_by_user_id")
   lines              SaleInvoiceLine[]
+  serviceLines       SaleInvoiceLine[]           @relation("SaleInvoiceLineServiceOrder")
   returns            CustomerReturn[]
-  serviceOrder       ServiceOrder?
+  serviceOrder       ServiceOrder?               @relation(fields: [serviceOrderId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_service_order_id")
   paymentAllocations CustomerPaymentAllocation[]
   warrantyClaim      WarrantyClaim? // set when this invoice sells a part for a warranty claim
 
+  @@unique([id, serviceOrderId], map: "uq_sale_invoice_id_service_order_id")
   @@map("sale_invoice")
 }
 
@@ -371,14 +392,17 @@ model SaleInvoiceLine {
   discountAmount             Decimal @default(0) @map("discount_amount") @db.Decimal(12, 2)
   discountAuthorizedByUserId Int?    @map("discount_authorized_by_user_id")
   additionalFaultId          Int?    @map("additional_fault_id")
+  serviceOrderId             Int?    @map("service_order_id") // copy of the invoice's order, only on service bills (DEC-037)
 
   saleInvoice          SaleInvoice          @relation(fields: [saleInvoiceId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_line_sale_invoice_id")
+  // Composite FK: when set, serviceOrderId is the order of this line's invoice.
+  serviceInvoice       SaleInvoice?         @relation("SaleInvoiceLineServiceOrder", fields: [saleInvoiceId, serviceOrderId], references: [id, serviceOrderId], onDelete: Restrict, map: "fk_sale_invoice_line_sale_invoice_id_service_order_id")
   product              Product?             @relation(fields: [productId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_line_product_id")
   serviceType          ServiceType?         @relation(fields: [serviceTypeId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_line_service_type_id")
   discount             Discount?            @relation(fields: [discountId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_line_discount_id")
   discountAuthorizedBy AppUser?             @relation(fields: [discountAuthorizedByUserId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_line_discount_authorized_by_user_id")
-  // Composite FK: the fault must belong to this invoice's service order (same id).
-  additionalFault      AdditionalFault?     @relation(fields: [additionalFaultId, saleInvoiceId], references: [id, serviceOrderId], onDelete: Restrict, map: "fk_sale_invoice_line_additional_fault_id_sale_invoice_id")
+  // Composite FK: the fault must belong to the same service order (CHECK: fault ⇒ order).
+  additionalFault      AdditionalFault?     @relation(fields: [additionalFaultId, serviceOrderId], references: [id, serviceOrderId], onDelete: Restrict, map: "fk_sale_invoice_line_additional_fault_id_service_order_id")
   returnLines          CustomerReturnLine[]
   inventoryMovements   InventoryMovement[]
 
@@ -391,7 +415,7 @@ model SaleInvoiceLine {
 model CustomerReturn {
   id                 Int      @id(map: "pk_customer_return") @default(autoincrement())
   saleInvoiceId      Int      @map("sale_invoice_id")
-  returnedAt         DateTime @default(dbgenerated("LOCALTIMESTAMP(0)")) @map("returned_at") @db.Timestamp(0)
+  returnedAt         DateTime @default(dbgenerated("CURRENT_TIMESTAMP(0)")) @map("returned_at") @db.Timestamptz(0)
   creditNoteNumber   String?  @unique(map: "uq_customer_return_credit_note_number") @map("credit_note_number") @db.VarChar(20)
   returnReasonId     Int      @map("return_reason_id")
   registeredByUserId Int      @map("registered_by_user_id")
@@ -448,9 +472,10 @@ model CustomerOpeningBalance {
 //  Service orders
 // ============================================================
 
-/// Shares its primary key with SaleInvoice (1:1 subtype).
+/// A motorcycle received at the shop. Exists before (and without) a bill;
+/// SaleInvoice.serviceOrderId points here when it is charged (DEC-037).
 model ServiceOrder {
-  id                    Int      @id(map: "pk_service_order")
+  id                    Int      @id(map: "pk_service_order") @default(autoincrement())
   motorcycleId          Int      @map("motorcycle_id")
   mechanicStaffId       Int?     @map("mechanic_staff_id")
   requestedWork         String   @map("requested_work") @db.VarChar(500)
@@ -459,7 +484,7 @@ model ServiceOrder {
   appliedCommissionRate Decimal? @map("applied_commission_rate") @db.Decimal(5, 4)
   staffPayoutId         Int?     @map("staff_payout_id")
 
-  saleInvoice               SaleInvoice                @relation(fields: [id], references: [id], onDelete: Restrict, map: "fk_service_order_id")
+  saleInvoice               SaleInvoice?
   motorcycle                Motorcycle                 @relation(fields: [motorcycleId], references: [id], onDelete: Restrict, map: "fk_service_order_motorcycle_id")
   mechanic                  Staff?                     @relation(fields: [mechanicStaffId], references: [id], onDelete: Restrict, map: "fk_service_order_mechanic_staff_id")
   // Composite FK: commission is paid in a payout of the same mechanic.
@@ -475,7 +500,7 @@ model ServiceOrder {
 model ServiceOrderStatusChange {
   id                 Int      @id(map: "pk_service_order_status_change") @default(autoincrement())
   serviceOrderId     Int      @map("service_order_id")
-  changedAt          DateTime @default(dbgenerated("clock_timestamp()")) @map("changed_at") @db.Timestamp(6)
+  changedAt          DateTime @default(dbgenerated("clock_timestamp()")) @map("changed_at") @db.Timestamptz(6)
   status             String   @db.VarChar(20)
   notes              String?  @db.VarChar(200)
   registeredByUserId Int      @map("registered_by_user_id")
@@ -531,7 +556,7 @@ model WarrantyClaim {
 
 model CustomerPayment {
   id               Int      @id(map: "pk_customer_payment") @default(autoincrement())
-  paidAt           DateTime @default(dbgenerated("LOCALTIMESTAMP(0)")) @map("paid_at") @db.Timestamp(0)
+  paidAt           DateTime @default(dbgenerated("CURRENT_TIMESTAMP(0)")) @map("paid_at") @db.Timestamptz(0)
   amount           Decimal  @db.Decimal(12, 2)
   currency         String   @default("NIO") @db.VarChar(3) // 'NIO' | 'USD'
   exchangeRate     Decimal? @map("exchange_rate") @db.Decimal(10, 4)
@@ -680,7 +705,7 @@ model SupplierPayment {
 model InventoryMovement {
   id                    Int      @id(map: "pk_inventory_movement") @default(autoincrement())
   productId             Int      @map("product_id")
-  movedAt               DateTime @default(dbgenerated("LOCALTIMESTAMP(0)")) @map("moved_at") @db.Timestamp(0)
+  movedAt               DateTime @default(dbgenerated("CURRENT_TIMESTAMP(0)")) @map("moved_at") @db.Timestamptz(0)
   movementType          String   @map("movement_type") @db.VarChar(25)
   quantity              Int
   unitCost              Decimal  @map("unit_cost") @db.Decimal(12, 2)

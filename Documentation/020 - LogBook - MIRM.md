@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-11-08 — Base de datos en Docker y pendientes de desarrollo
+
+> Entrada escrita por Claude a pedido de Kenry (`reviewed: false`).
+
+**Hice:**
+- PostgreSQL en Docker (`docker-compose.yml`, puerto 5433) conectado a la API por `DATABASE_URL`.
+- Decisiones [[DEC-037 - Service Order Own Id - MIRM|DEC-037]], [[DEC-038 - Timestamps With Time Zone - MIRM|DEC-038]] y [[DEC-039 - Stock Maintained by Trigger - MIRM|DEC-039]] (API-001 a API-003) como migración.
+- Login, permisos, flujos de la API y pantallas principales → estado en [[Pendientes de desarrollo - MIRM|Pendientes]]. 10/10 pruebas pasan.
+
+**Siguiente:**
+- Revisar con el equipo las DEC nuevas y lo marcado como provisional; probar las pantallas con datos del negocio.
+
+---
+
 ## 2026-10-22 — S2, S3 y S4 escritas. Glosario registra nuevos términos y Questions nuevas preguntas
 
 **Hice:** Estan listas las notas que orientan las etapas siguientes, buscando a minimizar los roces de comunicación redundante para dejar registro de la forma a trabajar como equipo.
