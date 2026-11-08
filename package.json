@@ -6,17 +6,26 @@
   "scripts": {
     "build": "next build",
     "check": "next lint && tsc --noEmit",
-    "db:generate": "prisma migrate dev",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f db",
     "db:migrate": "prisma migrate deploy",
+    "db:migrate:new": "prisma migrate dev --create-only",
+    "db:psql": "docker compose exec db psql -U motor_irm -d motor_irm",
+    "db:reset": "docker compose down -v && npm run db:setup",
+    "db:seed": "prisma db seed",
+    "db:setup": "npm run db:up && npm run db:migrate && npm run db:seed",
     "db:studio": "prisma studio",
+    "db:up": "docker compose up -d --wait db",
     "dev": "next dev --turbo",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,mdx}\" --cache",
     "format:write": "prettier --write \"**/*.{ts,tsx,js,jsx,mdx}\" --cache",
-    "postinstall": "prisma generate",
     "lint": "next lint",
     "lint:fix": "next lint --fix",
+    "postinstall": "prisma generate",
     "preview": "next build && next start",
     "start": "next start",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -47,11 +56,16 @@
     "prettier-plugin-tailwindcss": "^0.6.11",
     "prisma": "^6.6.0",
     "tailwindcss": "^4.0.15",
+    "tsx": "^4.19.2",
     "typescript": "^5.8.2",
-    "typescript-eslint": "^8.27.0"
+    "typescript-eslint": "^8.27.0",
+    "vitest": "^3.0.5"
   },
   "ct3aMetadata": {
     "initVersion": "7.40.0"
   },
-  "packageManager": "npm@11.19.0"
+  "packageManager": "npm@11.19.0",
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  }
 }
