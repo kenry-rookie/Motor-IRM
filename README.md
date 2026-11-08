@@ -37,15 +37,48 @@ El estado vive en las **propiedades** de esta nota (`stage`, `next`) y el detall
 
 ### Definidas
 
-- **TypeScript + Node.js** — programa con una **API**.
-- **PostgreSQL** — base de datos, con el DDL propio como única fuente de verdad ([[DEC-034 - DDL as Single Source of Truth - MIRM|DEC-034]]) y vistas.
-- En **local**, con su **ícono en el escritorio** como una aplicación de escritorio. Para clase basta con mostrar que corre en local (no se presenta el servidor web).
-- Git + GitHub, DBeaver, Docker o Postgres.app, `pg_dump` para respaldos.
-
+- PostgreSQL — Sistema gestor de base de datos.
+- Aplicación **web** (asignado por el docente).
+- **T3 Stack** — Next.js (App Router) + React + TypeScript + Tailwind CSS.
+- **tRPC** — contrato tipado de extremo a extremo entre cliente y API (sin escribir tipos a mano).
+- **Prisma ORM** — acceso a datos y migraciones.
 
 ### Por definir
 
-- Alojamiento para el negocio (local en su PC o en la nube) → futura DEC, según los dueños.
-- Framework de la API, interfaz y cómo se empaqueta como app de escritorio → S8 (DEC-033).
+- Autenticación (las tablas `app_user`, `role`, `permission` ya existen).
+- Herramientas de despliegue.
+- Infraestructura y alojamiento.
 
 ---
+## Desarrollo
+
+```bash
+npm install                 # también genera el cliente de Prisma
+cp .env.example .env        # DATABASE_URL apunta a una BD local de prueba
+./start-database.sh         # opcional: levanta Postgres en Docker/Podman con ese URL
+npm run db:migrate          # aplica prisma/migrations a la BD
+npm run dev                 # http://localhost:3000
+```
+
+> **No usar `prisma db push`.** Los CHECK y los índices únicos sin distinción de
+> mayúsculas (`lower(name)`) solo existen en `prisma/migrations/0_init/migration.sql`;
+> `db push` crea las tablas sin ellos. Cambios al esquema: editar
+> `prisma/schema.prisma` y correr `npx prisma migrate dev --name <cambio>`.
+
+### Estructura
+
+```
+prisma/
+  schema.prisma                 # modelo de datos (39 tablas)
+  migrations/0_init/            # SQL inicial + CHECKs + índices lower()/upper()
+src/
+  app/                          # páginas (Next.js App Router)
+  server/
+    db.ts                       # cliente de Prisma
+    api/
+      root.ts                   # router principal: un router por área
+      routers/                  # customer, inventory, sales, service, purchasing, staff
+  trpc/                         # cliente tRPC (React y llamadas desde el servidor)
+  lib/transformer.ts            # SuperJSON + Decimal (montos exactos, nunca float)
+Documentation/                  # análisis y diseño
+```

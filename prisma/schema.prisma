@@ -1,0 +1,705 @@
+// Motor IRM — database schema (v2).
+//
+// Conventions
+//   - TypeScript side: PascalCase models, camelCase fields.
+//   - Postgres side: snake_case tables/columns via @@map / @map.
+//   - Constraint names (pk_/uq_/fk_) match the DBML design.
+//   - Every relation is onDelete: Restrict — business records are never silently
+//     deleted or nulled (Prisma's default for optional relations is SetNull).
+//
+// Not expressible in Prisma, so they live in prisma/migrations/0_init/migration.sql:
+//   - all CHECK constraints (ck_*)
+//   - case-insensitive unique indexes on lower(...) / upper(...)
+// When you change a column covered by one of those, update the SQL migration too.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+//  Security
+// ============================================================
+
+model Role {
+  id          Int     @id(map: "pk_role") @default(autoincrement())
+  name        String  @db.VarChar(50) // unique on lower(name): SQL migration
+  description String? @db.VarChar(200)
+  active      Boolean @default(true)
+
+  permissions RolePermission[]
+  users       AppUser[]
+
+  @@map("role")
+}
+
+model Permission {
+  id          Int     @id(map: "pk_permission") @default(autoincrement())
+  code        String  @unique(map: "uq_permission_code") @db.VarChar(60)
+  description String? @db.VarChar(200)
+
+  roles RolePermission[]
+
+  @@map("permission")
+}
+
+model RolePermission {
+  roleId       Int @map("role_id")
+  permissionId Int @map("permission_id")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Restrict, map: "fk_role_permission_role_id")
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Restrict, map: "fk_role_permission_permission_id")
+
+  @@id([roleId, permissionId], map: "pk_role_permission")
+  @@map("role_permission")
+}
+
+model Staff {
+  id             Int      @id(map: "pk_staff") @default(autoincrement())
+  name           String   @db.VarChar(100)
+  phone          String   @db.VarChar(20)
+  commissionRate Decimal? @map("commission_rate") @db.Decimal(5, 4)
+  active         Boolean  @default(true)
+
+  appUser       AppUser?
+  payouts       StaffPayout[]
+  advances      StaffAdvance[]
+  serviceOrders ServiceOrder[]
+
+  @@map("staff")
+}
+
+model AppUser {
+  id           Int       @id(map: "pk_app_user") @default(autoincrement())
+  roleId       Int       @map("role_id")
+  staffId      Int?      @unique(map: "uq_app_user_staff_id") @map("staff_id")
+  username     String    @db.VarChar(30) // unique on lower(username): SQL migration
+  passwordHash String    @map("password_hash") @db.VarChar(255)
+  active       Boolean   @default(true)
+  createdAt    DateTime  @default(dbgenerated("LOCALTIMESTAMP(0)")) @map("created_at") @db.Timestamp(0)
+  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamp(0)
+
+  role  Role   @relation(fields: [roleId], references: [id], onDelete: Restrict, map: "fk_app_user_role_id")
+  staff Staff? @relation(fields: [staffId], references: [id], onDelete: Restrict, map: "fk_app_user_staff_id")
+
+  // Audit back-relations: what this user registered / authorized.
+  priceChanges                 ProductPriceHistory[]
+  staffPayoutsPaid             StaffPayout[]
+  staffAdvancesGiven           StaffAdvance[]
+  cashWithdrawals              CashWithdrawal[]
+  saleInvoicesCreated          SaleInvoice[]              @relation("SaleInvoiceCreatedBy")
+  saleInvoicesCreditAuthorized SaleInvoice[]              @relation("SaleInvoiceCreditAuthorizedBy")
+  discountsAuthorized          SaleInvoiceLine[]
+  customerReturns              CustomerReturn[]
+  customerOpeningBalances      CustomerOpeningBalance[]
+  serviceOrderStatusChanges    ServiceOrderStatusChange[]
+  warrantyClaims               WarrantyClaim[]
+  customerPayments             CustomerPayment[]
+  purchaseInvoices             PurchaseInvoice[]
+  supplierReturns              SupplierReturn[]
+  inventoryMovements           InventoryMovement[]
+
+  @@map("app_user")
+}
+
+// ============================================================
+//  Catalogs
+// ============================================================
+
+model ReturnReason {
+  id     Int     @id(map: "pk_return_reason") @default(autoincrement())
+  name   String  @db.VarChar(80)
+  active Boolean @default(true)
+
+  customerReturns CustomerReturn[]
+  supplierReturns SupplierReturn[]
+
+  @@map("return_reason")
+}
+
+model PaymentMethod {
+  id     Int     @id(map: "pk_payment_method") @default(autoincrement())
+  name   String  @db.VarChar(50)
+  active Boolean @default(true)
+
+  customerPayments CustomerPayment[]
+
+  @@map("payment_method")
+}
+
+model CashWithdrawalReason {
+  id     Int     @id(map: "pk_cash_withdrawal_reason") @default(autoincrement())
+  name   String  @db.VarChar(50)
+  active Boolean @default(true)
+
+  cashWithdrawals CashWithdrawal[]
+
+  @@map("cash_withdrawal_reason")
+}
+
+model Discount {
+  id           Int     @id(map: "pk_discount") @default(autoincrement())
+  name         String  @db.VarChar(80)
+  discountType String  @map("discount_type") @db.VarChar(20) // 'PORCENTAJE' | 'MONTO'
+  value        Decimal @db.Decimal(12, 4)
+  active       Boolean @default(true)
+
+  saleInvoiceLines SaleInvoiceLine[]
+
+  @@map("discount")
+}
+
+model ServiceType {
+  id             Int      @id(map: "pk_service_type") @default(autoincrement())
+  name           String   @db.VarChar(50)
+  referencePrice Decimal? @map("reference_price") @db.Decimal(12, 2)
+  active         Boolean  @default(true)
+
+  saleInvoiceLines SaleInvoiceLine[]
+
+  @@map("service_type")
+}
+
+// ============================================================
+//  Customers & motorcycles
+// ============================================================
+
+model Customer {
+  id         Int     @id(map: "pk_customer") @default(autoincrement())
+  name       String  @db.VarChar(100)
+  phone      String  @db.VarChar(20)
+  nationalId String? @map("national_id") @db.VarChar(20) // unique on upper(national_id): SQL migration
+  address    String? @db.VarChar(200)
+
+  motorcycles     Motorcycle[]
+  saleInvoices    SaleInvoice[]
+  openingBalances CustomerOpeningBalance[]
+
+  @@map("customer")
+}
+
+model MotorcycleBrand {
+  id   Int    @id(map: "pk_motorcycle_brand") @default(autoincrement())
+  name String @db.VarChar(50)
+
+  models MotorcycleModel[]
+
+  @@map("motorcycle_brand")
+}
+
+model MotorcycleModel {
+  id                Int    @id(map: "pk_motorcycle_model") @default(autoincrement())
+  motorcycleBrandId Int    @map("motorcycle_brand_id")
+  name              String @db.VarChar(50) // unique on (brand, lower(name)): SQL migration
+
+  brand       MotorcycleBrand @relation(fields: [motorcycleBrandId], references: [id], onDelete: Restrict, map: "fk_motorcycle_model_motorcycle_brand_id")
+  motorcycles Motorcycle[]
+
+  @@map("motorcycle_model")
+}
+
+model Motorcycle {
+  id                Int     @id(map: "pk_motorcycle") @default(autoincrement())
+  customerId        Int     @map("customer_id")
+  motorcycleModelId Int     @map("motorcycle_model_id")
+  color             String  @db.VarChar(30)
+  plate             String? @db.VarChar(15) // unique on upper(plate): SQL migration
+  notes             String? @db.VarChar(200)
+
+  customer      Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict, map: "fk_motorcycle_customer_id")
+  model         MotorcycleModel @relation(fields: [motorcycleModelId], references: [id], onDelete: Restrict, map: "fk_motorcycle_motorcycle_model_id")
+  serviceOrders ServiceOrder[]
+
+  @@map("motorcycle")
+}
+
+// ============================================================
+//  Products
+// ============================================================
+
+model ProductCategory {
+  id   Int    @id(map: "pk_product_category") @default(autoincrement())
+  name String @db.VarChar(50)
+
+  products Product[]
+
+  @@map("product_category")
+}
+
+model ProductBrand {
+  id   Int    @id(map: "pk_product_brand") @default(autoincrement())
+  name String @db.VarChar(50)
+
+  products Product[]
+
+  @@map("product_brand")
+}
+
+model Product {
+  id                Int     @id(map: "pk_product") @default(autoincrement())
+  productCategoryId Int     @map("product_category_id")
+  productBrandId    Int     @map("product_brand_id")
+  name              String  @db.VarChar(150)
+  barcode           String? @unique(map: "uq_product_barcode") @db.VarChar(50)
+  qualityTier       String  @map("quality_tier") @db.VarChar(20) // 'ALTA' | 'MEDIA' | 'BAJA'
+  listPrice         Decimal @map("list_price") @db.Decimal(12, 2)
+  stock             Int     @default(0) // cache of SUM(inventory_movement); keep in sync
+
+  category             ProductCategory       @relation(fields: [productCategoryId], references: [id], onDelete: Restrict, map: "fk_product_product_category_id")
+  brand                ProductBrand          @relation(fields: [productBrandId], references: [id], onDelete: Restrict, map: "fk_product_product_brand_id")
+  priceHistory         ProductPriceHistory[]
+  saleInvoiceLines     SaleInvoiceLine[]
+  purchaseInvoiceLines PurchaseInvoiceLine[]
+  inventoryMovements   InventoryMovement[]
+
+  @@map("product")
+}
+
+model ProductPriceHistory {
+  id              Int      @id(map: "pk_product_price_history") @default(autoincrement())
+  productId       Int      @map("product_id")
+  changedAt       DateTime @default(dbgenerated("clock_timestamp()")) @map("changed_at") @db.Timestamp(6)
+  newPrice        Decimal  @map("new_price") @db.Decimal(12, 2)
+  changedByUserId Int?     @map("changed_by_user_id")
+
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Restrict, map: "fk_product_price_history_product_id")
+  changedBy AppUser? @relation(fields: [changedByUserId], references: [id], onDelete: Restrict, map: "fk_product_price_history_changed_by_user_id")
+
+  @@unique([productId, changedAt], map: "uq_product_price_history_product_id_changed_at")
+  @@map("product_price_history")
+}
+
+// ============================================================
+//  Staff money
+// ============================================================
+
+model StaffPayout {
+  id           Int       @id(map: "pk_staff_payout") @default(autoincrement())
+  staffId      Int       @map("staff_id")
+  periodStart  DateTime  @map("period_start") @db.Date
+  periodEnd    DateTime  @map("period_end") @db.Date
+  paidOn       DateTime? @map("paid_on") @db.Date
+  paidByUserId Int?      @map("paid_by_user_id")
+
+  staff         Staff          @relation(fields: [staffId], references: [id], onDelete: Restrict, map: "fk_staff_payout_staff_id")
+  paidBy        AppUser?       @relation(fields: [paidByUserId], references: [id], onDelete: Restrict, map: "fk_staff_payout_paid_by_user_id")
+  advances      StaffAdvance[]
+  serviceOrders ServiceOrder[]
+
+  @@unique([staffId, periodStart], map: "uq_staff_payout_staff_id_period_start")
+  @@unique([id, staffId], map: "uq_staff_payout_id_staff_id")
+  @@map("staff_payout")
+}
+
+model StaffAdvance {
+  id            Int      @id(map: "pk_staff_advance") @default(autoincrement())
+  staffId       Int      @map("staff_id")
+  givenOn       DateTime @default(dbgenerated("CURRENT_DATE")) @map("given_on") @db.Date
+  amount        Decimal  @db.Decimal(12, 2)
+  givenByUserId Int      @map("given_by_user_id")
+  staffPayoutId Int?     @map("staff_payout_id")
+
+  staff       Staff        @relation(fields: [staffId], references: [id], onDelete: Restrict, map: "fk_staff_advance_staff_id")
+  givenBy     AppUser      @relation(fields: [givenByUserId], references: [id], onDelete: Restrict, map: "fk_staff_advance_given_by_user_id")
+  // Composite FK: the advance can only be settled in a payout of the same staff member.
+  staffPayout StaffPayout? @relation(fields: [staffPayoutId, staffId], references: [id, staffId], onDelete: Restrict, map: "fk_staff_advance_staff_payout_id_staff_id")
+
+  @@map("staff_advance")
+}
+
+model CashWithdrawal {
+  id                     Int      @id(map: "pk_cash_withdrawal") @default(autoincrement())
+  withdrawnByUserId      Int      @map("withdrawn_by_user_id")
+  cashWithdrawalReasonId Int      @map("cash_withdrawal_reason_id")
+  withdrawnOn            DateTime @default(dbgenerated("CURRENT_DATE")) @map("withdrawn_on") @db.Date
+  amount                 Decimal  @db.Decimal(12, 2)
+  description            String?  @db.VarChar(200)
+
+  withdrawnBy AppUser              @relation(fields: [withdrawnByUserId], references: [id], onDelete: Restrict, map: "fk_cash_withdrawal_withdrawn_by_user_id")
+  reason      CashWithdrawalReason @relation(fields: [cashWithdrawalReasonId], references: [id], onDelete: Restrict, map: "fk_cash_withdrawal_cash_withdrawal_reason_id")
+
+  @@map("cash_withdrawal")
+}
+
+// ============================================================
+//  Sales
+// ============================================================
+
+/// A bill to a customer: a counter sale, or the bill of a service order
+/// (a service bill is one that has a ServiceOrder with the same id).
+model SaleInvoice {
+  id                       Int       @id(map: "pk_sale_invoice") @default(autoincrement())
+  customerId               Int?      @map("customer_id")
+  createdByUserId          Int       @map("created_by_user_id")
+  createdAt                DateTime  @default(dbgenerated("LOCALTIMESTAMP(0)")) @map("created_at") @db.Timestamp(0)
+  invoiceNumber            String?   @unique(map: "uq_sale_invoice_invoice_number") @map("invoice_number") @db.VarChar(20)
+  paymentTerms             String    @map("payment_terms") @db.VarChar(20) // 'CONTADO' | 'CREDITO'
+  dueDate                  DateTime? @map("due_date") @db.Date
+  extendedDueDate          DateTime? @map("extended_due_date") @db.Date
+  monthlyInterest          Decimal   @default(0) @map("monthly_interest") @db.Decimal(5, 4)
+  creditAuthorizedByUserId Int?      @map("credit_authorized_by_user_id")
+  notes                    String?   @db.VarChar(200)
+
+  customer           Customer?                   @relation(fields: [customerId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_customer_id")
+  createdBy          AppUser                     @relation("SaleInvoiceCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_created_by_user_id")
+  creditAuthorizedBy AppUser?                    @relation("SaleInvoiceCreditAuthorizedBy", fields: [creditAuthorizedByUserId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_credit_authorized_by_user_id")
+  lines              SaleInvoiceLine[]
+  returns            CustomerReturn[]
+  serviceOrder       ServiceOrder?
+  paymentAllocations CustomerPaymentAllocation[]
+  warrantyClaim      WarrantyClaim? // set when this invoice sells a part for a warranty claim
+
+  @@map("sale_invoice")
+}
+
+model SaleInvoiceLine {
+  id                         Int     @id(map: "pk_sale_invoice_line") @default(autoincrement())
+  saleInvoiceId              Int     @map("sale_invoice_id")
+  lineNo                     Int     @map("line_no") @db.SmallInt
+  lineType                   String  @map("line_type") @db.VarChar(20) // 'PRODUCTO' | 'MANO_OBRA' | 'CARGO_EXTERNO'
+  productId                  Int?    @map("product_id")
+  serviceTypeId              Int?    @map("service_type_id")
+  description                String? @db.VarChar(200)
+  quantity                   Int     @default(1)
+  unitPrice                  Decimal @map("unit_price") @db.Decimal(12, 2)
+  discountId                 Int?    @map("discount_id")
+  discountAmount             Decimal @default(0) @map("discount_amount") @db.Decimal(12, 2)
+  discountAuthorizedByUserId Int?    @map("discount_authorized_by_user_id")
+  additionalFaultId          Int?    @map("additional_fault_id")
+
+  saleInvoice          SaleInvoice          @relation(fields: [saleInvoiceId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_line_sale_invoice_id")
+  product              Product?             @relation(fields: [productId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_line_product_id")
+  serviceType          ServiceType?         @relation(fields: [serviceTypeId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_line_service_type_id")
+  discount             Discount?            @relation(fields: [discountId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_line_discount_id")
+  discountAuthorizedBy AppUser?             @relation(fields: [discountAuthorizedByUserId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_line_discount_authorized_by_user_id")
+  // Composite FK: the fault must belong to this invoice's service order (same id).
+  additionalFault      AdditionalFault?     @relation(fields: [additionalFaultId, saleInvoiceId], references: [id, serviceOrderId], onDelete: Restrict, map: "fk_sale_invoice_line_additional_fault_id_sale_invoice_id")
+  returnLines          CustomerReturnLine[]
+  inventoryMovements   InventoryMovement[]
+
+  @@unique([saleInvoiceId, lineNo], map: "uq_sale_invoice_line_sale_invoice_id_line_no")
+  @@unique([id, productId], map: "uq_sale_invoice_line_id_product_id")
+  @@unique([id, saleInvoiceId, productId], map: "uq_sale_invoice_line_id_sale_invoice_id_product_id")
+  @@map("sale_invoice_line")
+}
+
+model CustomerReturn {
+  id                 Int      @id(map: "pk_customer_return") @default(autoincrement())
+  saleInvoiceId      Int      @map("sale_invoice_id")
+  returnedAt         DateTime @default(dbgenerated("LOCALTIMESTAMP(0)")) @map("returned_at") @db.Timestamp(0)
+  creditNoteNumber   String?  @unique(map: "uq_customer_return_credit_note_number") @map("credit_note_number") @db.VarChar(20)
+  returnReasonId     Int      @map("return_reason_id")
+  registeredByUserId Int      @map("registered_by_user_id")
+  notes              String?  @db.VarChar(200)
+
+  saleInvoice  SaleInvoice          @relation(fields: [saleInvoiceId], references: [id], onDelete: Restrict, map: "fk_customer_return_sale_invoice_id")
+  returnReason ReturnReason         @relation(fields: [returnReasonId], references: [id], onDelete: Restrict, map: "fk_customer_return_return_reason_id")
+  registeredBy AppUser              @relation(fields: [registeredByUserId], references: [id], onDelete: Restrict, map: "fk_customer_return_registered_by_user_id")
+  lines        CustomerReturnLine[]
+
+  @@unique([id, saleInvoiceId], map: "uq_customer_return_id_sale_invoice_id")
+  @@map("customer_return")
+}
+
+/// saleInvoiceId and productId exist only so the composite FKs can prove the
+/// returned line is a PRODUCTO line of the same invoice the return points to.
+model CustomerReturnLine {
+  id                Int @id(map: "pk_customer_return_line") @default(autoincrement())
+  customerReturnId  Int @map("customer_return_id")
+  saleInvoiceId     Int @map("sale_invoice_id")
+  lineNo            Int @map("line_no") @db.SmallInt
+  saleInvoiceLineId Int @map("sale_invoice_line_id")
+  productId         Int @map("product_id")
+  quantity          Int
+
+  customerReturn     CustomerReturn      @relation(fields: [customerReturnId, saleInvoiceId], references: [id, saleInvoiceId], onDelete: Restrict, map: "fk_customer_return_line_customer_return")
+  saleInvoiceLine    SaleInvoiceLine     @relation(fields: [saleInvoiceLineId, saleInvoiceId, productId], references: [id, saleInvoiceId, productId], onDelete: Restrict, map: "fk_customer_return_line_sale_invoice_line")
+  inventoryMovements InventoryMovement[]
+
+  @@unique([customerReturnId, lineNo], map: "uq_customer_return_line_customer_return_id_line_no")
+  @@unique([customerReturnId, saleInvoiceLineId], map: "uq_customer_return_line_return_id_invoice_line_id")
+  @@unique([id, productId], map: "uq_customer_return_line_id_product_id")
+  @@map("customer_return_line")
+}
+
+model CustomerOpeningBalance {
+  id                 Int      @id(map: "pk_customer_opening_balance") @default(autoincrement())
+  customerId         Int      @map("customer_id")
+  asOfDate           DateTime @map("as_of_date") @db.Date
+  amount             Decimal  @db.Decimal(12, 2)
+  dueDate            DateTime @map("due_date") @db.Date
+  monthlyInterest    Decimal  @default(0) @map("monthly_interest") @db.Decimal(5, 4)
+  registeredByUserId Int      @map("registered_by_user_id")
+  notes              String?  @db.VarChar(200)
+
+  customer           Customer                    @relation(fields: [customerId], references: [id], onDelete: Restrict, map: "fk_customer_opening_balance_customer_id")
+  registeredBy       AppUser                     @relation(fields: [registeredByUserId], references: [id], onDelete: Restrict, map: "fk_customer_opening_balance_registered_by_user_id")
+  paymentAllocations CustomerPaymentAllocation[]
+
+  @@map("customer_opening_balance")
+}
+
+// ============================================================
+//  Service orders
+// ============================================================
+
+/// Shares its primary key with SaleInvoice (1:1 subtype).
+model ServiceOrder {
+  id                    Int      @id(map: "pk_service_order")
+  motorcycleId          Int      @map("motorcycle_id")
+  mechanicStaffId       Int?     @map("mechanic_staff_id")
+  requestedWork         String   @map("requested_work") @db.VarChar(500)
+  diagnosis             String?  @db.VarChar(500)
+  cancellationFee       Decimal? @map("cancellation_fee") @db.Decimal(12, 2)
+  appliedCommissionRate Decimal? @map("applied_commission_rate") @db.Decimal(5, 4)
+  staffPayoutId         Int?     @map("staff_payout_id")
+
+  saleInvoice               SaleInvoice                @relation(fields: [id], references: [id], onDelete: Restrict, map: "fk_service_order_id")
+  motorcycle                Motorcycle                 @relation(fields: [motorcycleId], references: [id], onDelete: Restrict, map: "fk_service_order_motorcycle_id")
+  mechanic                  Staff?                     @relation(fields: [mechanicStaffId], references: [id], onDelete: Restrict, map: "fk_service_order_mechanic_staff_id")
+  // Composite FK: commission is paid in a payout of the same mechanic.
+  staffPayout               StaffPayout?               @relation(fields: [staffPayoutId, mechanicStaffId], references: [id, staffId], onDelete: Restrict, map: "fk_service_order_staff_payout_id_mechanic_staff_id")
+  statusChanges             ServiceOrderStatusChange[]
+  additionalFaults          AdditionalFault[]
+  warrantyClaims            WarrantyClaim[]            @relation("WarrantyClaimOriginalServiceOrder")
+  warrantyClaimAsNewService WarrantyClaim?             @relation("WarrantyClaimNewServiceOrder")
+
+  @@map("service_order")
+}
+
+model ServiceOrderStatusChange {
+  id                 Int      @id(map: "pk_service_order_status_change") @default(autoincrement())
+  serviceOrderId     Int      @map("service_order_id")
+  changedAt          DateTime @default(dbgenerated("clock_timestamp()")) @map("changed_at") @db.Timestamp(6)
+  status             String   @db.VarChar(20)
+  notes              String?  @db.VarChar(200)
+  registeredByUserId Int      @map("registered_by_user_id")
+
+  serviceOrder ServiceOrder @relation(fields: [serviceOrderId], references: [id], onDelete: Restrict, map: "fk_service_order_status_change_service_order_id")
+  registeredBy AppUser      @relation(fields: [registeredByUserId], references: [id], onDelete: Restrict, map: "fk_service_order_status_change_registered_by_user_id")
+
+  @@unique([serviceOrderId, changedAt], map: "uq_service_order_status_change_service_order_id_changed_at")
+  @@map("service_order_status_change")
+}
+
+model AdditionalFault {
+  id             Int      @id(map: "pk_additional_fault") @default(autoincrement())
+  serviceOrderId Int      @map("service_order_id")
+  faultNo        Int      @map("fault_no") @db.SmallInt
+  reportedOn     DateTime @default(dbgenerated("CURRENT_DATE")) @map("reported_on") @db.Date
+  description    String   @db.VarChar(500)
+  proposedPrice  Decimal? @map("proposed_price") @db.Decimal(12, 2)
+  decision       String   @default("PENDIENTE") @db.VarChar(20) // 'PENDIENTE' | 'ACEPTADA' | 'RECHAZADA'
+
+  serviceOrder     ServiceOrder      @relation(fields: [serviceOrderId], references: [id], onDelete: Restrict, map: "fk_additional_fault_service_order_id")
+  saleInvoiceLines SaleInvoiceLine[]
+
+  @@unique([serviceOrderId, faultNo], map: "uq_additional_fault_service_order_id_fault_no")
+  @@unique([id, serviceOrderId], map: "uq_additional_fault_id_service_order_id")
+  @@map("additional_fault")
+}
+
+model WarrantyClaim {
+  id                     Int      @id(map: "pk_warranty_claim") @default(autoincrement())
+  originalServiceOrderId Int      @map("original_service_order_id")
+  claimedOn              DateTime @default(dbgenerated("CURRENT_DATE")) @map("claimed_on") @db.Date
+  description            String   @db.VarChar(500)
+  outcome                String   @db.VarChar(20) // 'CUBIERTO' | 'FALLA_DISTINTA' | 'FUERA_DE_PLAZO' | 'REEMBOLSO'
+  partPaidBy             String?  @map("part_paid_by") @db.VarChar(20) // 'TIENDA' | 'CLIENTE'
+  refundAmount           Decimal? @map("refund_amount") @db.Decimal(12, 2)
+  attendedByUserId       Int      @map("attended_by_user_id")
+  newServiceOrderId      Int?     @unique(map: "uq_warranty_claim_new_service_order_id") @map("new_service_order_id")
+  partSaleInvoiceId      Int?     @unique(map: "uq_warranty_claim_part_sale_invoice_id") @map("part_sale_invoice_id")
+
+  originalServiceOrder ServiceOrder        @relation("WarrantyClaimOriginalServiceOrder", fields: [originalServiceOrderId], references: [id], onDelete: Restrict, map: "fk_warranty_claim_original_service_order_id")
+  newServiceOrder      ServiceOrder?       @relation("WarrantyClaimNewServiceOrder", fields: [newServiceOrderId], references: [id], onDelete: Restrict, map: "fk_warranty_claim_new_service_order_id")
+  partSaleInvoice      SaleInvoice?        @relation(fields: [partSaleInvoiceId], references: [id], onDelete: Restrict, map: "fk_warranty_claim_part_sale_invoice_id")
+  attendedBy           AppUser             @relation(fields: [attendedByUserId], references: [id], onDelete: Restrict, map: "fk_warranty_claim_attended_by_user_id")
+  inventoryMovements   InventoryMovement[]
+
+  @@map("warranty_claim")
+}
+
+// ============================================================
+//  Customer payments
+// ============================================================
+
+model CustomerPayment {
+  id               Int      @id(map: "pk_customer_payment") @default(autoincrement())
+  paidAt           DateTime @default(dbgenerated("LOCALTIMESTAMP(0)")) @map("paid_at") @db.Timestamp(0)
+  amount           Decimal  @db.Decimal(12, 2)
+  currency         String   @default("NIO") @db.VarChar(3) // 'NIO' | 'USD'
+  exchangeRate     Decimal? @map("exchange_rate") @db.Decimal(10, 4)
+  paymentMethodId  Int      @map("payment_method_id")
+  receivedByUserId Int      @map("received_by_user_id")
+
+  paymentMethod PaymentMethod               @relation(fields: [paymentMethodId], references: [id], onDelete: Restrict, map: "fk_customer_payment_payment_method_id")
+  receivedBy    AppUser                     @relation(fields: [receivedByUserId], references: [id], onDelete: Restrict, map: "fk_customer_payment_received_by_user_id")
+  allocations   CustomerPaymentAllocation[]
+
+  @@map("customer_payment")
+}
+
+/// A payment pays down a SaleInvoice OR a CustomerOpeningBalance (exactly one).
+model CustomerPaymentAllocation {
+  id                       Int     @id(map: "pk_customer_payment_allocation") @default(autoincrement())
+  customerPaymentId        Int     @map("customer_payment_id")
+  saleInvoiceId            Int?    @map("sale_invoice_id")
+  customerOpeningBalanceId Int?    @map("customer_opening_balance_id")
+  amount                   Decimal @db.Decimal(12, 2)
+
+  customerPayment        CustomerPayment         @relation(fields: [customerPaymentId], references: [id], onDelete: Restrict, map: "fk_customer_payment_allocation_customer_payment_id")
+  saleInvoice            SaleInvoice?            @relation(fields: [saleInvoiceId], references: [id], onDelete: Restrict, map: "fk_customer_payment_allocation_sale_invoice_id")
+  customerOpeningBalance CustomerOpeningBalance? @relation(fields: [customerOpeningBalanceId], references: [id], onDelete: Restrict, map: "fk_customer_payment_allocation_customer_opening_balance_id")
+
+  @@unique([customerPaymentId, saleInvoiceId], map: "uq_customer_payment_allocation_payment_invoice")
+  @@unique([customerPaymentId, customerOpeningBalanceId], map: "uq_customer_payment_allocation_payment_opening_balance")
+  @@map("customer_payment_allocation")
+}
+
+// ============================================================
+//  Purchasing
+// ============================================================
+
+model Supplier {
+  id             Int       @id(map: "pk_supplier") @default(autoincrement())
+  name           String    @db.VarChar(100)
+  phone          String?   @db.VarChar(20)
+  contactPerson  String?   @map("contact_person") @db.VarChar(100)
+  givesWarranty  Boolean?  @map("gives_warranty")
+  openingBalance Decimal?  @map("opening_balance") @db.Decimal(12, 2)
+  openingDate    DateTime? @map("opening_date") @db.Date
+
+  purchaseInvoices PurchaseInvoice[]
+  payments         SupplierPayment[]
+
+  @@map("supplier")
+}
+
+model PurchaseInvoice {
+  id               Int       @id(map: "pk_purchase_invoice") @default(autoincrement())
+  supplierId       Int       @map("supplier_id")
+  invoiceNumber    String    @map("invoice_number") @db.VarChar(30)
+  purchaseDate     DateTime  @default(dbgenerated("CURRENT_DATE")) @map("purchase_date") @db.Date
+  paymentTerms     String    @map("payment_terms") @db.VarChar(20) // 'CONTADO' | 'CREDITO'
+  dueDate          DateTime? @map("due_date") @db.Date
+  discountAmount   Decimal   @default(0) @map("discount_amount") @db.Decimal(12, 2)
+  receivedByUserId Int       @map("received_by_user_id")
+
+  supplier   Supplier              @relation(fields: [supplierId], references: [id], onDelete: Restrict, map: "fk_purchase_invoice_supplier_id")
+  receivedBy AppUser               @relation(fields: [receivedByUserId], references: [id], onDelete: Restrict, map: "fk_purchase_invoice_received_by_user_id")
+  lines      PurchaseInvoiceLine[]
+  returns    SupplierReturn[]
+  payments   SupplierPayment[]
+
+  @@unique([supplierId, invoiceNumber], map: "uq_purchase_invoice_supplier_id_invoice_number")
+  @@unique([id, supplierId], map: "uq_purchase_invoice_id_supplier_id")
+  @@map("purchase_invoice")
+}
+
+model PurchaseInvoiceLine {
+  id                Int     @id(map: "pk_purchase_invoice_line") @default(autoincrement())
+  purchaseInvoiceId Int     @map("purchase_invoice_id")
+  lineNo            Int     @map("line_no") @db.SmallInt
+  productId         Int     @map("product_id")
+  quantity          Int
+  unitCost          Decimal @map("unit_cost") @db.Decimal(12, 2)
+
+  purchaseInvoice    PurchaseInvoice      @relation(fields: [purchaseInvoiceId], references: [id], onDelete: Restrict, map: "fk_purchase_invoice_line_purchase_invoice_id")
+  product            Product              @relation(fields: [productId], references: [id], onDelete: Restrict, map: "fk_purchase_invoice_line_product_id")
+  returnLines        SupplierReturnLine[]
+  inventoryMovements InventoryMovement[]
+
+  @@unique([purchaseInvoiceId, lineNo], map: "uq_purchase_invoice_line_purchase_invoice_id_line_no")
+  @@unique([id, productId], map: "uq_purchase_invoice_line_id_product_id")
+  @@unique([id, purchaseInvoiceId, productId], map: "uq_purchase_invoice_line_id_invoice_id_product_id")
+  @@map("purchase_invoice_line")
+}
+
+/// The supplier is not stored here: it is purchaseInvoice.supplierId.
+model SupplierReturn {
+  id                 Int      @id(map: "pk_supplier_return") @default(autoincrement())
+  purchaseInvoiceId  Int      @map("purchase_invoice_id")
+  returnedOn         DateTime @default(dbgenerated("CURRENT_DATE")) @map("returned_on") @db.Date
+  returnReasonId     Int      @map("return_reason_id")
+  resolution         String   @db.VarChar(20) // 'REPOSICION' | 'DINERO' | 'DESCUENTO'
+  registeredByUserId Int      @map("registered_by_user_id")
+
+  purchaseInvoice PurchaseInvoice      @relation(fields: [purchaseInvoiceId], references: [id], onDelete: Restrict, map: "fk_supplier_return_purchase_invoice_id")
+  returnReason    ReturnReason         @relation(fields: [returnReasonId], references: [id], onDelete: Restrict, map: "fk_supplier_return_return_reason_id")
+  registeredBy    AppUser              @relation(fields: [registeredByUserId], references: [id], onDelete: Restrict, map: "fk_supplier_return_registered_by_user_id")
+  lines           SupplierReturnLine[]
+
+  @@unique([id, purchaseInvoiceId], map: "uq_supplier_return_id_purchase_invoice_id")
+  @@map("supplier_return")
+}
+
+model SupplierReturnLine {
+  id                    Int @id(map: "pk_supplier_return_line") @default(autoincrement())
+  supplierReturnId      Int @map("supplier_return_id")
+  purchaseInvoiceId     Int @map("purchase_invoice_id")
+  lineNo                Int @map("line_no") @db.SmallInt
+  purchaseInvoiceLineId Int @map("purchase_invoice_line_id")
+  productId             Int @map("product_id")
+  quantity              Int
+
+  supplierReturn      SupplierReturn      @relation(fields: [supplierReturnId, purchaseInvoiceId], references: [id, purchaseInvoiceId], onDelete: Restrict, map: "fk_supplier_return_line_supplier_return")
+  purchaseInvoiceLine PurchaseInvoiceLine @relation(fields: [purchaseInvoiceLineId, purchaseInvoiceId, productId], references: [id, purchaseInvoiceId, productId], onDelete: Restrict, map: "fk_supplier_return_line_purchase_invoice_line")
+  inventoryMovements  InventoryMovement[]
+
+  @@unique([supplierReturnId, lineNo], map: "uq_supplier_return_line_supplier_return_id_line_no")
+  @@unique([supplierReturnId, purchaseInvoiceLineId], map: "uq_supplier_return_line_return_id_invoice_line_id")
+  @@unique([id, productId], map: "uq_supplier_return_line_id_product_id")
+  @@map("supplier_return_line")
+}
+
+model SupplierPayment {
+  id                Int      @id(map: "pk_supplier_payment") @default(autoincrement())
+  supplierId        Int      @map("supplier_id")
+  purchaseInvoiceId Int?     @map("purchase_invoice_id") // NULL = pays the supplier's opening balance
+  paidOn            DateTime @default(dbgenerated("CURRENT_DATE")) @map("paid_on") @db.Date
+  amount            Decimal  @db.Decimal(12, 2)
+  currency          String   @default("NIO") @db.VarChar(3) // 'NIO' | 'USD'
+  exchangeRate      Decimal? @map("exchange_rate") @db.Decimal(10, 4)
+
+  supplier        Supplier         @relation(fields: [supplierId], references: [id], onDelete: Restrict, map: "fk_supplier_payment_supplier_id")
+  purchaseInvoice PurchaseInvoice? @relation(fields: [purchaseInvoiceId, supplierId], references: [id, supplierId], onDelete: Restrict, map: "fk_supplier_payment_purchase_invoice_id_supplier_id")
+
+  @@map("supplier_payment")
+}
+
+// ============================================================
+//  Inventory ledger
+// ============================================================
+
+model InventoryMovement {
+  id                    Int      @id(map: "pk_inventory_movement") @default(autoincrement())
+  productId             Int      @map("product_id")
+  movedAt               DateTime @default(dbgenerated("LOCALTIMESTAMP(0)")) @map("moved_at") @db.Timestamp(0)
+  movementType          String   @map("movement_type") @db.VarChar(25)
+  quantity              Int
+  unitCost              Decimal  @map("unit_cost") @db.Decimal(12, 2)
+  notes                 String?  @db.VarChar(200)
+  registeredByUserId    Int      @map("registered_by_user_id")
+  saleInvoiceLineId     Int?     @unique(map: "uq_inventory_movement_sale_invoice_line_id") @map("sale_invoice_line_id")
+  customerReturnLineId  Int?     @unique(map: "uq_inventory_movement_customer_return_line_id") @map("customer_return_line_id")
+  purchaseInvoiceLineId Int?     @unique(map: "uq_inventory_movement_purchase_invoice_line_id") @map("purchase_invoice_line_id")
+  supplierReturnLineId  Int?     @unique(map: "uq_inventory_movement_supplier_return_line_id") @map("supplier_return_line_id")
+  warrantyClaimId       Int?     @map("warranty_claim_id")
+
+  product             Product              @relation(fields: [productId], references: [id], onDelete: Restrict, map: "fk_inventory_movement_product_id")
+  registeredBy        AppUser              @relation(fields: [registeredByUserId], references: [id], onDelete: Restrict, map: "fk_inventory_movement_registered_by_user_id")
+  warrantyClaim       WarrantyClaim?       @relation(fields: [warrantyClaimId], references: [id], onDelete: Restrict, map: "fk_inventory_movement_warranty_claim_id")
+  // Composite FKs (line id, product id): the movement's product must match the source line's product.
+  saleInvoiceLine     SaleInvoiceLine?     @relation(fields: [saleInvoiceLineId, productId], references: [id, productId], onDelete: Restrict, map: "fk_inventory_movement_sale_invoice_line")
+  customerReturnLine  CustomerReturnLine?  @relation(fields: [customerReturnLineId, productId], references: [id, productId], onDelete: Restrict, map: "fk_inventory_movement_customer_return_line")
+  purchaseInvoiceLine PurchaseInvoiceLine? @relation(fields: [purchaseInvoiceLineId, productId], references: [id, productId], onDelete: Restrict, map: "fk_inventory_movement_purchase_invoice_line")
+  supplierReturnLine  SupplierReturnLine?  @relation(fields: [supplierReturnLineId, productId], references: [id, productId], onDelete: Restrict, map: "fk_inventory_movement_supplier_return_line")
+
+  @@map("inventory_movement")
+}
