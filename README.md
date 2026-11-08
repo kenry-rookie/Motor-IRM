@@ -33,17 +33,46 @@ El propósito de Motor IRM es **transformar un negocio administrado mediante exp
 
 - PostgreSQL — Sistema gestor de base de datos.
 - Aplicación **web** (asignado por el docente).
-
-### Probables
-
-- React para la interfaz.
+- **T3 Stack** — Next.js (App Router) + React + TypeScript + Tailwind CSS.
+- **tRPC** — contrato tipado de extremo a extremo entre cliente y API (sin escribir tipos a mano).
+- **Prisma ORM** — acceso a datos y migraciones.
 
 ### Por definir
 
-- Backend / lenguaje de programación.
-- Frontend / interfaz de usuario.
-- Arquitectura de la aplicación.
-- ORM o tecnología de acceso a datos.
+- Autenticación (las tablas `app_user`, `role`, `permission` ya existen).
 - Herramientas de despliegue.
 - Infraestructura y alojamiento.
-- Otras tecnologías de soporte.
+
+---
+## Desarrollo
+
+```bash
+npm install                 # también genera el cliente de Prisma
+cp .env.example .env        # DATABASE_URL apunta a una BD local de prueba
+./start-database.sh         # opcional: levanta Postgres en Docker/Podman con ese URL
+npm run db:migrate          # aplica prisma/migrations a la BD
+npm run dev                 # http://localhost:3000
+```
+
+> **No usar `prisma db push`.** Los CHECK y los índices únicos sin distinción de
+> mayúsculas (`lower(name)`) solo existen en `prisma/migrations/0_init/migration.sql`;
+> `db push` crea las tablas sin ellos. Cambios al esquema: editar
+> `prisma/schema.prisma` y correr `npx prisma migrate dev --name <cambio>`.
+
+### Estructura
+
+```
+prisma/
+  schema.prisma                 # modelo de datos (39 tablas)
+  migrations/0_init/            # SQL inicial + CHECKs + índices lower()/upper()
+src/
+  app/                          # páginas (Next.js App Router)
+  server/
+    db.ts                       # cliente de Prisma
+    api/
+      root.ts                   # router principal: un router por área
+      routers/                  # customer, inventory, sales, service, purchasing, staff
+  trpc/                         # cliente tRPC (React y llamadas desde el servidor)
+  lib/transformer.ts            # SuperJSON + Decimal (montos exactos, nunca float)
+Documentation/                  # análisis y diseño
+```
