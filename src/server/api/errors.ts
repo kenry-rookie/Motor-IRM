@@ -77,6 +77,16 @@ export function mapDatabaseError(error: unknown): TRPCError | null {
   const err = error as DbLikeError;
   if (!err.name?.startsWith("PrismaClient")) return null;
 
+  // The database is not reachable (container stopped, Docker closed…).
+  const initCode = (error as { errorCode?: string }).errorCode;
+  if (err.name === "PrismaClientInitializationError" || initCode === "P1001" || err.code === "P1001") {
+    return new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "No se puede conectar con la base de datos. Abra Docker Desktop y ejecute «npm run db:up».",
+      cause: error,
+    });
+  }
+
   if (err.code === "P2025") {
     return new TRPCError({ code: "NOT_FOUND", message: "El registro no existe.", cause: error });
   }
