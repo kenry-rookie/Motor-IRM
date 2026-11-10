@@ -1,6 +1,190 @@
 @import "tailwindcss";
 
-@theme {
-  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif,
-    "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+/*
+ * Motor IRM — tema de taller: grafito + rojo.
+ *
+ * - `neutral` se redefine como una escala de grafito (gris acero, apenas fría),
+ *   así todas las pantallas que ya usan neutral-xxx cambian sin tocarlas.
+ * - `brand` es la escala roja propia del sistema (usar en código nuevo).
+ * - `amber` queda como alias de `brand`: las pantallas que todavía dicen
+ *   amber-xxx (enlaces, badges, tablero del taller) pasan a rojo solas.
+ */
+@theme static {
+  --font-sans: var(--font-plex), ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-display: var(--font-barlow), "Arial Narrow", ui-sans-serif, system-ui, sans-serif;
+
+  /* Grafito */
+  --color-neutral-50: #f5f6f7;
+  --color-neutral-100: #e9ebed;
+  --color-neutral-200: #d1d5d9;
+  --color-neutral-300: #b0b6bd;
+  --color-neutral-400: #959ca5;
+  --color-neutral-500: #7b838d;
+  --color-neutral-600: #565d66;
+  --color-neutral-700: #3a4047;
+  --color-neutral-800: #272c32;
+  --color-neutral-900: #1b1f24;
+  --color-neutral-950: #101318;
+
+  /* Rojo de la marca */
+  --color-brand-50: #fff1f1;
+  --color-brand-100: #ffdede;
+  --color-brand-200: #ffc2c3;
+  --color-brand-300: #ff9799;
+  --color-brand-400: #f9595f;
+  --color-brand-500: #e8343c;
+  --color-brand-600: #c8202a;
+  --color-brand-700: #a31822;
+  --color-brand-800: #82161e;
+  --color-brand-900: #66161c;
+  --color-brand-950: #380a0e;
+
+  /* Alias heredado: amber → rojo de la marca */
+  --color-amber-50: #fff1f1;
+  --color-amber-100: #ffdede;
+  --color-amber-200: #ffc2c3;
+  --color-amber-300: #ff9799;
+  --color-amber-400: #f9595f;
+  --color-amber-500: #e8343c;
+  --color-amber-600: #c8202a;
+  --color-amber-700: #a31822;
+  --color-amber-800: #82161e;
+  --color-amber-900: #66161c;
+  --color-amber-950: #380a0e;
+}
+
+@layer base {
+  html {
+    /* Controles nativos (select, fecha, scrollbars) en oscuro */
+    color-scheme: dark;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-neutral-700) transparent;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-brand-400);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--color-brand-700);
+    color: #fff;
+  }
+
+  /* Montos y cantidades alineados en columna */
+  th,
+  td {
+    font-variant-numeric: tabular-nums;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  summary {
+    cursor: pointer;
+  }
+}
+
+/* Diálogos: entrada corta, solo opacidad y transform */
+dialog[open] {
+  animation: irm-dialog-in 160ms ease-out;
+}
+dialog[open]::backdrop {
+  animation: irm-fade-in 160ms ease-out;
+}
+@keyframes irm-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes irm-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Barra de progreso fina para la carga entre pantallas (loading.tsx) */
+.irm-progress {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 60;
+  height: 2px;
+  background: var(--color-brand-500);
+  transform-origin: left;
+  animation: irm-progress 1.1s ease-in-out infinite;
+}
+@keyframes irm-progress {
+  0% {
+    transform: scaleX(0.04);
+  }
+  60% {
+    transform: scaleX(0.75);
+  }
+  100% {
+    transform: scaleX(0.96);
+    opacity: 0.4;
+  }
+}
+
+/* Fondo de la pantalla de ingreso: rayado diagonal muy tenue, estático */
+.bg-pit {
+  background-color: var(--color-neutral-950);
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 14px,
+    rgb(255 255 255 / 0.018) 14px 15px
+  );
+}
+
+/* Respeta a quien pide menos movimiento */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ───────────── Modo claro ─────────────
+ * Invierte la escala grafito para que los utilitarios `neutral-*`
+ * sigan siendo correctos semánticamente (fondo claro, texto oscuro).
+ * La marca (brand) y los alias amber se mantienen idénticos.
+ */
+:root.light {
+  color-scheme: light;
+
+  --color-neutral-50:  #101318;
+  --color-neutral-100: #1b1f24;
+  --color-neutral-200: #272c32;
+  --color-neutral-300: #3a4047;
+  --color-neutral-400: #565d66;
+  --color-neutral-500: #7b838d;
+  --color-neutral-600: #959ca5;
+  --color-neutral-700: #b0b6bd;
+  --color-neutral-800: #d1d5d9;
+  --color-neutral-900: #e9ebed;
+  --color-neutral-950: #f5f6f7;
+}
+
+/* Rayado del login: misma textura, oscura sobre fondo claro */
+:root.light .bg-pit {
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 14px,
+    rgb(0 0 0 / 0.025) 14px 15px
+  );
 }

@@ -1,3 +1,4 @@
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { type ReactNode } from "react";
 
@@ -10,5 +11,15 @@ export const dynamic = "force-dynamic";
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const me = await api.auth.me();
   if (!me) redirect("/login");
-  return <Shell me={me}>{children}</Shell>;
+
+  // El menú lateral recuerda si estaba contraído (cookie `irm_nav=0`).
+  // Se lee aquí, en el servidor, para que la página cargue ya con el ancho correcto.
+  const jar = await cookies();
+  const expanded = jar.get("irm_nav")?.value !== "0";
+
+  return (
+    <Shell me={me} defaultExpanded={expanded}>
+      {children}
+    </Shell>
+  );
 }
