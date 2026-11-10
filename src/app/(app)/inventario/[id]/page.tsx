@@ -93,7 +93,7 @@ export default function ProductPage() {
               <tr key={m.id}>
                 <td>{formatDateTime(m.movedAt)}</td>
                 <td>{LABELS.movementType[m.movementType as keyof typeof LABELS.movementType] ?? m.movementType}</td>
-                <td className={IN.has(m.movementType) ? "text-emerald-300" : "text-red-300"}>
+                <td className={IN.has(m.movementType) ? "text-ok-fg" : "text-bad-fg"}>
                   {IN.has(m.movementType) ? "+" : "−"}
                   {m.quantity}
                 </td>

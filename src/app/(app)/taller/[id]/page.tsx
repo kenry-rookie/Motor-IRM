@@ -1,17 +1,16 @@
 "use client";
 
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { ProductSearch } from "~/app/_components/pickers";
+import { queueServiceBill } from "~/app/(app)/ventas/tabs-store";
 import { cleanTerms, emptyTerms, type Terms, TermsForm } from "~/app/_components/terms-form";
 import { Alert, Badge, Button, Card, Dialog, Field, Input, PageTitle, Select, Table, Textarea } from "~/app/_components/ui";
 import { errorMessage } from "~/lib/errors";
-import { dec, formatDateTime, money } from "~/lib/format";
+import { formatDateTime, money } from "~/lib/format";
 import { LABELS, type ServiceOrderStatus } from "~/server/domain/constants";
-import { api, type RouterInputs, type RouterOutputs } from "~/trpc/react";
+import { api, type RouterInputs } from "~/trpc/react";
 
-type Product = RouterOutputs["inventory"]["listProducts"]["items"][number];
 type MovableStatus = RouterInputs["service"]["changeStatus"]["status"];
 const MOVABLE: MovableStatus[] = ["EN_DIAGNOSTICO", "EN_PROCESO", "ESPERA_REPUESTO", "ESPERA_CLIENTE", "TERMINADA", "EN_PRUEBA"];
 
@@ -31,7 +30,7 @@ export default function OrderPage() {
   const decide = api.service.decideFault.useMutation({ onSuccess: refresh });
   const [diagnosis, setDiagnosis] = useState<string | null>(null);
   const [fault, setFault] = useState({ description: "", price: "" });
-  const [closing, setClosing] = useState(false);
+  const router = useRouter();
   const [cancelling, setCancelling] = useState(false);
 
   const o = order.data;
@@ -51,7 +50,7 @@ export default function OrderPage() {
           <div className="flex gap-2">
             <Badge tone={open ? "amber" : o.status === "ENTREGADA" ? "green" : "red"}>{LABELS.serviceStatus[o.status]}</Badge>
             {o.saleInvoice && (
-              <a className="text-sm text-amber-400" href={`/ventas/${o.saleInvoice.id}`}>
+              <a className="text-sm text-brand-600" href={`/ventas/${o.saleInvoice.id}`}>
                 Factura #{o.saleInvoice.id} →
               </a>
             )}
@@ -104,7 +103,20 @@ export default function OrderPage() {
           )}
           {open && perms.includes("taller.facturar") && (
             <div className="mt-6 flex gap-2">
-              <Button onClick={() => setClosing(true)}>Cerrar y cobrar</Button>
+              <Button
+                onClick={() => {
+                  if (!me.data) return;
+                  queueServiceBill(
+                    me.data.username,
+                    o.id,
+                    `${o.motorcycle.model.brand.name} ${o.motorcycle.model.name}${o.motorcycle.plate ? ` · ${o.motorcycle.plate}` : ""}`,
+                    { id: o.motorcycle.customer.id, name: o.motorcycle.customer.name, phone: o.motorcycle.customer.phone },
+                  );
+                  router.push("/ventas");
+                }}
+              >
+                Cobrar en caja
+              </Button>
               <Button variant="danger" onClick={() => setCancelling(true)}>
                 Cancelar orden
               </Button>
@@ -162,132 +174,10 @@ export default function OrderPage() {
           </ul>
         </Card>
       </div>
-      <Dialog open={closing} onClose={() => setClosing(false)} title={`Cerrar y cobrar orden #${o.id}`}>
-        <CloseForm
-          orderId={o.id}
-          acceptedFaults={o.additionalFaults.filter((f) => f.decision === "ACEPTADA").map((f) => ({ label: f.description, price: f.proposedPrice?.toString() ?? "0" }))}
-          onDone={() => {
-            setClosing(false);
-            refresh();
-          }}
-        />
-      </Dialog>
       <Dialog open={cancelling} onClose={() => setCancelling(false)} title={`Cancelar orden #${o.id}`}>
         <CancelForm orderId={o.id} onDone={() => { setCancelling(false); refresh(); }} />
       </Dialog>
     </>
-  );
-}
-
-function CloseForm({ orderId, acceptedFaults, onDone }: { orderId: number; acceptedFaults: { label: string; price: string }[]; onDone: () => void }) {
-  const me = api.auth.me.useQuery();
-  const types = api.admin.serviceTypes.useQuery();
-  const [labor, setLabor] = useState<{ serviceTypeId?: number; description: string; price: string }[]>([]);
-  const [parts, setParts] = useState<{ product: Product; quantity: number }[]>([]);
-  const [external, setExternal] = useState<{ description: string; price: string }[]>([]);
-  const [terms, setTerms] = useState<Terms>(emptyTerms);
-  const close = api.service.close.useMutation({ onSuccess: onDone });
-  const perms = me.data?.permissions ?? [];
-  const total = [
-    ...labor.map((l) => dec(l.price || 0)),
-    ...acceptedFaults.map((f) => dec(f.price)),
-    ...parts.map((p) => dec(p.product.listPrice).times(p.quantity)),
-    ...external.map((e) => dec(e.price || 0)),
-  ].reduce((a, b) => a.plus(b), dec(0));
-
-  return (
-    <div className="space-y-4">
-      <section>
-        <h3 className="mb-2 text-sm font-semibold">Mano de obra</h3>
-        {labor.map((l, i) => (
-          <div key={i} className="mb-2 grid grid-cols-[1fr_110px_auto] gap-2">
-            <Input value={l.description} onChange={(e) => setLabor(labor.map((x, j) => (j === i ? { ...x, description: e.target.value } : x)))} />
-            <Input inputMode="decimal" value={l.price} onChange={(e) => setLabor(labor.map((x, j) => (j === i ? { ...x, price: e.target.value } : x)))} />
-            <Button variant="ghost" onClick={() => setLabor(labor.filter((_, j) => j !== i))}>
-              ✕
-            </Button>
-          </div>
-        ))}
-        <Select
-          value=""
-          onChange={(e) => {
-            const t = types.data?.find((x) => x.id === Number(e.target.value));
-            setLabor([...labor, { serviceTypeId: t?.id, description: t?.name ?? "Mano de obra", price: t?.referencePrice?.toString() ?? "" }]);
-          }}
-        >
-          <option value="">+ Agregar servicio…</option>
-          {types.data
-            ?.filter((t) => t.active)
-            .map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name} {t.referencePrice ? `(${money(t.referencePrice)})` : ""}
-              </option>
-            ))}
-          <option value="0">Otro (escribir)</option>
-        </Select>
-        {acceptedFaults.length > 0 && (
-          <p className="mt-2 text-xs text-neutral-400">
-            Se cobran también las fallas aceptadas: {acceptedFaults.map((f) => `${f.label} (${money(f.price)})`).join(", ")}
-          </p>
-        )}
-      </section>
-      <section>
-        <h3 className="mb-2 text-sm font-semibold">Repuestos usados</h3>
-        <ProductSearch placeholder="Buscar repuesto…" onPick={(p) => setParts([...parts, { product: p, quantity: 1 }])} />
-        {parts.map((p, i) => (
-          <div key={i} className="mt-2 flex items-center gap-2 text-sm">
-            <span className="flex-1">{p.product.name}</span>
-            <Input type="number" min={1} className="w-20" value={p.quantity} onChange={(e) => setParts(parts.map((x, j) => (j === i ? { ...x, quantity: Math.max(1, Number(e.target.value) || 1) } : x)))} />
-            <span className="w-24 text-right">{money(dec(p.product.listPrice).times(p.quantity))}</span>
-            <Button variant="ghost" onClick={() => setParts(parts.filter((_, j) => j !== i))}>
-              ✕
-            </Button>
-          </div>
-        ))}
-      </section>
-      <section>
-        <h3 className="mb-2 text-sm font-semibold">Cargos externos (torno, soldadura…)</h3>
-        {external.map((x, i) => (
-          <div key={i} className="mb-2 grid grid-cols-[1fr_110px_auto] gap-2">
-            <Input value={x.description} onChange={(e) => setExternal(external.map((y, j) => (j === i ? { ...y, description: e.target.value } : y)))} />
-            <Input inputMode="decimal" value={x.price} onChange={(e) => setExternal(external.map((y, j) => (j === i ? { ...y, price: e.target.value } : y)))} />
-            <Button variant="ghost" onClick={() => setExternal(external.filter((_, j) => j !== i))}>
-              ✕
-            </Button>
-          </div>
-        ))}
-        <Button variant="secondary" onClick={() => setExternal([...external, { description: "", price: "" }])}>
-          + Cargo externo
-        </Button>
-      </section>
-      <TermsForm
-        terms={terms}
-        onChange={setTerms}
-        customer={null}
-        lockCustomer
-        needsAuthorization={terms.paymentTerms === "CREDITO" && !perms.includes("ventas.autorizar_credito")}
-      />
-      <div className="flex items-baseline justify-between border-t border-neutral-800 pt-3">
-        <span className="text-neutral-400">Total estimado</span>
-        <span className="text-2xl font-bold">{money(total)}</span>
-      </div>
-      <Alert>{close.error && errorMessage(close.error)}</Alert>
-      <Button
-        className="w-full"
-        disabled={close.isPending}
-        onClick={() =>
-          close.mutate({
-            serviceOrderId: orderId,
-            terms: cleanTerms(terms),
-            labor: labor.filter((l) => l.description && l.price).map((l) => ({ serviceTypeId: l.serviceTypeId, description: l.description, price: l.price })),
-            parts: parts.map((p) => ({ productId: p.product.id, quantity: p.quantity })),
-            externalCharges: external.filter((x) => x.description && x.price),
-          })
-        }
-      >
-        Facturar y entregar
-      </Button>
-    </div>
   );
 }
 
@@ -304,7 +194,7 @@ function CancelForm({ orderId, onDone }: { orderId: number; onDone: () => void }
       <Field label="Cargo por cancelación (opcional, C$)">
         <Input inputMode="decimal" value={fee} onChange={(e) => setFee(e.target.value)} />
       </Field>
-      {fee && <TermsForm terms={terms} onChange={setTerms} customer={null} lockCustomer needsAuthorization={false} />}
+      {fee && <TermsForm terms={terms} onChange={setTerms} needsAuthorization={false} />}
       <Alert>{cancel.error && errorMessage(cancel.error)}</Alert>
       <Button
         variant="danger"

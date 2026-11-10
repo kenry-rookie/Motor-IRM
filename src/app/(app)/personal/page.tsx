@@ -46,7 +46,7 @@ export default function StaffPage() {
                 {p.orders.map((o) => (
                   <tr key={o.serviceOrderId}>
                     <td>
-                      <a className="hover:text-amber-300" href={`/taller/${o.serviceOrderId}`}>
+                      <a className="hover:text-brand-600" href={`/taller/${o.serviceOrderId}`}>
                         #{o.serviceOrderId}
                       </a>
                     </td>

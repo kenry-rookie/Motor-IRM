@@ -44,7 +44,7 @@ export default function CustomerPage() {
           {d.invoices.map((i) => (
             <tr key={i.id}>
               <td>
-                <Link className="hover:text-amber-300" href={`/ventas/${i.id}`}>
+                <Link className="hover:text-brand-600" href={`/ventas/${i.id}`}>
                   #{i.id}
                 </Link>
               </td>

@@ -100,3 +100,14 @@
 - **Migraciones nuevas:** `1_decisions_api_001_003` (DEC-037, DEC-038, DEC-039) y `2_app_session` (sesiones).
 - **Verificado en la Mac de Kenry:** migraciones aplicadas, seed cargado, 10/10 pruebas de integración.
 - **Siguen pendientes:** API-016 (reembolso), CLI-009, CLI-012 y CLI-015 (partes), CLI-014 (garantías), CLI-017 (dispositivos). Las preguntas abiertas (Q-xxx) pueden cambiar detalles de lo marcado como provisional.
+
+---
+## Registro 10-nov (Claude, a pedido de Kenry — reviewed: false)
+
+Pedido de Kenry: mejorar la UX/UI en general, tema blanco, varias facturas a la vez, búsqueda con sugerencias, recepción rápida y reportes con gráficas por periodo.
+
+- **Tema blanco por defecto** sobre el diseño de RZCXMMV (tipografías, menú). El modo oscuro queda opcional (botón luna).
+- **Caja con pestañas:** varias ventas y cobros de taller abiertos a la vez; cada pestaña guarda su carrito en el navegador. Atajos: F2 buscar, F8 nueva venta, F9 cobrar. El cierre de una orden del taller se cobra desde Caja («Cobrar en caja»).
+- **Búsqueda tolerante a errores** (migración `3_fuzzy_search`: `pg_trgm` + `unaccent`): productos por nombre, marca, categoría o código; clientes por nombre, teléfono, cédula o placa. Avisa «¿Quiso decir…?» cuando solo hay parecidos.
+- **Recepción en un paso:** cliente y moto nuevos se registran en el mismo formulario; marca y modelo se escriben y se crean si no existen.
+- **Resumen con gráficas:** periodo (hoy, 7 días, 30 días, mes, año, rango) y agrupación por día, semana o mes; comparación con el periodo anterior; productos más vendidos; caja de hoy, taller y poco stock.

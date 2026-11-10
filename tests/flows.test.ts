@@ -213,3 +213,65 @@ describe("compras (API-017)", () => {
     ).rejects.toThrow("Solo se deben C$ 2400.00");
   });
 });
+
+describe("búsqueda tolerante a errores (API-021 v2)", () => {
+  it("encuentra el producto aunque esté mal escrito y lo marca como sugerencia", async () => {
+    const r = await encargado.inventory.search({ q: "bugia" });
+    expect(r.items[0]?.name).toBe("Bujía NGK C7HSA");
+    expect(r.didYouMean).toBe("Bujía NGK C7HSA");
+  });
+  it("sin tildes y por pedazos también encuentra, y eso no es sugerencia", async () => {
+    const r = await encargado.inventory.search({ q: "pastillas freno" });
+    expect(r.items[0]?.name).toBe("Pastillas de freno delanteras");
+    const exact = await encargado.inventory.search({ q: "bujia" });
+    expect(exact.didYouMean).toBeNull();
+  });
+  it("el código de barras va primero", async () => {
+    const r = await encargado.inventory.search({ q: CADENA });
+    expect(r.items[0]?.barcode).toBe(CADENA);
+  });
+  it("clientes por nombre mal escrito, por placa sin guion o por teléfono", async () => {
+    expect((await encargado.customer.list({ search: "marai lopes" })).items[0]?.name).toBe("María López");
+    expect((await encargado.customer.list({ search: "654321" })).items[0]?.name).toBe("María López");
+    expect((await encargado.customer.list({ search: "8888-1111" })).items[0]?.name).toBe("Juan Pérez");
+  });
+});
+
+describe("recepción en un solo paso", () => {
+  it("registra cliente, marca, modelo, moto y orden juntos", async () => {
+    const order = await encargado.service.receive({
+      newMotorcycle: {
+        newCustomer: { name: "Pedro Gómez", phone: "8123-4567" },
+        brandName: "honda",
+        modelName: "XR 150",
+        color: "Blanca",
+        plate: "M 777-000",
+      },
+      requestedWork: "Cambio de aceite",
+    });
+    const o = await admin.service.get({ id: order.id });
+    expect(o.motorcycle.customer.name).toBe("Pedro Gómez");
+    expect(o.motorcycle.model.brand.name).toBe("honda");
+    expect(o.status).toBe("RECIBIDA");
+    // Second time: the existing brand is reused (case-insensitive) and a repeated plate is rejected.
+    await expect(
+      encargado.service.receive({
+        newMotorcycle: { customerId: o.motorcycle.customer.id, brandName: "HONDA", modelName: "xr 150", color: "Roja", plate: "m 777-000" },
+        requestedWork: "Revisión",
+      }),
+    ).rejects.toThrow("Ya existe una moto con esa placa");
+    expect(await db.motorcycleBrand.count({ where: { name: { equals: "honda", mode: "insensitive" } } })).toBe(1);
+  });
+});
+
+describe("reportes por periodo", () => {
+  it("agrupa por día y compara con el periodo anterior", async () => {
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Managua" }).format(new Date());
+    const r = await admin.reports.period({ from: today, to: today, granularity: "day" });
+    expect(r.series).toHaveLength(1);
+    expect(Number(r.current.sales)).toBeGreaterThan(0);
+    expect(r.topProducts.length).toBeGreaterThan(0);
+    const m = await admin.reports.period({ from: `${today.slice(0, 5)}01-01`, to: today, granularity: "month" });
+    expect(m.series.length).toBe(Number(today.slice(5, 7)));
+  });
+});

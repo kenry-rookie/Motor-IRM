@@ -2,34 +2,29 @@
 
 import { useEffect } from "react";
 
-import { CustomerPicker } from "~/app/_components/pickers";
-import { Field, Input, Select } from "~/app/_components/ui";
+import { type TermsDraft } from "~/app/(app)/ventas/tabs-store";
+import { Field, Input, Segmented, Select } from "~/app/_components/ui";
 import { addDaysISO, todayISO } from "~/lib/format";
-import { api, type RouterInputs, type RouterOutputs } from "~/trpc/react";
+import { api, type RouterInputs } from "~/trpc/react";
 
-export type Terms = RouterInputs["sales"]["create"]["terms"];
-type Customer = RouterOutputs["customer"]["list"]["items"][number];
-
+export type Terms = TermsDraft;
 export const emptyTerms = (): Terms => ({ paymentTerms: "CONTADO", payment: { paymentMethodId: 0, currency: "NIO" } });
 
 /**
- * Cash or credit, customer, payment method and — when the user lacks the
- * permission — the owner's username/password to authorize (credit/discount).
+ * How the customer pays: cash (method, currency) or credit (due date, interest).
+ * When the user lacks the permission, an owner types their user/password here.
  */
 export function TermsForm({
   terms,
   onChange,
-  customer,
-  onCustomer,
   needsAuthorization,
-  lockCustomer,
+  creditBlockedReason,
 }: {
   terms: Terms;
   onChange: (t: Terms) => void;
-  customer: Customer | null;
-  onCustomer?: (c: Customer | null) => void;
   needsAuthorization: boolean;
-  lockCustomer?: boolean;
+  /** e.g. "Elija un cliente para vender al crédito". */
+  creditBlockedReason?: string | null;
 }) {
   const methods = api.admin.catalog.useQuery({ kind: "paymentMethod" });
   const active = methods.data?.filter((m) => m.active) ?? [];
@@ -42,36 +37,26 @@ export function TermsForm({
 
   return (
     <div className="space-y-3">
-      <div className="flex gap-2">
-        {(["CONTADO", "CREDITO"] as const).map((t) => (
-          <button
-            key={t}
-            type="button"
-            onClick={() =>
-              onChange(
-                t === "CONTADO"
-                  ? { paymentTerms: "CONTADO", payment: { paymentMethodId: firstMethod ?? 0, currency: "NIO" }, authorizer: terms.authorizer }
-                  : { paymentTerms: "CREDITO", dueDate: addDaysISO(todayISO(), 30), monthlyInterest: "0", authorizer: terms.authorizer },
-              )
-            }
-            className={`flex-1 rounded-lg border px-3 py-2 text-sm ${
-              terms.paymentTerms === t ? "border-amber-500 bg-amber-500/10 text-amber-300" : "border-neutral-700 text-neutral-300"
-            }`}
-          >
-            {t === "CONTADO" ? "Contado" : "Crédito"}
-          </button>
-        ))}
-      </div>
-
-      {!lockCustomer && onCustomer && (
-        <Field label={terms.paymentTerms === "CREDITO" ? "Cliente (obligatorio)" : "Cliente (opcional)"}>
-          <CustomerPicker value={customer} onChange={onCustomer} />
-        </Field>
-      )}
+      <Segmented
+        label="Forma de pago"
+        className="w-full [&>button]:flex-1"
+        value={terms.paymentTerms}
+        onChange={(t) =>
+          onChange(
+            t === "CONTADO"
+              ? { paymentTerms: "CONTADO", payment: { paymentMethodId: firstMethod ?? 0, currency: "NIO" }, authorizer: terms.authorizer }
+              : { paymentTerms: "CREDITO", dueDate: addDaysISO(todayISO(), 30), monthlyInterest: "0", authorizer: terms.authorizer },
+          )
+        }
+        options={[
+          { value: "CONTADO", label: "Contado" },
+          { value: "CREDITO", label: "Crédito" },
+        ]}
+      />
 
       {terms.paymentTerms === "CONTADO" && terms.payment && (
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Método de pago">
+          <Field label="Método">
             <Select
               value={terms.payment.paymentMethodId}
               onChange={(e) => onChange({ ...terms, payment: { ...terms.payment!, paymentMethodId: Number(e.target.value) } })}
@@ -86,16 +71,14 @@ export function TermsForm({
           <Field label="Moneda">
             <Select
               value={terms.payment.currency}
-              onChange={(e) =>
-                onChange({ ...terms, payment: { ...terms.payment!, currency: e.target.value as "NIO" | "USD" } })
-              }
+              onChange={(e) => onChange({ ...terms, payment: { ...terms.payment!, currency: e.target.value as "NIO" | "USD" } })}
             >
               <option value="NIO">Córdobas</option>
               <option value="USD">Dólares</option>
             </Select>
           </Field>
           {terms.payment.currency === "USD" && (
-            <Field label="Tipo de cambio (C$ por US$)">
+            <Field label="Tipo de cambio" hint="Córdobas por dólar">
               <Input
                 inputMode="decimal"
                 value={terms.payment.exchangeRate ?? ""}
@@ -107,32 +90,33 @@ export function TermsForm({
       )}
 
       {terms.paymentTerms === "CREDITO" && (
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Vence">
-            <Input type="date" value={terms.dueDate ?? ""} onChange={(e) => onChange({ ...terms, dueDate: e.target.value })} />
-          </Field>
-          <Field label="Interés mensual" hint="0.05 = 5 %">
-            <Input
-              inputMode="decimal"
-              value={terms.monthlyInterest ?? "0"}
-              onChange={(e) => onChange({ ...terms, monthlyInterest: e.target.value })}
-            />
-          </Field>
-        </div>
+        <>
+          {creditBlockedReason && <p className="text-warn-fg text-sm">{creditBlockedReason}</p>}
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Vence">
+              <Input type="date" value={terms.dueDate ?? ""} onChange={(e) => onChange({ ...terms, dueDate: e.target.value })} />
+            </Field>
+            <Field label="Interés mensual" hint="0.05 = 5 %">
+              <Input inputMode="decimal" value={terms.monthlyInterest ?? "0"} onChange={(e) => onChange({ ...terms, monthlyInterest: e.target.value })} />
+            </Field>
+          </div>
+        </>
       )}
 
       {needsAuthorization && (
-        <div className="rounded-lg border border-amber-900 bg-amber-950/30 p-3">
-          <p className="mb-2 text-xs text-amber-200">Necesita autorización de un dueño (crédito o descuento manual).</p>
-          <div className="grid grid-cols-2 gap-3">
+        <div className="border-warn-line bg-warn-bg rounded-lg border p-3">
+          <p className="text-warn-fg mb-2 text-sm">Esto necesita la clave de un dueño (crédito o descuento manual).</p>
+          <div className="grid grid-cols-2 gap-2">
             <Input
-              placeholder="Usuario"
+              placeholder="Usuario del dueño"
+              autoComplete="off"
               value={terms.authorizer?.username ?? ""}
               onChange={(e) => onChange({ ...terms, authorizer: { username: e.target.value, password: terms.authorizer?.password ?? "" } })}
             />
             <Input
               type="password"
               placeholder="Contraseña"
+              autoComplete="off"
               value={terms.authorizer?.password ?? ""}
               onChange={(e) => onChange({ ...terms, authorizer: { username: terms.authorizer?.username ?? "", password: e.target.value } })}
             />
@@ -143,8 +127,12 @@ export function TermsForm({
   );
 }
 
-/** Drops an empty authorizer so the API doesn't receive blank credentials. */
-export function cleanTerms(t: Terms, customerId?: number): Terms {
+type ApiTerms = RouterInputs["sales"]["create"]["terms"];
+
+/** Draft → API input: drops a blank authorizer and the payment block on credit. */
+export function cleanTerms(t: Terms, customerId?: number): ApiTerms {
   const authorizer = t.authorizer?.username && t.authorizer.password ? t.authorizer : undefined;
-  return { ...t, customerId: customerId ?? t.customerId, authorizer };
+  return t.paymentTerms === "CONTADO"
+    ? { paymentTerms: "CONTADO", payment: t.payment, customerId, authorizer }
+    : { paymentTerms: "CREDITO", dueDate: t.dueDate, monthlyInterest: (t.monthlyInterest ?? "").trim() === "" ? "0" : t.monthlyInterest, customerId, authorizer };
 }

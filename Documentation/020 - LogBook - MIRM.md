@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-11-10 — Rediseño blanco, Caja con pestañas, búsqueda con sugerencias y reportes
+
+> Entrada escrita por Claude a pedido de Kenry (`reviewed: false`).
+
+**Hice:**
+- Tema blanco, Caja con varias facturas a la vez, búsqueda que tolera errores de escritura, recepción de moto con cliente nuevo en un paso, Resumen con gráficas por día/semana/mes. Detalle en [[Pendientes de desarrollo - MIRM|Pendientes]] → *Registro 10-nov*.
+
+**Siguiente:**
+- Probarlo con el equipo antes de la entrega; ajustar textos y atajos con lo que digan los dueños.
+
+---
+
 ## 2026-11-08 — Base de datos en Docker y pendientes de desarrollo
 
 > Entrada escrita por Claude a pedido de Kenry (`reviewed: false`).

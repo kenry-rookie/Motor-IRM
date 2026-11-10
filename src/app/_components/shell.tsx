@@ -47,7 +47,7 @@ const AREAS: {
 }[] = [
   {
     href: "/",
-    label: "Inicio",
+    label: "Resumen",
     permission: "reportes.ver",
     icon: (
       <Icon>
@@ -58,7 +58,7 @@ const AREAS: {
   },
   {
     href: "/ventas",
-    label: "Punto de venta",
+    label: "Caja",
     permission: "ventas.crear",
     icon: (
       <Icon>

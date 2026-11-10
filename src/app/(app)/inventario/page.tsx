@@ -6,6 +6,7 @@ import { useState } from "react";
 import { Alert, Badge, Button, Card, Dialog, Field, Input, PageTitle, Select, Table } from "~/app/_components/ui";
 import { errorMessage, fieldErrors } from "~/lib/errors";
 import { money } from "~/lib/format";
+import { useDebounced } from "~/lib/use-debounced";
 import { api } from "~/trpc/react";
 
 /** CLI-008 — Product list with stock, search and creation. */
@@ -14,8 +15,9 @@ export default function InventoryPage() {
   const [search, setSearch] = useState("");
   const [onlyLow, setOnlyLow] = useState(false);
   const [creating, setCreating] = useState(false);
+  const dsearch = useDebounced(search.trim(), 200);
   const list = api.inventory.listProducts.useInfiniteQuery(
-    { search: search || undefined, lowStock: onlyLow ? 2 : undefined, limit: 50 },
+    { search: dsearch || undefined, lowStock: onlyLow ? 2 : undefined, limit: 50 },
     { getNextPageParam: (last) => last.nextCursor, initialCursor: null },
   );
   const items = list.data?.pages.flatMap((p) => p.items) ?? [];
@@ -35,11 +37,16 @@ export default function InventoryPage() {
             <input type="checkbox" checked={onlyLow} onChange={(e) => setOnlyLow(e.target.checked)} /> Solo poco stock (≤ 2)
           </label>
         </div>
+        {search && items.length > 0 && !items.some((p) => p.exact) && (
+          <div className="mb-3">
+            <Alert kind="info">Ningún producto dice «{search}». Estos son los más parecidos.</Alert>
+          </div>
+        )}
         <Table head={["Producto", "Categoría", "Marca", "Calidad", "Precio", "Stock"]} empty={!list.isLoading && items.length === 0}>
           {items.map((p) => (
             <tr key={p.id}>
               <td>
-                <Link className="hover:text-amber-300" href={`/inventario/${p.id}`}>
+                <Link className="hover:text-brand-600" href={`/inventario/${p.id}`}>
                   {p.name}
                 </Link>
                 <div className="text-xs text-neutral-500">{p.barcode ?? "sin código"}</div>
@@ -50,7 +57,7 @@ export default function InventoryPage() {
                 <Badge>{p.qualityTier}</Badge>
               </td>
               <td>{money(p.listPrice)}</td>
-              <td className={p.stock === 0 ? "text-red-400" : p.stock <= 2 ? "text-amber-300" : ""}>{p.stock}</td>
+              <td className={p.stock === 0 ? "text-bad-fg" : p.stock <= 2 ? "text-warn-fg" : ""}>{p.stock}</td>
             </tr>
           ))}
         </Table>

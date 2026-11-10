@@ -22,7 +22,7 @@ export default function LoginPage() {
   return (
     <main className="bg-pit flex min-h-screen items-center justify-center px-4 text-neutral-100">
       <form
-        className="border-t-brand-600 w-full max-w-sm space-y-5 rounded-lg border border-t-2 border-neutral-800 bg-neutral-900 p-6 shadow-xl shadow-black/30"
+        className="border-t-brand-600 w-full max-w-sm space-y-5 rounded-lg border border-t-2 border-neutral-800 bg-neutral-900 p-6 shadow-xl shadow-neutral-50/8"
         onSubmit={(e) => {
           e.preventDefault();
           login.mutate({ username, password });

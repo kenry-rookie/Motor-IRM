@@ -167,7 +167,7 @@ function Roles() {
             {permissions.data?.map((p) => (
               <tr key={p.id} className="border-t border-neutral-800/60">
                 <td className="px-2 py-1">
-                  <code className="text-xs text-amber-300/80">{p.code}</code>
+                  <code className="text-xs text-brand-700">{p.code}</code>
                   <div className="text-xs text-neutral-500">{p.description}</div>
                 </td>
                 {roles.data?.map((r) => {
