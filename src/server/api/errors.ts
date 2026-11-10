@@ -64,12 +64,45 @@ const MESSAGES: Record<string, string> = {
 
 type DbLikeError = { name?: string; code?: string; message?: string; meta?: Record<string, unknown> };
 
+/**
+ * Unique indexes on expressions (lower(name), upper(plate)…) are unknown to Prisma,
+ * so its P2002 error does not name them. The table tells which one it was.
+ */
+const UNIQUE_BY_MODEL: Record<string, string> = {
+  Motorcycle: "uq_motorcycle_plate",
+  Customer: "uq_customer_national_id",
+  AppUser: "uq_app_user_username",
+  Role: "uq_role_name",
+  ProductCategory: "uq_product_category_name",
+  ProductBrand: "uq_product_brand_name",
+  MotorcycleBrand: "uq_motorcycle_brand_name",
+  MotorcycleModel: "uq_motorcycle_model_motorcycle_brand_id_name",
+  ServiceType: "uq_service_type_name",
+  PaymentMethod: "uq_payment_method_name",
+  ReturnReason: "uq_return_reason_name",
+  CashWithdrawalReason: "uq_cash_withdrawal_reason_name",
+  Discount: "uq_discount_name",
+};
+
 function constraintName(err: DbLikeError): string | null {
   const haystack = `${err.message ?? ""} ${JSON.stringify(err.meta ?? {})}`;
   const known = Object.keys(MESSAGES).find((name) => haystack.includes(name));
   if (known) return known;
-  const m = /constraint "?([a-z0-9_]+)"?/i.exec(haystack) ?? /\b((?:ck|uq|fk|pk|tg)_[a-z0-9_]+)\b/.exec(haystack);
-  return m?.[1] ?? null;
+  // Only real constraint names (ck_/uq_/fk_/pk_/tg_), never a word like "failed".
+  const m = /\b((?:ck|uq|fk|pk|tg)_[a-z0-9_]+)\b/.exec(haystack);
+  if (m?.[1]) return m[1];
+  if (err.code === "P2002") {
+    // meta.modelName when Prisma gives it; otherwise "…tx.motorcycle.create()…" in the message.
+    const fromMessage = /\.([a-z][A-Za-z]*)\.(?:create|createMany|update|updateMany|upsert)\(/.exec(err.message ?? "")?.[1];
+    const model =
+      typeof err.meta?.modelName === "string"
+        ? err.meta.modelName
+        : fromMessage
+          ? fromMessage[0]!.toUpperCase() + fromMessage.slice(1)
+          : null;
+    return (model && UNIQUE_BY_MODEL[model]) ?? null;
+  }
+  return null;
 }
 
 export function mapDatabaseError(error: unknown): TRPCError | null {
