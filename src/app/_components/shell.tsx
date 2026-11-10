@@ -243,7 +243,7 @@ export function Shell({
         onClick={() => setDrawer(false)}
         aria-hidden="true"
         className={cx(
-          "fixed inset-0 z-40 bg-black/60 transition-opacity duration-200 motion-reduce:transition-none md:hidden",
+          "fixed inset-0 z-40 bg-neutral-50/40 transition-opacity duration-200 motion-reduce:transition-none md:hidden",
           drawer ? "opacity-100" : "pointer-events-none opacity-0",
         )}
       />
@@ -256,7 +256,7 @@ export function Shell({
       <aside
         aria-label="Menú principal"
         className={cx(
-          "group/nav fixed inset-y-0 left-0 z-50 flex w-64 flex-col overflow-hidden border-r border-neutral-800 bg-neutral-900",
+          "no-print group/nav fixed inset-y-0 left-0 z-50 flex w-64 flex-col overflow-hidden border-r border-neutral-800 bg-neutral-900",
           "transition-[translate,width,visibility] duration-200 ease-out motion-reduce:transition-none",
           drawer ? "visible translate-x-0" : "invisible -translate-x-full",
           "md:visible md:sticky md:top-0 md:bottom-auto md:z-auto md:h-screen md:shrink-0 md:translate-x-0",
@@ -308,7 +308,7 @@ export function Shell({
                 className={cx(
                   "group relative flex h-11 items-center gap-3 px-5 transition-colors duration-150",
                   active
-                    ? "bg-brand-600/15 text-white"
+                    ? "bg-brand-600/10 text-neutral-50"
                     : "text-neutral-400 hover:bg-neutral-800/70 hover:text-neutral-100",
                 )}
               >
@@ -323,7 +323,7 @@ export function Shell({
                   className={cx(
                     "shrink-0 transition-colors duration-150",
                     active
-                      ? "text-brand-400"
+                      ? "text-brand-600"
                       : "text-neutral-500 group-hover:text-neutral-200",
                   )}
                 >
@@ -373,7 +373,7 @@ export function Shell({
 
       {/* Contenido: flex-1 min-w-0 para que se reacomode al ancho de la barra. */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-neutral-800 bg-neutral-950 px-4 md:px-8">
+        <header className="no-print sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-neutral-800 bg-neutral-950/90 px-4 backdrop-blur md:px-8">
           <button
             type="button"
             onClick={() => setDrawer(true)}
@@ -424,7 +424,7 @@ export function Shell({
                 role="menu"
                 inert={!menu}
                 className={cx(
-                  "absolute top-full right-0 mt-2 w-56 origin-top-right rounded-md border border-neutral-700 bg-neutral-900 p-1 shadow-lg shadow-black/40",
+                  "absolute top-full right-0 mt-2 w-56 origin-top-right rounded-md border border-neutral-700 bg-neutral-900 p-1 shadow-lg shadow-neutral-50/10",
                   "transition duration-150 ease-out motion-reduce:transition-none",
                   menu
                     ? "scale-100 opacity-100"

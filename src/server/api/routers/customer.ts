@@ -11,6 +11,7 @@ import {
 } from "~/server/domain/billing";
 import { dayToDate, todayInManagua, zDay, zId, zOptText, pageFields, zPositiveMoney, zRate, zText } from "~/server/domain/constants";
 import { sum } from "~/server/domain/money";
+import { inRankOrder, rankCustomers } from "~/server/domain/search";
 
 /** Customers, motorcycles, opening balances and the account statement (API-014). */
 const view = permissionProcedure("clientes.ver");
@@ -34,26 +35,25 @@ export const customerRouter = createTRPCRouter({
   list: view
     .input(z.object({ search: z.string().trim().max(100).optional(), ...pageFields }).default({}))
     .query(async ({ ctx, input }) => {
-      const s = input.search;
-      const where: Prisma.CustomerWhereInput = s
-        ? {
-            OR: [
-              { name: { contains: s, mode: "insensitive" } },
-              { phone: { contains: s } },
-              { nationalId: { equals: s, mode: "insensitive" } },
-              { motorcycles: { some: { plate: { equals: s, mode: "insensitive" } } } },
-            ],
-          }
-        : {};
+      const include = { motorcycles: { include: { model: { include: { brand: true } } } } } as const;
+      if (input.search) {
+        const ranked = await rankCustomers(ctx.db, input.search, input.limit);
+        const rows = await ctx.db.customer.findMany({ where: { id: { in: ranked.map((r) => r.id) } }, include });
+        return { items: inRankOrder(ranked, rows), nextCursor: null };
+      }
+      const where: Prisma.CustomerWhereInput = {};
       const { cursor, limit } = input;
       const items = await ctx.db.customer.findMany({
         where,
         orderBy: { id: "asc" },
-        include: { motorcycles: { include: { model: { include: { brand: true } } } } },
+        include,
         take: limit + 1,
         ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       });
-      return { items: items.slice(0, limit), nextCursor: items.length > limit ? items[limit - 1]!.id : null };
+      return {
+        items: items.slice(0, limit).map((c) => ({ ...c, exact: true, score: 0 })),
+        nextCursor: items.length > limit ? items[limit - 1]!.id : null,
+      };
     }),
 
   get: view.input(z.object({ id: zId })).query(({ ctx, input }) =>

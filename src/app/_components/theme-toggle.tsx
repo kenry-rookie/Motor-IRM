@@ -2,20 +2,18 @@
 
 import { useEffect, useState } from "react";
 
-/** Toggle claro/oscuro. Persiste en cookie `irm_theme`; el script inline del root layout la lee antes del paint. */
+/** Toggle claro/oscuro (claro por defecto). Persiste en cookie `irm_theme`; el script inline del root layout la lee antes del paint. */
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [theme, setTheme] = useState<"dark" | "light">("light");
 
   useEffect(() => {
-    setTheme(
-      document.documentElement.classList.contains("light") ? "light" : "dark",
-    );
+    setTheme(document.documentElement.classList.contains("dark") ? "dark" : "light");
   }, []);
 
   function toggle() {
     const next = theme === "dark" ? "light" : "dark";
     setTheme(next);
-    document.documentElement.classList.toggle("light", next === "light");
+    document.documentElement.classList.toggle("dark", next === "dark");
     document.cookie = `irm_theme=${next}; path=/; max-age=31536000; samesite=lax`;
   }
 

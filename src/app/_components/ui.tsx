@@ -69,11 +69,11 @@ export function Button({
     <button
       className={cx(
         "inline-flex items-center justify-center gap-2 rounded-md px-3.5 py-2 text-sm font-medium transition-colors duration-150 enabled:active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50",
-        variant === "primary" && "bg-brand-600 hover:bg-brand-500 text-white",
+        variant === "primary" && "bg-brand-600 hover:bg-brand-700 text-white shadow-sm",
         variant === "secondary" &&
-          "border border-neutral-700 bg-neutral-800 text-neutral-100 hover:border-neutral-600 hover:bg-neutral-700",
+          "border border-neutral-700 bg-neutral-900 text-neutral-100 hover:border-neutral-600 hover:bg-neutral-800",
         variant === "danger" &&
-          "border border-red-800 bg-red-950 text-red-200 hover:bg-red-900",
+          "border border-bad-line bg-bad-bg text-bad-fg hover:border-bad-fg",
         variant === "ghost" &&
           "text-neutral-300 hover:bg-neutral-800 hover:text-neutral-100",
         className,
@@ -101,7 +101,7 @@ export function Field({
       {hint && !error && (
         <span className="text-xs text-neutral-500">{hint}</span>
       )}
-      {error && <span className="text-xs text-red-400">{error}</span>}
+      {error && <span className="text-bad-fg text-xs">{error}</span>}
     </label>
   );
 }
@@ -228,7 +228,7 @@ export function Card({
                 type="button"
                 onClick={() => setOpen((o) => !o)}
                 aria-expanded={open}
-                className="flex items-center gap-2 text-left transition-colors hover:text-white"
+                className="flex items-center gap-2 text-left transition-colors hover:text-neutral-50"
               >
                 <Chevron open={open} />
                 {title}
@@ -258,11 +258,9 @@ export function Alert({
       role="alert"
       className={cx(
         "rounded-md border px-3 py-2 text-sm",
-        kind === "error" && "border-red-800 bg-red-950/60 text-red-200",
-        kind === "ok" &&
-          "border-emerald-800 bg-emerald-950/60 text-emerald-200",
-        kind === "info" &&
-          "border-neutral-700 bg-neutral-800/60 text-neutral-300",
+        kind === "error" && "border-bad-line bg-bad-bg text-bad-fg",
+        kind === "ok" && "border-ok-line bg-ok-bg text-ok-fg",
+        kind === "info" && "border-info-line bg-info-bg text-info-fg",
       )}
     >
       {children}
@@ -287,7 +285,7 @@ export function Table({
             {head.map((h, i) => (
               <th
                 key={i}
-                className="border-b border-neutral-700 px-2 py-2 font-medium"
+                className="border-b border-neutral-700 bg-neutral-800/40 px-2 py-2 text-xs font-medium first:rounded-l-md last:rounded-r-md"
               >
                 {h}
               </th>
@@ -299,8 +297,8 @@ export function Table({
         </tbody>
       </table>
       {empty && (
-        <p className="py-6 text-center text-sm text-neutral-500">
-          No hay registros.
+        <p className="py-8 text-center text-sm text-neutral-500">
+          Todavía no hay nada aquí.
         </p>
       )}
     </div>
@@ -308,8 +306,8 @@ export function Table({
 }
 
 /**
- * "amber" (en uso en las pantallas) = estado que pide atención: contorno rojo.
- * "red" = problema o cancelado: relleno rojo. Así no se confunden entre sí.
+ * amber = pide atención (pendiente, poco stock) · red = problema o cancelado ·
+ * green = listo/pagado · blue = informativo · neutral = dato.
  */
 export function Badge({
   children,
@@ -322,11 +320,11 @@ export function Badge({
     <span
       className={cx(
         "inline-block rounded px-2 py-0.5 text-xs font-medium",
-        tone === "neutral" && "bg-neutral-800 text-neutral-300",
-        tone === "amber" && "border-brand-500/50 text-brand-300 border",
-        tone === "green" && "bg-emerald-500/15 text-emerald-300",
-        tone === "red" && "bg-red-600/25 text-red-200",
-        tone === "blue" && "bg-sky-500/15 text-sky-300",
+        tone === "neutral" && "border border-neutral-800 bg-neutral-800/60 text-neutral-300",
+        tone === "amber" && "border-warn-line bg-warn-bg text-warn-fg border",
+        tone === "green" && "border-ok-line bg-ok-bg text-ok-fg border",
+        tone === "red" && "border-bad-line bg-bad-bg text-bad-fg border",
+        tone === "blue" && "border-info-line bg-info-bg text-info-fg border",
       )}
     >
       {children}
@@ -339,11 +337,13 @@ export function Dialog({
   onClose,
   title,
   children,
+  size = "md",
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: ReactNode;
+  size?: "md" | "lg";
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -356,7 +356,10 @@ export function Dialog({
     <dialog
       ref={ref}
       onClose={onClose}
-      className="m-auto w-[min(640px,calc(100vw-2rem))] rounded-lg border border-neutral-700 bg-neutral-950 p-0 text-neutral-100 shadow-2xl shadow-black/50 backdrop:bg-black/70"
+      className={cx(
+        "m-auto rounded-xl border border-neutral-800 bg-neutral-900 p-0 text-neutral-100 shadow-2xl shadow-neutral-50/15 backdrop:bg-neutral-50/30 backdrop:backdrop-blur-[2px]",
+        size === "lg" ? "w-[min(880px,calc(100vw-2rem))]" : "w-[min(640px,calc(100vw-2rem))]",
+      )}
     >
       <div className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
         <h2 className="font-display text-lg font-semibold tracking-wide">
@@ -397,12 +400,109 @@ export function PageTitle({
   return (
     <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h1 className="font-display text-3xl font-semibold tracking-tight">
+        <h1 className="font-display text-3xl font-semibold tracking-tight text-neutral-50">
           {title}
         </h1>
-        {subtitle && <p className="text-sm text-neutral-400">{subtitle}</p>}
+        {subtitle && <p className="mt-0.5 max-w-prose text-sm text-neutral-400">{subtitle}</p>}
       </div>
       {actions}
+    </div>
+  );
+}
+
+/* ───────────── Piezas nuevas (rediseño claro) ───────────── */
+
+/** Tecla de atajo, p. ej. <Kbd>F9</Kbd>. */
+export function Kbd({ children }: { children: ReactNode }) {
+  return (
+    <kbd className="rounded border border-neutral-700 bg-neutral-800/50 px-1.5 py-px font-sans text-[11px] font-medium text-neutral-400">
+      {children}
+    </kbd>
+  );
+}
+
+/** Grupo de opciones excluyentes (periodo, contado/crédito…). */
+export function Segmented<T extends string>({
+  value,
+  onChange,
+  options,
+  label,
+  className,
+}: {
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: string }[];
+  label: string;
+  className?: string;
+}) {
+  return (
+    <div role="radiogroup" aria-label={label} className={cx("inline-flex rounded-lg border border-neutral-700 bg-neutral-800/40 p-0.5", className)}>
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="radio"
+          aria-checked={value === o.value}
+          onClick={() => onChange(o.value)}
+          className={cx(
+            "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+            value === o.value
+              ? "bg-neutral-900 text-neutral-50 shadow-sm ring-1 ring-neutral-700"
+              : "text-neutral-400 hover:text-neutral-100",
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Cifra principal con su etiqueta y, si se da, la variación contra otro periodo. */
+export function Stat({
+  label,
+  value,
+  delta,
+  detail,
+}: {
+  label: string;
+  value: ReactNode;
+  /** Variación en % contra el periodo anterior; null = sin base para comparar. */
+  delta?: { pct: number | null; goodWhenUp?: boolean; vs: string };
+  detail?: ReactNode;
+}) {
+  const up = (delta?.pct ?? 0) >= 0;
+  const good = delta && delta.pct !== null ? (delta.goodWhenUp ?? true) === up : null;
+  return (
+    <div className="rounded-xl border border-neutral-800 bg-neutral-900 p-4">
+      <p className="text-sm text-neutral-400">{label}</p>
+      <p className="font-display mt-1 text-3xl font-semibold tracking-tight text-neutral-50 tabular-nums">{value}</p>
+      {delta && (
+        <p className="mt-1 text-xs text-neutral-500">
+          {delta.pct === null ? (
+            <>sin datos del {delta.vs} para comparar</>
+          ) : (
+            <>
+              <span className={cx("font-medium", good ? "text-ok-fg" : "text-bad-fg")}>
+                {up ? "▲" : "▼"} {Math.abs(delta.pct).toFixed(0)} %
+              </span>{" "}
+              frente al {delta.vs}
+            </>
+          )}
+        </p>
+      )}
+      {detail && <p className="mt-1 text-xs text-neutral-500">{detail}</p>}
+    </div>
+  );
+}
+
+/** Pantalla o sección vacía: dice qué hacer, no cómo se siente. */
+export function EmptyState({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
+  return (
+    <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-neutral-700 px-6 py-10 text-center">
+      <p className="font-medium text-neutral-200">{title}</p>
+      {children && <p className="max-w-sm text-sm text-neutral-400">{children}</p>}
+      {action && <div className="mt-2">{action}</div>}
     </div>
   );
 }

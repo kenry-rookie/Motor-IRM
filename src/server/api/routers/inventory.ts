@@ -5,6 +5,7 @@ import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
 import { type Prisma } from "~/server/db";
 import { QUALITY_TIERS, zId, zMoney, zOptText, pageFields, zQty, zText } from "~/server/domain/constants";
 import { lastCost, recordMovement } from "~/server/domain/inventory";
+import { inRankOrder, rankProducts } from "~/server/domain/search";
 
 /**
  * API-011 Inventory · API-021 product search · API-022 cursor pagination.
@@ -40,10 +41,16 @@ export const inventoryRouter = createTRPCRouter({
       const where: Prisma.ProductWhereInput = {
         productCategoryId: input.productCategoryId,
         stock: input.lowStock !== undefined ? { lte: input.lowStock } : undefined,
-        OR: input.search
-          ? [{ name: { contains: input.search, mode: "insensitive" } }, { barcode: input.search }]
-          : undefined,
       };
+      // With text: ranked, typo-tolerant search (one page of the best matches).
+      if (input.search) {
+        const ranked = await rankProducts(ctx.db, input.search, input.limit);
+        const rows = await ctx.db.product.findMany({
+          where: { ...where, id: { in: ranked.map((r) => r.id) } },
+          include: productInclude,
+        });
+        return { items: inRankOrder(ranked, rows), nextCursor: null };
+      }
       const { cursor, limit } = input;
       const items = await ctx.db.product.findMany({
         where,
@@ -53,7 +60,25 @@ export const inventoryRouter = createTRPCRouter({
         ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       });
       const nextCursor = items.length > limit ? items[limit - 1]!.id : null;
-      return { items: items.slice(0, limit), nextCursor };
+      return { items: items.slice(0, limit).map((p) => ({ ...p, exact: true, score: 0 })), nextCursor };
+    }),
+
+  /**
+   * Counter search (API-021 v2): barcode or name, tolerant to typos.
+   * `didYouMean` is set when nothing contains the text and the list is made of
+   * suggestions, so the screen can say "¿Quiso decir «Bujía NGK»?".
+   */
+  search: view
+    .input(z.object({ q: z.string().trim().min(1).max(100), limit: z.number().int().min(1).max(20).default(8) }))
+    .query(async ({ ctx, input }) => {
+      const ranked = await rankProducts(ctx.db, input.q, input.limit);
+      const rows = await ctx.db.product.findMany({
+        where: { id: { in: ranked.map((r) => r.id) } },
+        include: productInclude,
+      });
+      const items = inRankOrder(ranked, rows);
+      const anyExact = items.some((i) => i.exact);
+      return { items, didYouMean: !anyExact && items[0] ? items[0].name : null };
     }),
 
   /** Fast lookup for the barcode scanner at the counter (API-021). */

@@ -98,27 +98,76 @@ export const serviceRouter = createTRPCRouter({
     return { ...order, status: (order.statusChanges[0]?.status ?? "RECIBIDA") as ServiceOrderStatus };
   }),
 
-  /** Reception: the motorcycle arrives. No bill, no price yet. */
+  /**
+   * Reception: the motorcycle arrives. No bill, no price yet.
+   * For speed, a NEW customer and/or motorcycle can be registered in the same
+   * step (one transaction): brand and model are typed as text and found or
+   * created (case-insensitive), so nobody has to go to Clientes first.
+   */
   receive: manage
     .input(
-      z.object({
-        motorcycleId: zId,
-        requestedWork: zText(500),
-        mechanicStaffId: zId.optional(),
-        notes: zOptText(200),
-      }),
+      z
+        .object({
+          motorcycleId: zId.optional(),
+          newMotorcycle: z
+            .object({
+              customerId: zId.optional(),
+              newCustomer: z
+                .object({ name: zText(100), phone: zText(20), nationalId: zOptText(20) })
+                .optional(),
+              brandName: zText(50),
+              modelName: zText(50),
+              color: zText(30),
+              plate: zOptText(15),
+            })
+            .refine((m) => !!m.customerId !== !!m.newCustomer, {
+              message: "Elija un cliente existente o registre uno nuevo",
+              path: ["customerId"],
+            })
+            .optional(),
+          requestedWork: zText(500),
+          mechanicStaffId: zId.optional(),
+          notes: zOptText(200),
+        })
+        .refine((v) => !!v.motorcycleId !== !!v.newMotorcycle, {
+          message: "Elija una moto registrada o registre la moto nueva",
+          path: ["motorcycleId"],
+        }),
     )
     .mutation(({ ctx, input }) =>
       ctx.db.$transaction(async (tx) => {
+        let motorcycleId = input.motorcycleId;
+        if (input.newMotorcycle) {
+          const m = input.newMotorcycle;
+          const customerId =
+            m.customerId ??
+            (
+              await tx.customer.create({
+                data: { name: m.newCustomer!.name, phone: m.newCustomer!.phone, nationalId: m.newCustomer!.nationalId ?? null },
+              })
+            ).id;
+          const brand =
+            (await tx.motorcycleBrand.findFirst({ where: { name: { equals: m.brandName, mode: "insensitive" } } })) ??
+            (await tx.motorcycleBrand.create({ data: { name: m.brandName } }));
+          const model =
+            (await tx.motorcycleModel.findFirst({
+              where: { motorcycleBrandId: brand.id, name: { equals: m.modelName, mode: "insensitive" } },
+            })) ?? (await tx.motorcycleModel.create({ data: { motorcycleBrandId: brand.id, name: m.modelName } }));
+          motorcycleId = (
+            await tx.motorcycle.create({
+              data: { customerId, motorcycleModelId: model.id, color: m.color, plate: m.plate ?? null },
+            })
+          ).id;
+        }
         let appliedCommissionRate: Prisma.Decimal | null = null;
         if (input.mechanicStaffId) {
-          const m = await tx.staff.findUniqueOrThrow({ where: { id: input.mechanicStaffId } });
-          if (!m.commissionRate || !m.active) throw fail("Esa persona no es un mecánico activo.");
-          appliedCommissionRate = m.commissionRate;
+          const mech = await tx.staff.findUniqueOrThrow({ where: { id: input.mechanicStaffId } });
+          if (!mech.commissionRate || !mech.active) throw fail("Esa persona no es un mecánico activo.");
+          appliedCommissionRate = mech.commissionRate;
         }
         const order = await tx.serviceOrder.create({
           data: {
-            motorcycleId: input.motorcycleId,
+            motorcycleId: motorcycleId!,
             requestedWork: input.requestedWork,
             mechanicStaffId: input.mechanicStaffId ?? null,
             appliedCommissionRate,

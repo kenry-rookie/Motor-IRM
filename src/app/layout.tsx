@@ -13,7 +13,7 @@ export const metadata: Metadata = {
 
 // Color de la barra del navegador en el celular
 export const viewport: Viewport = {
-  themeColor: "#101318",
+  themeColor: "#ffffff",
 };
 
 // Texto corrido: legible y con cifras tabulares para montos y cantidades.
@@ -44,7 +44,7 @@ export default function RootLayout({
       <head>
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var m=document.cookie.match(/(?:^|; )irm_theme=([^;]+)/);if(m&&m[1]==='light')document.documentElement.classList.add('light');}catch(e){}})();`,
+            __html: `(function(){try{var m=document.cookie.match(/(?:^|; )irm_theme=([^;]+)/);if(m&&m[1]==='dark')document.documentElement.classList.add('dark');}catch(e){}})();`,
           }}
         />
       </head>

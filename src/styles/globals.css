@@ -14,18 +14,42 @@
     "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
   --font-display: var(--font-barlow), "Arial Narrow", ui-sans-serif, system-ui, sans-serif;
 
-  /* Grafito */
-  --color-neutral-50: #f5f6f7;
-  --color-neutral-100: #e9ebed;
-  --color-neutral-200: #d1d5d9;
-  --color-neutral-300: #b0b6bd;
-  --color-neutral-400: #959ca5;
-  --color-neutral-500: #7b838d;
-  --color-neutral-600: #565d66;
-  --color-neutral-700: #3a4047;
-  --color-neutral-800: #272c32;
-  --color-neutral-900: #1b1f24;
-  --color-neutral-950: #101318;
+  /*
+   * Escala neutral en modo CLARO (por defecto). Se usa "invertida" a propósito,
+   * como la definió el diseño anterior: 950/900 = fondos y superficies,
+   * 800/700 = líneas, 400 = texto secundario, 100 = texto principal.
+   * Así las mismas clases sirven en claro y en oscuro (ver :root.dark).
+   */
+  --color-neutral-50: #0f1216;
+  --color-neutral-100: #191d23;
+  --color-neutral-200: #2b3139;
+  --color-neutral-300: #414852;
+  --color-neutral-400: #5c6470;
+  --color-neutral-500: #7d8590;
+  --color-neutral-600: #a2a9b2;
+  --color-neutral-700: #d3d8de;
+  --color-neutral-800: #e6e9ed;
+  --color-neutral-900: #ffffff;
+  --color-neutral-950: #ffffff;
+
+  /* Estados (siempre acompañados de texto o ícono, nunca solo color) */
+  --color-ok-bg: #ebf7f0;
+  --color-ok-line: #b6e0c6;
+  --color-ok-fg: #12693c;
+  --color-warn-bg: #fff5e3;
+  --color-warn-line: #f2cf8f;
+  --color-warn-fg: #8a4b00;
+  --color-bad-bg: #fdeeee;
+  --color-bad-line: #f1bfc2;
+  --color-bad-fg: #a3161f;
+  --color-info-bg: #edf3fc;
+  --color-info-line: #c3d7f2;
+  --color-info-fg: #1c4f8f;
+
+  /* Gráficas: paleta categórica validada (azul, naranja) */
+  --color-series-1: #2a78d6;
+  --color-series-2: #eb6834;
+  --color-grid: #e6e9ed;
 
   /* Rojo de la marca */
   --color-brand-50: #fff1f1;
@@ -56,8 +80,8 @@
 
 @layer base {
   html {
-    /* Controles nativos (select, fecha, scrollbars) en oscuro */
-    color-scheme: dark;
+    /* Controles nativos (select, fecha, scrollbars) en claro; oscuro con .dark */
+    color-scheme: light;
   }
 
   * {
@@ -66,13 +90,13 @@
   }
 
   :focus-visible {
-    outline: 2px solid var(--color-brand-400);
+    outline: 2px solid var(--color-brand-500);
     outline-offset: 2px;
   }
 
   ::selection {
-    background: var(--color-brand-700);
-    color: #fff;
+    background: var(--color-brand-100);
+    color: var(--color-neutral-50);
   }
 
   /* Montos y cantidades alineados en columna */
@@ -143,7 +167,7 @@ dialog[open]::backdrop {
   background-image: repeating-linear-gradient(
     135deg,
     transparent 0 14px,
-    rgb(255 255 255 / 0.018) 14px 15px
+    rgb(0 0 0 / 0.03) 14px 15px
   );
 }
 
@@ -159,32 +183,72 @@ dialog[open]::backdrop {
   }
 }
 
-/* ───────────── Modo claro ─────────────
- * Invierte la escala grafito para que los utilitarios `neutral-*`
- * sigan siendo correctos semánticamente (fondo claro, texto oscuro).
- * La marca (brand) y los alias amber se mantienen idénticos.
+/* ───────────── Modo oscuro (opcional, botón en la barra superior) ─────────────
+ * El sistema es blanco por defecto. Con la clase .dark vuelve la escala
+ * grafito original y los estados se ajustan para fondo oscuro.
  */
-:root.light {
-  color-scheme: light;
+:root.dark {
+  color-scheme: dark;
 
-  --color-neutral-50:  #101318;
-  --color-neutral-100: #1b1f24;
-  --color-neutral-200: #272c32;
-  --color-neutral-300: #3a4047;
-  --color-neutral-400: #565d66;
+  --color-neutral-50: #f5f6f7;
+  --color-neutral-100: #e9ebed;
+  --color-neutral-200: #d1d5d9;
+  --color-neutral-300: #b0b6bd;
+  --color-neutral-400: #959ca5;
   --color-neutral-500: #7b838d;
-  --color-neutral-600: #959ca5;
-  --color-neutral-700: #b0b6bd;
-  --color-neutral-800: #d1d5d9;
-  --color-neutral-900: #e9ebed;
-  --color-neutral-950: #f5f6f7;
+  --color-neutral-600: #565d66;
+  --color-neutral-700: #3a4047;
+  --color-neutral-800: #272c32;
+  --color-neutral-900: #1b1f24;
+  --color-neutral-950: #101318;
+
+  --color-ok-bg: #0f2b1d;
+  --color-ok-line: #1f5a3b;
+  --color-ok-fg: #8fdcb0;
+  --color-warn-bg: #2e2109;
+  --color-warn-line: #6b4a12;
+  --color-warn-fg: #f3c77a;
+  --color-bad-bg: #331014;
+  --color-bad-line: #7a222a;
+  --color-bad-fg: #ffb3b6;
+  --color-info-bg: #0f2237;
+  --color-info-line: #23466f;
+  --color-info-fg: #a9cbf5;
+
+  --color-series-1: #3987e5;
+  --color-series-2: #d95926;
+  --color-grid: #272c32;
 }
 
-/* Rayado del login: misma textura, oscura sobre fondo claro */
-:root.light .bg-pit {
+:root.dark .bg-pit {
   background-image: repeating-linear-gradient(
     135deg,
     transparent 0 14px,
-    rgb(0 0 0 / 0.025) 14px 15px
+    rgb(255 255 255 / 0.018) 14px 15px
   );
+}
+
+/* ───────────── Talón de ticket (pestañas de Caja) ─────────────
+ * Borde inferior perforado: puntos del color del fondo sobre la línea.
+ */
+.ticket-tab {
+  position: relative;
+}
+.ticket-tab::after {
+  content: "";
+  position: absolute;
+  inset: auto 6px -1px 6px;
+  height: 2px;
+  background-image: radial-gradient(circle, var(--color-neutral-700) 1px, transparent 1.5px);
+  background-size: 6px 2px;
+  background-repeat: repeat-x;
+}
+.ticket-tab[aria-selected="true"]::after {
+  background-image: none;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
 }
