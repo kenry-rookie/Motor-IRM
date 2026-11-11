@@ -6,7 +6,7 @@ status: Tomada
 date: 2026-11-07
 participants: Kenry
 source: IA (redactada por Claude a pedido de Kenry; adaptada de la recomendación D9, hecha para Django, al cambio a TypeScript/Node de DEC-033)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S5 - DDL PostgreSQL - MIRM|DDL]]** · **[[DEC-033 - Technology Stack Change to TypeScript and Node - MIRM|← DEC-033]]** · **[[DEC-035 - Staff Login Credentials - MIRM|DEC-035 →]]**
 

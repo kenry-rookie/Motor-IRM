@@ -3,13 +3,15 @@
 import Link from "next/link";
 import { useState } from "react";
 
-import { CustomerFilterBar, type CustomerFilterState, EMPTY_CUSTOMER_FILTERS } from "~/app/_components/catalog";
+import { CustomerFilterBar, type CustomerFilterState, EMPTY_CUSTOMER_FILTERS, uniqueById } from "~/app/_components/catalog";
 import { Alert, Badge, Button, Card, Dialog, PageTitle, SearchField, Table } from "~/app/_components/ui";
 import { CustomerForm } from "~/app/(app)/clientes/customer-form";
 import { errorMessage } from "~/lib/errors";
 import { formatDateTime, money } from "~/lib/format";
 import { useDebounced } from "~/lib/use-debounced";
 import { api } from "~/trpc/react";
+
+const PAGE = 50;
 
 /** CLI-009 — Customers (search by name, phone, cédula or plate) and who owes money. */
 export default function CustomersPage() {
@@ -20,11 +22,21 @@ export default function CustomersPage() {
   const [pages, setPages] = useState(1);
   const q = useDebounced(text.trim(), 200);
   // The database searches and filters (DEC-049); this screen only shows the page.
-  const found = api.search.customers.useQuery(
-    { q: q || undefined, ...filters, limit: 50 * pages, offset: 0 },
-    { placeholderData: (p) => p },
+  // One request per page (the API allows at most 100 per request; see useProductSearch).
+  const pageResults = api.useQueries((t) =>
+    Array.from({ length: pages }, (_, i) =>
+      t.search.customers({ q: q || undefined, ...filters, limit: PAGE, offset: i * PAGE }, { placeholderData: (p) => p }),
+    ),
   );
-  const items = found.data?.items ?? [];
+  const firstPage = pageResults[0];
+  const lastPage = pageResults[pageResults.length - 1];
+  const found = {
+    data: firstPage?.data && { ...firstPage.data, nextOffset: lastPage?.data?.nextOffset ?? null },
+    error: pageResults.find((r) => r.error)?.error ?? null,
+    isLoading: firstPage?.isLoading ?? true,
+    isFetching: pageResults.some((r) => r.isFetching),
+  };
+  const items = uniqueById(pageResults.flatMap((r) => r.data?.items ?? []));
   const receivables = api.sales.receivables.useQuery();
   return (
     <>

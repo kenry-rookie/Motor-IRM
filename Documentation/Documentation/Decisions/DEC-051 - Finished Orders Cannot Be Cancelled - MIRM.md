@@ -6,7 +6,7 @@ status: Tomada
 date: 2026-11-10
 participants: Kenry
 source: IA (Claude, a pedido de Kenry)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[DEC-050 - Password to Change Permissions - MIRM|← DEC-050]]**
 

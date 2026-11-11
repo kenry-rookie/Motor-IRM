@@ -8,7 +8,7 @@ interviewees: Dueños
 medium: WhatsApp (mensajes)
 recorded: 2026-11-06
 source: IA (transcrita por Claude tal como Kenry pasó las respuestas; sin interpretar)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S5 - Relational Model and Normalization - MIRM|S5]]** · **[[Questions - MIRM|❓ Questions]]** · **[[Business Rules - MIRM|📏 Business Rules]]** · **[[SRC-06 - Team Observations Oct 27 - MIRM|← SRC-06]]**
 

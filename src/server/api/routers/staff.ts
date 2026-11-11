@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { fail } from "~/server/api/errors";
 import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
+import { requireOpenCash } from "~/server/domain/cash";
 import { dayToDate, STAFF_KINDS, todayInManagua, zDay, zId, zOptText, zPhone, zPositiveMoney, zRate, zText } from "~/server/domain/constants";
 import { totalOf, unpaidCommissions, unsettledAdvances } from "~/server/domain/commission";
 import { D } from "~/server/domain/money";
@@ -86,6 +87,7 @@ export const staffRouter = createTRPCRouter({
     .input(z.object({ staffId: zId, amount: zPositiveMoney }))
     .mutation(({ ctx, input }) =>
       ctx.db.$transaction(async (tx) => {
+        await requireOpenCash(tx);
         await tx.$queryRaw`SELECT id FROM staff WHERE id = ${input.staffId} FOR UPDATE`;
         const available = totalOf(await unpaidCommissions(tx, input.staffId)).minus(
           totalOf(await unsettledAdvances(tx, input.staffId)),
@@ -105,6 +107,7 @@ export const staffRouter = createTRPCRouter({
     .mutation(({ ctx, input }) =>
       ctx.db.$transaction(async (tx) => {
         if (input.periodEnd < input.periodStart) throw fail("El fin del periodo es antes del inicio.");
+        if (input.markPaid) await requireOpenCash(tx);
         await tx.$queryRaw`SELECT id FROM staff WHERE id = ${input.staffId} FOR UPDATE`;
         const until = dayEnd(input.periodEnd);
         const orders = await unpaidCommissions(tx, input.staffId, until);
@@ -135,9 +138,12 @@ export const staffRouter = createTRPCRouter({
     ),
 
   markPayoutPaid: pay.input(z.object({ staffPayoutId: zId })).mutation(({ ctx, input }) =>
-    ctx.db.staffPayout.update({
-      where: { id: input.staffPayoutId },
-      data: { paidOn: dayToDate(todayInManagua()), paidByUserId: ctx.user.id },
+    ctx.db.$transaction(async (tx) => {
+      await requireOpenCash(tx);
+      return tx.staffPayout.update({
+        where: { id: input.staffPayoutId },
+        data: { paidOn: dayToDate(todayInManagua()), paidByUserId: ctx.user.id },
+      });
     }),
   ),
 
@@ -170,13 +176,16 @@ export const staffRouter = createTRPCRouter({
   withdrawCash: permissionProcedure("caja.retiros")
     .input(z.object({ cashWithdrawalReasonId: zId, amount: zPositiveMoney, description: zOptText(200) }))
     .mutation(({ ctx, input }) =>
-      ctx.db.cashWithdrawal.create({
-        data: {
-          cashWithdrawalReasonId: input.cashWithdrawalReasonId,
-          amount: input.amount,
-          description: input.description ?? null,
-          withdrawnByUserId: ctx.user.id,
-        },
+      ctx.db.$transaction(async (tx) => {
+        await requireOpenCash(tx);
+        return tx.cashWithdrawal.create({
+          data: {
+            cashWithdrawalReasonId: input.cashWithdrawalReasonId,
+            amount: input.amount,
+            description: input.description ?? null,
+            withdrawnByUserId: ctx.user.id,
+          },
+        });
       }),
     ),
 });

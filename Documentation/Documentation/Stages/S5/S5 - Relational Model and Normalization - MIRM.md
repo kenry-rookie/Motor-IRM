@@ -6,7 +6,7 @@ started: 2026-10-28
 finished: 2026-11-07
 source: IA (nota de etapa redactada por Claude a pedido de Kenry)
 ai_edit: "Claude — 2026-10-28: nota creada (objetivo, acuerdos de la entrega, insumos, entrega del 29-oct y criterio de cierre); PostgreSQL para la entrega y uso local (docente, 28-oct); enlace a la nota del DDL; 2026-10-29: convención de nombres; 2026-11-05: enlaces a DEC-016 a DEC-028; 2026-11-07: cierre de S5 (decisiones D1 a D12, DDL v2, DEC-029 a DEC-035, cambio a TypeScript/Node)"
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S4 - Entity-Relationship Model and EER - MIRM|← S4]]** · **[[S5 - Relational Schema - MIRM|Esquema relacional]]**
 

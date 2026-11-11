@@ -61,6 +61,12 @@ const dbErrorMiddleware = t.middleware(async ({ next }) => {
   if (!result.ok) {
     const mapped = mapDatabaseError(result.error.cause) ?? mapDatabaseError(result.error);
     if (mapped) throw mapped;
+    // A bug (TypeError, "not found" thrown as Error…) never shows its internals at the counter.
+    const cause = result.error.cause;
+    if (result.error.code === "INTERNAL_SERVER_ERROR" && cause instanceof Error && !(cause instanceof TRPCError)) {
+      console.error("[trpc] unexpected error:", cause);
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Ocurrió un error inesperado. Intente de nuevo; si sigue, avise al administrador.", cause });
+    }
   }
   return result;
 });

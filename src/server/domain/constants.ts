@@ -3,6 +3,34 @@ import { z } from "zod";
 import { normalizePhone } from "~/lib/phone";
 
 /**
+ * Spanish messages for every Zod error that has no custom message, so the person at
+ * the counter never sees "Expected integer, received float" (anti-break review, 11-nov).
+ */
+z.setErrorMap((issue, ctx) => {
+  switch (issue.code) {
+    case "invalid_type":
+      if (issue.received === "undefined" || issue.received === "null") return { message: "Requerido" };
+      if (issue.expected === "integer") return { message: "Use un número entero (sin decimales)" };
+      if (issue.expected === "number") return { message: "Escriba un número válido" };
+      return { message: "Dato inválido" };
+    case "too_small":
+      if (issue.type === "string") return { message: Number(issue.minimum) <= 1 ? "Requerido" : `Mínimo ${issue.minimum} caracteres` };
+      if (issue.type === "array") return { message: "Agregue al menos un elemento" };
+      return { message: Number(issue.minimum) === 0 && !issue.inclusive ? "Debe ser mayor que 0" : `Debe ser al menos ${issue.minimum}` };
+    case "too_big":
+      if (issue.type === "string") return { message: `Máximo ${issue.maximum} caracteres` };
+      if (issue.type === "array") return { message: `Máximo ${issue.maximum} elementos` };
+      return { message: `Debe ser como máximo ${issue.maximum}` };
+    case "invalid_enum_value":
+      return { message: "Elija una opción de la lista" };
+    case "invalid_string":
+      return { message: "Formato inválido" };
+    default:
+      return { message: ctx.defaultError };
+  }
+});
+
+/**
  * API-008 — Allowed values of every column with a CHECK ... IN (...).
  * Single source for the API (z.enum in inputs) and the client (selects, labels).
  * Must match prisma/migrations/0_init/migration.sql; if a CHECK changes, change it here.
@@ -99,10 +127,27 @@ export const zRate = z
 export const zExchangeRate = z
   .string()
   .trim()
-  .regex(/^\d{1,6}(\.\d{1,4})?$/, "Tipo de cambio inválido");
+  .regex(/^\d{1,6}(\.\d{1,4})?$/, "Tipo de cambio inválido")
+  .refine((v) => Number(v) > 0, "El tipo de cambio debe ser mayor que 0");
 export const zId = z.number().int().positive();
-export const zQty = z.number().int().positive("La cantidad debe ser mayor que 0");
+export const zQty = z
+  .number()
+  .int("La cantidad va sin decimales")
+  .positive("La cantidad debe ser mayor que 0")
+  .max(100_000, "Cantidad demasiado grande (máximo 100 000)");
 export const zText = (max: number) => z.string().trim().min(1, "Requerido").max(max);
+/**
+ * Barcode printed on the product: only digits, 8 to 14 (EAN-8, UPC-A, EAN-13,
+ * GTIN-14). Optional; empty = no code. The database checks the same rule
+ * (ck_product_barcode, migration 9).
+ */
+export const zOptBarcode = z
+  .string()
+  .trim()
+  .optional()
+  .transform((v) => (v === "" ? undefined : v))
+  .refine((v) => v === undefined || /^\d{8,14}$/.test(v), "El código de barras lleva solo números (de 8 a 14 dígitos)");
+
 export const zOptText = (max: number) =>
   z
     .string()
@@ -144,7 +189,15 @@ export const zOptChassis = z
   .transform((v) => (v ? v.toUpperCase().replace(/\s+/g, "") : undefined))
   .refine((v) => v === undefined || /^[A-Z0-9-]{5,30}$/.test(v), "Chasis: de 5 a 30 letras o números");
 /** Calendar day "YYYY-MM-DD" (DATE columns). */
-export const zDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida (AAAA-MM-DD)");
+export const zDay = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida (AAAA-MM-DD)")
+  // 2026-02-31 or 2026-13-01 pass the regex but are not real days (Invalid Date → crash).
+  .refine((v) => {
+    const d = new Date(`${v}T00:00:00.000Z`);
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+  }, "Esa fecha no existe")
+  .refine((v) => v >= "2000-01-01" && v <= "2100-12-31", "Fecha fuera de rango (revise el año)");
 
 /** Converts a "YYYY-MM-DD" day to the Date Prisma expects for a DATE column. */
 export const dayToDate = (day: string) => new Date(`${day}T00:00:00.000Z`);

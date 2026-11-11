@@ -7,7 +7,7 @@ date: 2026-11-07
 participants: Equipo (comunicada por Kenry)
 replaces: "[[DEC-006 - Technology Stack - MIRM]]"
 source: IA (redactada por Claude a pedido de Kenry, con lo que él comunicó el 07-nov)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[DEC-006 - Technology Stack - MIRM|DEC-006 (reemplazada)]]** · **[[DEC-032 - Integrity Fixes From S5 Review - MIRM|← DEC-032]]** · **[[DEC-034 - DDL as Single Source of Truth - MIRM|DEC-034 →]]**
 

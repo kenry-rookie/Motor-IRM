@@ -6,7 +6,7 @@ status: Tomada
 date: 2026-11-10
 participants: Kenry
 source: IA (Claude, a pedido de Kenry)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[DEC-054 - Invoice Record, Charge Confirmation and Admin Menu - MIRM|← DEC-054]]**
 

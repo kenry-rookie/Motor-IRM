@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { fail } from "~/server/api/errors";
 import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
+import { requireOpenCash } from "~/server/domain/cash";
 import { resolveAuthorizer, zAuthorizer } from "~/server/domain/authorize";
 import {
   customerBalances,
@@ -27,6 +28,9 @@ import { recordMovement } from "~/server/domain/inventory";
 import { lockRows, Sql } from "~/server/domain/sql";
 import { D, type Dec, round2, sum, toNio } from "~/server/domain/money";
 import { type Prisma } from "~/server/db";
+
+/** Return reason used only by «Anular factura» (migration 7); not offered for normal returns. */
+export const VOID_REASON = "Anulación de factura";
 
 /** Prompt v2 §2: owners can void an invoice up to 3 days after it was made. */
 export const VOID_DAYS = 3;
@@ -296,7 +300,7 @@ export const salesRouter = createTRPCRouter({
         });
         let customerReturnId: number | null = null;
         if (pending.length) {
-          const reason = await tx.returnReason.findFirst({ where: { name: { equals: "Anulación de factura", mode: "insensitive" } } });
+          const reason = await tx.returnReason.findFirst({ where: { name: { equals: VOID_REASON, mode: "insensitive" } } });
           if (!reason) throw fail("Falta el motivo «Anulación de factura» (migración 7).");
           const ret = await createCustomerReturn(tx, ctx.user.id, {
             saleInvoiceId: inv.id,
@@ -308,6 +312,7 @@ export const salesRouter = createTRPCRouter({
         }
         // Read before the void row: after it, the view says balance 0.
         const b = await invoiceBalance(tx, inv.id);
+        if (b.paid.gt(0)) await requireOpenCash(tx); // se devuelve efectivo al cliente
         return tx.saleInvoiceVoid.create({
           data: {
             saleInvoiceId: inv.id,
@@ -373,6 +378,13 @@ export const salesRouter = createTRPCRouter({
   extendDueDate: permissionProcedure("ventas.ver")
     .input(z.object({ invoiceId: zId, extendedDueDate: zDay, authorizer: zAuthorizer }))
     .mutation(async ({ ctx, input }) => {
+      const inv = await ctx.db.saleInvoice.findUnique({ where: { id: input.invoiceId }, include: { void: true } });
+      if (!inv) throw fail("La factura no existe.", "NOT_FOUND");
+      if (inv.paymentTerms !== "CREDITO" || !inv.dueDate) throw fail("Solo las facturas al crédito tienen vencimiento que prorrogar.");
+      if (inv.void) throw fail("La factura está anulada: no se prorroga.");
+      if (input.extendedDueDate <= inv.dueDate.toISOString().slice(0, 10)) {
+        throw fail("La prórroga debe ser una fecha posterior al vencimiento original.");
+      }
       await resolveAuthorizer(ctx.db, ctx.user, "ventas.autorizar_credito", input.authorizer);
       return ctx.db.saleInvoice.update({
         where: { id: input.invoiceId },
@@ -395,6 +407,11 @@ export const salesRouter = createTRPCRouter({
     )
     .mutation(({ ctx, input }) =>
       ctx.db.$transaction(async (tx) => {
+        // That reason belongs to «Anular factura» (DEC-055), which also leaves a record of the void.
+        const reason = await tx.returnReason.findUnique({ where: { id: input.returnReasonId } });
+        if (reason?.name.trim().toLowerCase() === VOID_REASON.toLowerCase()) {
+          throw fail("Para anular la factura use el botón «Anular factura», no una devolución.");
+        }
         return createCustomerReturn(tx, ctx.user.id, input);
       }),
     ),
@@ -454,6 +471,7 @@ export const salesRouter = createTRPCRouter({
     .mutation(({ ctx, input }) =>
       ctx.db.$transaction(async (tx) => {
         if (input.currency === "USD" && !input.exchangeRate) throw fail("Indique el tipo de cambio del dólar.");
+        await requireOpenCash(tx);
         const paymentNio = toNio(input.amount, input.currency, input.exchangeRate);
         const allocated = sum(input.allocations.map((a) => a.amount));
         if (allocated.gt(paymentNio)) {

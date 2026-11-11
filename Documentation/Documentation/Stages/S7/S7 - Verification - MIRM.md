@@ -6,7 +6,7 @@ started:
 finished:
 source: IA (nota de etapa redactada por Claude a pedido de Kenry, a partir del Restart Plan y de lo ya hecho en S5)
 ai_edit: "Claude — 2026-11-05: nota creada (objetivo, lo que ya se hizo en S5, qué hacer y criterio de cierre); 2026-11-07: estado tras el DDL v2"
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S6 - Object-Oriented Model and Requirements - MIRM|← S6]]** · **[[S5 - DDL PostgreSQL - MIRM|DDL]]** · **[[S5 - Business Queries - MIRM|Consultas]]**
 

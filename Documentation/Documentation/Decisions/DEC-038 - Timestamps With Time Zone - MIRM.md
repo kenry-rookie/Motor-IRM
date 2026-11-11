@@ -6,7 +6,7 @@ status: Tomada
 date: 2026-11-08
 participants: Kenry
 source: IA (redactada e implementada por Claude a pedido de Kenry; resuelve API-002 de "Pendientes de desarrollo")
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[Pendientes de desarrollo - MIRM|Pendientes]]** · **[[DEC-037 - Service Order Own Id - MIRM|← DEC-037]]** · **[[DEC-039 - Stock Maintained by Trigger - MIRM|DEC-039 →]]**
 

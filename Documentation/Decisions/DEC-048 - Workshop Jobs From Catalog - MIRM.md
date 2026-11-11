@@ -7,7 +7,7 @@ status: Tomada
 date: 2026-11-10
 participants: Kenry
 source: IA (Claude, a pedido de Kenry; prompt v2 §7)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[DEC-047 - Phone Number Format - MIRM|← DEC-047]]** · **[[DEC-049 - Filters in the Database - MIRM|DEC-049 →]]**
 

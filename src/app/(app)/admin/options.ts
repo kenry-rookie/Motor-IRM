@@ -5,6 +5,7 @@ export const ADMIN_OPTIONS = [
   { href: "/admin/permisos", label: "Permisos por perfil", hint: "Qué puede hacer cada perfil (pide su contraseña para guardar)", perms: ["admin.usuarios"] },
   { href: "/admin/trabajos", label: "Trabajos del taller", hint: "Catálogo de trabajos por categoría, precio de referencia y rango", perms: ["catalogos.gestionar"] },
   { href: "/admin/motos", label: "Marcas y modelos de moto", hint: "Lo que se elige al recibir una moto", perms: ["catalogos.gestionar"] },
+  { href: "/admin/productos", label: "Productos desactivados", hint: "Los que ya no se venden: no salen en Inventario ni Caja; volver a activarlos", perms: ["inventario.gestionar"] },
   { href: "/admin/catalogos", label: "Otros catálogos", hint: "Categorías y marcas de producto, métodos de pago, motivos", perms: ["catalogos.gestionar"] },
 ] as const;
 

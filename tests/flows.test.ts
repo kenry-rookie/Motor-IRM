@@ -20,6 +20,8 @@ beforeAll(async () => {
   cash = await idOf("paymentMethod", "Efectivo");
   engrase = (await db.serviceType.findFirstOrThrow({ where: { name: "Engrase" } })).id;
   frenos = (await db.serviceType.findFirstOrThrow({ where: { name: "Cambio de pastillas de freno" } })).id;
+  // Sin caja abierta no se cobra (arqueo, migración 9c): el día de pruebas empieza abriéndola.
+  await admin.cash.open({ openingNio: "1000", openingUsd: "20" });
 });
 afterAll(async () => {
   // The kardex and the stock column must still agree after everything (DEC-039).
@@ -216,6 +218,19 @@ describe("compras (API-017)", () => {
     await expect(
       encargado.purchasing.registerPayment({ supplierId: supplier.id, purchaseInvoiceId: purchase.id, amount: "3000" }),
     ).rejects.toThrow("Solo se deben C$ 2400.00");
+  });
+
+  it("una compra de contado queda pagada al registrarla (no aparece como deuda)", async () => {
+    const supplier = await db.supplier.findFirstOrThrow();
+    const p = await productByBarcode(CADENA);
+    const purchase = await encargado.purchasing.createInvoice({
+      supplierId: supplier.id,
+      invoiceNumber: "FAC-CONTADO-1",
+      paymentTerms: "CONTADO",
+      lines: [{ productId: p.id, quantity: 2, unitCost: "300" }],
+    });
+    const detail = await admin.purchasing.getInvoice({ id: purchase.id });
+    expect(Number(detail.balance)).toBe(0);
   });
 });
 
@@ -582,5 +597,73 @@ describe("anulación de facturas (DEC-055)", () => {
     });
     await db.$executeRaw`UPDATE sale_invoice SET created_at = now() - interval '4 days' WHERE id = ${old.id}`;
     await expect(admin.sales.voidInvoice({ saleInvoiceId: old.id, reason: "Demasiado tarde" })).rejects.toThrow("3 días");
+  });
+});
+
+describe("apertura y cierre de caja (arqueo, migración 9c)", () => {
+  it("calcula lo esperado, exige nota si no cuadra, cierra y bloquea cobrar con la caja cerrada", async () => {
+    // La caja de hoy ya está abierta (beforeAll): no se abre otra.
+    const st = await encargado.cash.status();
+    expect(st.open?.isToday).toBe(true);
+    await expect(encargado.cash.open({ openingNio: "5" })).rejects.toThrow("ya está abierta");
+    // La base también impide dos cajas abiertas aunque alguien se salte la API.
+    const user = await db.appUser.findFirstOrThrow({ where: { username: "admin" } });
+    await expect(
+      db.cashSession.create({ data: { businessDay: new Date("2001-01-01T00:00:00Z"), openedByUserId: user.id } }),
+    ).rejects.toThrow();
+
+    const before = (await encargado.cash.current())!;
+    const id = before.session.id;
+
+    // Venta de contado en efectivo (+240) y un retiro (−100): lo esperado cambia en +140.
+    const p = await productByBarcode(BUJIA);
+    const sale = { terms: { paymentTerms: "CONTADO" as const, payment: { paymentMethodId: cash, currency: "NIO" as const } }, lines: [{ productId: p.id, quantity: 2 }] };
+    await encargado.sales.create(sale);
+    const reason = await db.cashWithdrawalReason.findFirstOrThrow({ where: { name: "Gastos del negocio" } });
+    await admin.staff.withdrawCash({ cashWithdrawalReasonId: reason.id, amount: "100" });
+    const after = (await encargado.cash.current())!;
+    expect(after.expected.nio.minus(before.expected.nio).toString()).toBe("140");
+    expect(after.expected.usd.toString()).toBe(before.expected.usd.toString());
+
+    // Con dinero movido hoy, la apertura ya no se cancela.
+    await expect(encargado.cash.cancelOpening({ cashSessionId: id })).rejects.toThrow("no se cancela");
+
+    // Si no cuadra, la nota es obligatoria.
+    const short = after.expected.nio.minus(10).toFixed(2);
+    await expect(
+      encargado.cash.close({ cashSessionId: id, countedNio: short, countedUsd: after.expected.usd.toFixed(2) }),
+    ).rejects.toThrow("escriba una nota");
+    const closed = await encargado.cash.close({
+      cashSessionId: id,
+      countedNio: short,
+      countedUsd: after.expected.usd.toFixed(2),
+      notes: "Faltan 10 de vuelto",
+    });
+    expect(closed.diffNio.toString()).toBe("-10");
+    expect(closed.diffUsd.toString()).toBe("0");
+
+    // Caja cerrada: no se cobra ni sale dinero, y no se deja nada a medias.
+    const stock = (await productByBarcode(BUJIA)).stock;
+    await expect(encargado.sales.create(sale)).rejects.toThrow("caja de hoy ya se cerró");
+    expect((await productByBarcode(BUJIA)).stock).toBe(stock);
+    await expect(admin.staff.withdrawCash({ cashWithdrawalReasonId: reason.id, amount: "50" })).rejects.toThrow("caja");
+
+    // No se abre otra hoy; el encargado no reabre, el dueño sí, y ya se puede cobrar.
+    await expect(encargado.cash.open({ openingNio: "0" })).rejects.toThrow("ya se cerró");
+    await expect(encargado.cash.reopen({ cashSessionId: id })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await admin.cash.reopen({ cashSessionId: id });
+    await encargado.sales.create(sale);
+    const again = (await admin.cash.current())!;
+    await admin.cash.close({
+      cashSessionId: id,
+      countedNio: again.expected.nio.toFixed(2),
+      countedUsd: again.expected.usd.toFixed(2),
+    });
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Managua" }).format(new Date());
+    const hist = await admin.cash.history({ from: today, to: today });
+    expect(hist).toHaveLength(1);
+    expect(hist[0]!.diffNio!.toString()).toBe("0");
+    // Una caja no se borra.
+    await expect(db.cashSession.delete({ where: { id } })).rejects.toThrow();
   });
 });

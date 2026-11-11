@@ -15,6 +15,7 @@ const MESSAGES: Record<string, string> = {
   tg_inventory_movement_append_only: "Un movimiento de inventario no se edita ni se borra; registre un ajuste.",
   ck_inventory_movement_notes: "Los ajustes de inventario necesitan una nota que explique el motivo.",
   uq_product_barcode: "Ya existe un producto con ese código de barras.",
+  ck_product_barcode: "El código de barras lleva solo números (de 8 a 14 dígitos).",
   ck_product_list_price: "El precio no puede ser negativo.",
   // Uniques with names
   uq_product_category_name: "Ya existe una categoría con ese nombre.",
@@ -71,6 +72,13 @@ const MESSAGES: Record<string, string> = {
   ck_warranty_claim_new_service_order: "La nueva orden solo aplica cuando es otra falla, y no puede ser la misma orden.",
   uq_staff_payout_staff_id_period_start: "Ese mecánico ya tiene un pago que empieza en esa fecha.",
   ck_staff_payout_period: "El fin del periodo no puede ser antes del inicio.",
+  // Cash box (arqueo, migration 9c)
+  uq_cash_session_business_day: "La caja de ese día ya fue abierta.",
+  uq_cash_session_one_open: "Ya hay una caja abierta: ciérrela antes de abrir otra.",
+  ck_cash_session_opening: "El monto de apertura no puede ser negativo.",
+  ck_cash_session_counted: "El dinero contado no puede ser negativo.",
+  ck_cash_session_closed_complete: "Para cerrar la caja falta el conteo (córdobas y dólares).",
+  tg_cash_session_no_delete: "Una caja cerrada no se borra: queda como registro del arqueo.",
   // Purchasing
   uq_purchase_invoice_supplier_id_invoice_number: "Ese proveedor ya tiene una factura con ese número.",
   ck_purchase_invoice_due_date: "Una compra al crédito necesita vencimiento (y no puede ser antes de la compra).",
@@ -162,7 +170,17 @@ export function mapDatabaseError(error: unknown): TRPCError | null {
   if (name?.startsWith("ck_") || name?.startsWith("tg_")) {
     return new TRPCError({ code: "BAD_REQUEST", message: `Dato no permitido por la regla ${name}.`, cause: error });
   }
-  return null;
+  // Numbers that don't fit the column (a huge price × quantity, an int over 2 147 483 647).
+  const text = `${err.message ?? ""} ${JSON.stringify(err.meta ?? {})}`;
+  if (/22003|numeric field overflow|out of range|overflow/i.test(text)) {
+    return new TRPCError({ code: "BAD_REQUEST", message: "Un número es demasiado grande. Revise cantidades y precios.", cause: error });
+  }
+  if (/invalid date|Invalid value for argument/i.test(text) || err.name === "PrismaClientValidationError") {
+    return new TRPCError({ code: "BAD_REQUEST", message: "Hay un dato inválido (revise fechas y números).", cause: error });
+  }
+  // Any other database error: a readable message instead of Prisma's internals.
+  console.error("[db] unmapped error:", err.message);
+  return new TRPCError({ code: "BAD_REQUEST", message: "No se pudo guardar: algún dato no es válido. Revíselo e intente de nuevo.", cause: error });
 }
 
 /** Shorthand for business-rule errors raised by the API itself. */

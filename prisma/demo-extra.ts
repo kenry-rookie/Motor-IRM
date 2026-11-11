@@ -27,7 +27,9 @@ const daysAgo = (n: number, hour = 10) => {
   const d = new Date();
   d.setUTCHours(hour + 6, 0, 0, 0);
   d.setUTCDate(d.getUTCDate() - n);
-  return d;
+  // "Today at 9 a.m." run at 7 a.m. would be in the future: use one hour ago.
+  const limit = Date.now() - 3_600_000;
+  return d.getTime() > limit ? new Date(limit) : d;
 };
 /** The calendar day of an instant in Managua, as Prisma expects for DATE columns. */
 const day = (d: Date) => new Date(`${new Intl.DateTimeFormat("en-CA", { timeZone: "America/Managua" }).format(d)}T00:00:00.000Z`);
@@ -237,6 +239,7 @@ async function load(db: Tx, adminId: number) {
           receivedByUserId: adminId,
         },
       });
+      let total = D(0);
       for (const [i, p] of lines.entries()) {
         const prod = product[p[0]]!;
         const unitCost = n === 0 ? D(prod.cost) : D(prod.cost).times(1.04).toDecimalPlaces(2);
@@ -245,9 +248,14 @@ async function load(db: Tx, adminId: number) {
         const line = await db.purchaseInvoiceLine.create({
           data: { purchaseInvoiceId: inv.id, lineNo: i + 1, productId: prod.id, quantity: qty, unitCost },
         });
+        total = total.plus(unitCost.times(qty));
         await db.inventoryMovement.create({
           data: { productId: prod.id, movementType: "COMPRA", quantity: qty, unitCost, registeredByUserId: adminId, purchaseInvoiceLineId: line.id, movedAt: at },
         });
+      }
+      // Cash purchase = paid when bought (like the app does, migration 9a).
+      if (terms === "CONTADO") {
+        await db.supplierPayment.create({ data: { supplierId: s.id, purchaseInvoiceId: inv.id, amount: total, paidOn: day(at) } });
       }
     }
   }
@@ -367,7 +375,8 @@ async function load(db: Tx, adminId: number) {
   }
 
   // ---- Workshop history: delivered and billed (commissions to pay) ---------------------
-  const [m1, m2, m3, m4, m5, m6, m7, m8, m9, m10] = motos as [typeof motos[number], ...typeof motos];
+  const at = (i: number) => motos[i]!;
+  const [m1, m2, m3, m4, m5, m6, m7, m8, m9, m10] = [at(0), at(1), at(2), at(3), at(4), at(5), at(6), at(7), at(8), at(9)];
   const done: [typeof m1, string[], number, { id: number; rate: Prisma.Decimal | null }, string[], [string, number][]][] = [
     [m1, ["Cambio de aceite", "Cambio de filtro de aire"], 25, mech[0]!, ["150", "100"], [["Filtro de aceite original Honda XR 150L", 1]]],
     [m5, ["Cambio de kit de arrastre"], 14, mech[1]!, ["350"], [["Kit de arrastre original Bajaj Boxer 150", 1]]],

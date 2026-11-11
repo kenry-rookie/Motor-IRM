@@ -134,7 +134,7 @@ export default function OrderPage() {
                 <Field label="Kilometraje">
                   <Input inputMode="numeric" className="w-36" value={kmDraft} onChange={(e) => setKmDraft(e.target.value.replace(/\D/g, "").slice(0, 7))} />
                 </Field>
-                <Button variant="secondary" onClick={() => setKm.mutate({ serviceOrderId: o.id, odometerKm: kmDraft ? Number(kmDraft) : null })}>
+                <Button variant="secondary" disabled={setKm.isPending} onClick={() => setKm.mutate({ serviceOrderId: o.id, odometerKm: kmDraft ? Number(kmDraft) : null })}>
                   Guardar
                 </Button>
                 <Button variant="ghost" onClick={() => setKmDraft(null)}>
@@ -181,7 +181,7 @@ export default function OrderPage() {
             <Textarea disabled={!canManage} value={diagnosis ?? o.diagnosis ?? ""} onChange={(e) => setDiagnosis(e.target.value)} />
           </Field>
           {canManage && diagnosis !== null && (
-            <Button variant="secondary" className="mt-2" onClick={() => diag.mutate({ serviceOrderId: o.id, diagnosis })}>
+            <Button variant="secondary" className="mt-2" disabled={diag.isPending} onClick={() => diag.mutate({ serviceOrderId: o.id, diagnosis })}>
               Guardar diagnóstico
             </Button>
           )}
@@ -241,7 +241,7 @@ export default function OrderPage() {
               <Input placeholder="Precio" inputMode="decimal" value={fault.price} onChange={(e) => setFault({ ...fault, price: e.target.value })} />
               <Button
                 variant="secondary"
-                disabled={!fault.description}
+                disabled={!fault.description.trim() || addFault.isPending}
                 onClick={() => addFault.mutate({ serviceOrderId: o.id, description: fault.description, proposedPrice: fault.price || undefined })}
               >
                 Agregar

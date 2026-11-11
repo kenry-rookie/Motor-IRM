@@ -41,6 +41,8 @@ export type ProductFilters = {
   qualityTier?: string;
   stock?: (typeof PRODUCT_STOCK_FILTERS)[number];
   supplierId?: number;
+  /** true = only the deactivated ones (Administración); otherwise only active products. */
+  inactive?: boolean;
   sort?: (typeof PRODUCT_SORTS)[number];
   limit: number;
   offset?: number;
@@ -52,7 +54,8 @@ export const LOW_STOCK = 2;
 export async function searchProductIds(db: Db, f: ProductFilters) {
   const q = new Sql();
   const text = f.q?.trim() ?? "";
-  const where: string[] = ["true"];
+  // Deactivated products only show up in Administración (migration 9b).
+  const where: string[] = [f.inactive ? "NOT p.active" : "p.active"];
   let score = "0";
   let exact = "true";
   if (text) {

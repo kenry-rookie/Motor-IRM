@@ -143,7 +143,7 @@ export const reportsRouter = createTRPCRouter({
       const [orders] = await ctx.db.$queryRaw<{ open: number }[]>`
         SELECT count(*)::int AS open FROM v_service_order_status WHERE status NOT IN ('ENTREGADA', 'CANCELADA')`;
       const lowStock = await ctx.db.product.findMany({
-        where: { stock: { lte: input.lowStockThreshold } },
+        where: { stock: { lte: input.lowStockThreshold }, active: true },
         orderBy: { stock: "asc" },
         select: { id: true, name: true, stock: true, barcode: true },
         take: 50,

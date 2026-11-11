@@ -148,6 +148,18 @@ const AREAS: {
     ),
   },
   {
+    href: "/arqueo",
+    label: "Apertura y cierre",
+    permission: ["caja.arqueo", "reportes.ver"],
+    icon: (
+      <Icon>
+        <rect x="3" y="11" width="18" height="10" rx="2" />
+        <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+        <path d="M12 15v2" />
+      </Icon>
+    ),
+  },
+  {
     href: "/pagos",
     label: "Pago a mecánicos",
     permission: "personal.ver",
@@ -530,10 +542,39 @@ export function Shell({
         </header>
 
         <main id="contenido" className="min-w-0 px-4 py-6 md:px-8">
+          {me.permissions.includes("caja.arqueo") && pathname !== "/arqueo" && <CashBanner />}
           {children}
         </main>
         <ConfirmHost />
       </div>
+    </div>
+  );
+}
+/**
+ * Aviso de caja (migración 9c): si la caja de hoy no está abierta, o quedó
+ * abierta la de un día anterior, lo dice arriba de cada pantalla con un botón.
+ * No bloquea nada: vender y cobrar funcionan igual.
+ */
+function CashBanner() {
+  const status = api.cash.status.useQuery(undefined, { refetchInterval: 60_000 });
+  const s = status.data;
+  if (!s) return null;
+  let text: string | null = null;
+  if (s.open && !s.open.isToday) text = `La caja del ${s.open.day} sigue abierta. Ciérrela con el conteo y abra la de hoy.`;
+  else if (!s.open && !s.todayClosed) text = "La caja de hoy no está abierta. Ábrala con el dinero con que empieza el día.";
+  if (!text) return null;
+  return (
+    <div
+      role="status"
+      className="no-print border-warn-line bg-warn-bg text-warn-fg mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border px-4 py-2.5 text-sm"
+    >
+      <span>{text}</span>
+      <Link
+        href="/arqueo"
+        className="bg-brand-600 hover:bg-brand-700 rounded-md px-3 py-1.5 text-sm font-medium text-white shadow-sm"
+      >
+        {s.open ? "Cerrar caja" : "Abrir caja"}
+      </Link>
     </div>
   );
 }

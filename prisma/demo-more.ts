@@ -18,7 +18,9 @@ const daysAgo = (n: number, hour = 10) => {
   const d = new Date();
   d.setUTCHours(hour + 6, 0, 0, 0);
   d.setUTCDate(d.getUTCDate() - n);
-  return d;
+  // Never in the future ("today at 3 p.m." run in the morning): one hour ago instead.
+  const limit = Date.now() - 3_600_000;
+  return d.getTime() > limit ? new Date(limit) : d;
 };
 /** The calendar day of an instant in Managua, as Prisma expects for DATE columns. */
 const day = (d: Date) => new Date(`${new Intl.DateTimeFormat("en-CA", { timeZone: "America/Managua" }).format(d)}T00:00:00.000Z`);
@@ -178,6 +180,7 @@ export async function demoMore(db: Db, adminId: number) {
           receivedByUserId: adminId,
         },
       });
+      let total = D(0);
       for (const [i, p] of half.entries()) {
         const prod = product[p[0]]!;
         // The second purchase came a bit more expensive (to see ▲ in purchases).
@@ -186,6 +189,7 @@ export async function demoMore(db: Db, adminId: number) {
         const line = await db.purchaseInvoiceLine.create({
           data: { purchaseInvoiceId: inv.id, lineNo: i + 1, productId: prod.id, quantity: qty, unitCost },
         });
+        total = total.plus(unitCost.times(qty));
         await db.inventoryMovement.create({
           data: {
             productId: prod.id,
@@ -197,6 +201,10 @@ export async function demoMore(db: Db, adminId: number) {
             movedAt: at,
           },
         });
+      }
+      // Cash purchase = paid when bought (like the app does, migration 9a).
+      if (terms === "CONTADO") {
+        await db.supplierPayment.create({ data: { supplierId: s.id, purchaseInvoiceId: inv.id, amount: total, paidOn: day(at) } });
       }
       if (terms === "CREDITO" && name === "Repuestos El Pistón") {
         await db.supplierPayment.create({

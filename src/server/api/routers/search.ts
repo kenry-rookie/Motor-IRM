@@ -40,6 +40,7 @@ export const searchRouter = createTRPCRouter({
         qualityTier: z.enum(QUALITY_TIERS).optional(),
         stock: z.enum(PRODUCT_STOCK_FILTERS).optional(),
         supplierId: zId.optional(),
+        inactive: z.boolean().optional(),
         sort: z.enum(PRODUCT_SORTS).default("relevancia"),
         ...zPage,
       }),

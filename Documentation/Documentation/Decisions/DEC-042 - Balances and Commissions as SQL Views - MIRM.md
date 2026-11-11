@@ -6,7 +6,7 @@ status: Tomada
 date: 2026-11-10
 participants: Kenry
 source: IA (redactada e implementada por Claude a pedido de Kenry; prompt v2 §5.1.3; aplica DEC-020)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[DEC-020 - Derived Attributes as Views - MIRM|DEC-020]]** · **[[DEC-041 - Order Responsible Mechanic or Owner - MIRM|← DEC-041]]** · **[[DEC-043 - One Search, One Report, One Set of Pickers - MIRM|DEC-043 →]]**
 

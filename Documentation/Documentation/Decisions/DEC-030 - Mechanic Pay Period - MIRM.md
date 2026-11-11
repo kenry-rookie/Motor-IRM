@@ -7,7 +7,7 @@ status: Tomada (pendiente de confirmar con los dueños: Q-084 y Q-085)
 date: 2026-11-07
 participants: Kenry
 source: IA (redactada por Claude a pedido de Kenry, a partir de SRC-08; aplicada y probada por Claude en 01_schema.sql v2)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S5 - Relational Model and Normalization - MIRM|S5]]** · **[[SRC-08 - Team Observations Nov 07 - MIRM|SRC-08]]** · **[[DEC-029 - Controlled Redundancy with Composite Foreign Keys - MIRM|← DEC-029]]** · **[[DEC-031 - Purchase Invoice Discount - MIRM|DEC-031 →]]**
 

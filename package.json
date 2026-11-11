@@ -10,6 +10,7 @@
     "app:stop": "bash scripts/desktop/detener.sh",
     "build": "next build",
     "check": "next lint && tsc --noEmit",
+    "db:demo-cash": "tsx prisma/demo-cash.ts",
     "db:demo-extra": "tsx prisma/demo-extra.ts",
     "db:down": "docker compose down",
     "db:dump-schema": "node scripts/dump-schema.mjs",

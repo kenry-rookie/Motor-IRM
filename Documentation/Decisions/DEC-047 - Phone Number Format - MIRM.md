@@ -7,7 +7,7 @@ status: Tomada
 date: 2026-11-10
 participants: Kenry
 source: IA (Claude, a pedido de Kenry)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[DEC-046 - Raw SQL Without Nested Fragments - MIRM|← DEC-046]]** · **[[DEC-048 - Workshop Jobs From Catalog - MIRM|DEC-048 →]]**
 

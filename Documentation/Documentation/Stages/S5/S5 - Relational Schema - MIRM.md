@@ -11,7 +11,7 @@ based_on:
 decision: "[[DEC-010 - Advance to S5 Before Closing S4 - MIRM]]"
 source: IA (esquema relacional redactado por Claude a pedido de Kenry, a partir del MER/EER v1 y las decisiones del equipo; el DDL lo escribe el equipo)
 ai_edit: "Claude — 2026-10-28: nota creada (esquema relacional v1 para la entrega del 29-oct); diagrama completo del modelo relacional con columnas y llaves; PostgreSQL para la entrega (docente, 28-oct): tipos, dominios y pistas; 2026-10-29: convención id_<tabla> (aviso en §2); 2026-11-05: §8 movida a S5 - Normalization; 2026-11-07: versión 2 — diagramas y diccionario regenerados desde 01_schema.sql v2 (nombres id_<tabla>), §1, §2, §6, §7 y §10 actualizadas (DEC-029 a DEC-035)"
-reviewed: false
+reviewed: true
 ---
 	**[[Motor IRM|← Hub]]** · **[[S5 - Relational Model and Normalization - MIRM|← S5]]** · **[[S4 - ER and EER Model - MIRM|MER/EER]]** · **[[Business Rules - MIRM|📏 Business Rules]]** · **[[Traceability - MIRM|🔗 Traceability]]**
 

@@ -7,7 +7,7 @@ observer: Kenry (conocimiento del negocio; su hermano trabaja en este taller)
 interviewees:
 medium: Observación del equipo, dada en el chat al cerrar S5 (no es respuesta directa de los dueños)
 source: IA (transcrita por Claude tal como Kenry la escribió; sin interpretar)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S5 - Relational Model and Normalization - MIRM|S5]]** · **[[Questions - MIRM|❓ Questions]]** · **[[Business Rules - MIRM|📏 Business Rules]]** · **[[SRC-07 - Owners Answers Nov 06 - MIRM|← SRC-07]]**
 

@@ -7,7 +7,7 @@ status: Tomada
 date: 2026-11-07
 participants: Kenry
 source: IA (redactada por Claude a pedido de Kenry, con lo que él decidió al cerrar S5; aplicada y probada por Claude en 01_schema.sql v2)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S5 - Relational Model and Normalization - MIRM|S5]]** · **[[S5 - Normalization - MIRM|Normalización]]** · **[[DEC-028 - Naming Convention for Keys - MIRM|← DEC-028]]** · **[[DEC-030 - Mechanic Pay Period - MIRM|DEC-030 →]]**
 

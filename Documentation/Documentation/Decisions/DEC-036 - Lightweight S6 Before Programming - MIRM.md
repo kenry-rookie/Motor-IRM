@@ -6,7 +6,7 @@ status: Tomada — superada en parte el 07-nov (el modelo de clases completo ya 
 date: 2026-11-07
 participants: Kenry
 source: IA (redactada por Claude a pedido de Kenry, con lo que él decidió al abrir S6)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S6 - Object-Oriented Model and Requirements - MIRM|S6]]** · **[[DEC-035 - Staff Login Credentials - MIRM|← DEC-035]]**
 

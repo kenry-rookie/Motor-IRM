@@ -11,7 +11,7 @@ based_on:
   - "[[S3 - Conceptual Model - MIRM]]"
 decision: "[[DEC-036 - Lightweight S6 Before Programming - MIRM]]"
 source: IA (redactado por Claude a pedido de Kenry, a partir del DDL v2, la trazabilidad, el modelo conceptual §4 y la tabla de alcance de S6)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S6 - Object-Oriented Model and Requirements - MIRM|← S6]]** · **[[Requirements - MIRM|📋 Requirements]]** · **[[Traceability - MIRM|🔗 Traceability]]** · **[[S5 - DDL PostgreSQL - MIRM|DDL]]**
 

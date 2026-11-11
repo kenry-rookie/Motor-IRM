@@ -6,7 +6,7 @@ status: Tomada
 date: 2026-11-08
 participants: Kenry
 source: IA (redactada e implementada por Claude a pedido de Kenry; resuelve API-001 de "Pendientes de desarrollo")
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[Pendientes de desarrollo - MIRM|Pendientes]]** · **[[DEC-036 - Lightweight S6 Before Programming - MIRM|← DEC-036]]** · **[[DEC-038 - Timestamps With Time Zone - MIRM|DEC-038 →]]**
 

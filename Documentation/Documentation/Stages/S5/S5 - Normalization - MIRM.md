@@ -9,7 +9,7 @@ based_on:
   - "[[S5 - DDL PostgreSQL - MIRM]]"
 source: IA (normalización redactada por Claude a pedido de Kenry, sobre el DDL, que es la versión más fiel del esquema)
 ai_edit: "Claude — 2026-11-05: nota creada (método, DF de las 36 tablas, casos encontrados y cómo resolverlos); 2026-11-07: casos resueltos y aplicados en el DDL v2, cifra de FK corregida, nombres week_* → period_*"
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S5 - Relational Model and Normalization - MIRM|← S5]]** · **[[S5 - DDL PostgreSQL - MIRM|DDL]]** · **[[S5 - Relational Schema - MIRM|Esquema]]**
 

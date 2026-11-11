@@ -7,7 +7,7 @@ status: Tomada
 date: 2026-11-07
 participants: Kenry
 source: IA (redactada por Claude a pedido de Kenry, a partir de la revisión de la IA del 06-nov; aplicada y probada por Claude en 01_schema.sql v2)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S5 - Relational Model and Normalization - MIRM|S5]]** · **[[DEC-031 - Purchase Invoice Discount - MIRM|← DEC-031]]** · **[[DEC-033 - Technology Stack Change to TypeScript and Node - MIRM|DEC-033 →]]**
 

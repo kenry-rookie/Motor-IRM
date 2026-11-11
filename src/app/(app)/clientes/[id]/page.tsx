@@ -40,7 +40,7 @@ export default function CustomerPage() {
           <p className="text-3xl font-bold">{money(d.totalBalance)}</p>
         </Card>
         <Card>
-          <p className="text-sm text-neutral-400">Interés estimado (provisional, Q-009/Q-021)</p>
+          <p className="text-sm text-neutral-400">Interés estimado</p>
           <p className="text-3xl font-bold">{money(d.totalInterest)}</p>
         </Card>
       </div>

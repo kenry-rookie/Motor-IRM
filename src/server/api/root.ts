@@ -1,5 +1,6 @@
 import { adminRouter } from "~/server/api/routers/admin";
 import { authRouter } from "~/server/api/routers/auth";
+import { cashRouter } from "~/server/api/routers/cash";
 import { customerRouter } from "~/server/api/routers/customer";
 import { inventoryRouter } from "~/server/api/routers/inventory";
 import { purchasingRouter } from "~/server/api/routers/purchasing";
@@ -20,6 +21,7 @@ export const appRouter = createTRPCRouter({
   customer: customerRouter,
   inventory: inventoryRouter,
   sales: salesRouter,
+  cash: cashRouter,
   service: serviceRouter,
   purchasing: purchasingRouter,
   staff: staffRouter,

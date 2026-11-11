@@ -3,6 +3,7 @@ import { z } from "zod";
 import { fail } from "~/server/api/errors";
 import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
 import { type Prisma } from "~/server/db";
+import { requireOpenCash } from "~/server/domain/cash";
 import { resolveAuthorizer } from "~/server/domain/authorize";
 import { buildProductLines, createInvoice, type LineDraft, zProductLine, zTerms } from "~/server/domain/billing";
 import {
@@ -570,6 +571,7 @@ export const serviceRouter = createTRPCRouter({
           });
           newServiceOrderId = n.id;
         }
+        if (input.outcome === "REEMBOLSO") await requireOpenCash(tx);
         const claim = await tx.warrantyClaim.create({
           data: {
             originalServiceOrderId: original.id,

@@ -8,7 +8,7 @@ date: 2026-11-10
 participants: Kenry
 source: IA (redactada por Claude a pedido de Kenry; prompt v2 §5.1.2)
 replaces: DEC-035
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[DEC-035 - Staff Login Credentials - MIRM|← DEC-035 (reemplazada)]]** · **[[DEC-044 - Motorcycle Brands and Models Only From Catalog - MIRM|← DEC-044]]**
 

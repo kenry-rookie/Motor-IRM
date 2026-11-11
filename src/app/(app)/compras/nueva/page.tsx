@@ -124,9 +124,9 @@ export default function NewPurchasePage() {
     create.mutate({
       supplierId: d.supplierId,
       invoiceNumber: d.invoiceNumber,
-      purchaseDate: d.purchaseDate,
+      purchaseDate: d.purchaseDate || undefined,
       paymentTerms: d.paymentTerms,
-      dueDate: d.paymentTerms === "CREDITO" ? d.dueDate : undefined,
+      dueDate: d.paymentTerms === "CREDITO" && d.dueDate ? d.dueDate : undefined,
       discountAmount: d.discountAmount || "0",
       lines: d.lines.map((l) => ({
         productId: l.productId,

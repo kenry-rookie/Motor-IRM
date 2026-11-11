@@ -113,8 +113,33 @@ export function Field({
 const inputCls =
   "w-full rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-neutral-100 placeholder:text-neutral-500 transition-colors duration-150 hover:border-neutral-600 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500/50";
 
-export function Input({ className, ...props }: ComponentProps<"input">) {
-  return <input className={cx(inputCls, className)} {...props} />;
+/**
+ * Keeps what can be typed in a number field: `inputMode="numeric"` → digits only,
+ * `inputMode="decimal"` → digits and one decimal point (a comma becomes a point).
+ * Letters typed or pasted simply don't appear, in every amount field of the app.
+ */
+export function cleanNumber(value: string, mode: "numeric" | "decimal"): string {
+  if (mode === "numeric") return value.replace(/\D/g, "");
+  const v = value.replace(/,/g, ".").replace(/[^\d.]/g, "");
+  const dot = v.indexOf(".");
+  return dot === -1 ? v : v.slice(0, dot + 1) + v.slice(dot + 1).replace(/\./g, "");
+}
+
+export function Input({ className, onChange, ...props }: ComponentProps<"input">) {
+  const mode = props.inputMode === "numeric" || props.inputMode === "decimal" ? props.inputMode : null;
+  return (
+    <input
+      className={cx(inputCls, className)}
+      onChange={(e) => {
+        if (mode) {
+          const clean = cleanNumber(e.target.value, mode);
+          if (clean !== e.target.value) e.target.value = clean;
+        }
+        onChange?.(e);
+      }}
+      {...props}
+    />
+  );
 }
 /**
  * Phone field (DEC-047): formats while typing — 8888-1111 for Nicaragua, or a

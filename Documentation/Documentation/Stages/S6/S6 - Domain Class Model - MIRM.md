@@ -10,7 +10,7 @@ based_on:
   - "[[S4 - ER and EER Model - MIRM]]"
   - "[[S6 - Domain Model and Services - MIRM]]"
 source: IA (redactado por Claude a pedido de Kenry; clases, atributos, enumeraciones y relaciones generados desde la base creada con 01_schema.sql v2; tipos de relación y métodos decididos por Claude con las reglas y DEC del proyecto)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S6 - Object-Oriented Model and Requirements - MIRM|← S6]]** · **[[S6 - Domain Model and Services - MIRM|Servicios y estados]]** · **[[S5 - Relational Schema - MIRM|Esquema relacional]]** · **[[Knowledge - Del modelo relacional al modelo orientado a objetos y el stack TypeScript|🧠 Knowledge]]**
 

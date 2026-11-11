@@ -7,7 +7,7 @@ status: Tomada
 date: 2026-11-07
 participants: Kenry
 source: IA (redactada por Claude a pedido de Kenry; adaptada de la recomendación D10, hecha para Django, al cambio a TypeScript/Node; aplicada y probada por Claude en 01_schema.sql v2)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[DEC-018 - Staff Table Mapping - MIRM|DEC-018]]** · **[[DEC-034 - DDL as Single Source of Truth - MIRM|← DEC-034]]**
 

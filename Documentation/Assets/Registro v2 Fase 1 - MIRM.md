@@ -2,7 +2,7 @@
 project: "[[Motor IRM]]"
 date: 2026-11-10
 source: IA (Claude, a pedido de Kenry — prompt v2, Fase 1)
-reviewed: false
+reviewed: true
 ---
 # Registro v2 — Fase 1 (limpieza) · 10-nov-2026
 

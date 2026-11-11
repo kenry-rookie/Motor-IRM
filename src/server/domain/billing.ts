@@ -4,6 +4,7 @@ import { fail } from "~/server/api/errors";
 import { type SessionUser } from "~/server/auth/session";
 import { type Prisma } from "~/server/db";
 import { resolveAuthorizer, zAuthorizer } from "~/server/domain/authorize";
+import { requireOpenCash } from "~/server/domain/cash";
 import {
   CURRENCIES,
   dayToDate,
@@ -212,6 +213,7 @@ export async function createInvoice(
   }
 
   if (terms.paymentTerms === "CONTADO" && terms.payment && total.gt(0)) {
+    await requireOpenCash(tx);
     const p = terms.payment;
     if (p.currency === "USD" && !p.exchangeRate) throw fail("Indique el tipo de cambio del dólar.");
     const amount = p.currency === "USD" ? D(total).div(p.exchangeRate!).toDecimalPlaces(2, 0) : total;

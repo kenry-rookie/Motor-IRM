@@ -6,7 +6,7 @@ status: Tomada
 date: 2026-11-10
 participants: Kenry
 source: IA (Claude, a pedido de Kenry; error encontrado por Kenry en su Mac)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[DEC-045 - Login Only in App User - MIRM|← DEC-045]]** · **[[DEC-047 - Phone Number Format - MIRM|DEC-047 →]]**
 

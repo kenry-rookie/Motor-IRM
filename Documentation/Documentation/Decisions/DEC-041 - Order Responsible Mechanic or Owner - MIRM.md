@@ -7,7 +7,7 @@ status: Tomada
 date: 2026-11-10
 participants: Kenry
 source: IA (redactada e implementada por Claude a pedido de Kenry; prompt v2 §8.1, respuestas de los dueños del 10-nov)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[DEC-040 - Prisma Migrations as Single Source of Truth - MIRM|← DEC-040]]** · **[[DEC-042 - Balances and Commissions as SQL Views - MIRM|DEC-042 →]]**
 

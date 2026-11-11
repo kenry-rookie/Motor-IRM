@@ -6,7 +6,7 @@ status: Tomada
 date: 2026-11-10
 participants: Kenry
 source: IA (redactada e implementada por Claude a pedido de Kenry; prompt v2 §5.1.4–6)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[DEC-042 - Balances and Commissions as SQL Views - MIRM|← DEC-042]]** · **[[DEC-044 - Motorcycle Brands and Models Only From Catalog - MIRM|DEC-044 →]]**
 

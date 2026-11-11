@@ -7,7 +7,7 @@ date: 2026-11-10
 participants: Kenry
 source: IA (redactada e implementada por Claude a pedido de Kenry; prompt v2 §5.1.1)
 replaces: DEC-034
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[DEC-034 - DDL as Single Source of Truth - MIRM|← DEC-034 (reemplazada)]]** · **[[DEC-041 - Order Responsible Mechanic or Owner - MIRM|DEC-041 →]]**
 

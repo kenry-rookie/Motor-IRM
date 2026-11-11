@@ -10,7 +10,7 @@ based_on:
   - "[[S5 - Relational Schema - MIRM]]"
 source: IA (consultas redactadas por Claude a pedido de Kenry y probadas en PostgreSQL 16 con datos de los escenarios)
 ai_edit: "Claude — 2026-10-29: nota creada (método, patrones y 20 consultas probadas); consultas adaptadas a la convención id_<tabla>; 2026-11-07: DDL v2 — Q16 y Q19 actualizadas, Q21 y Q22 nuevas, las 22 probadas"
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S5 - Relational Model and Normalization - MIRM|← S5]]** · **[[S5 - DDL PostgreSQL - MIRM|DDL]]** · **[[S5 - Relational Schema - MIRM|Esquema]]**
 

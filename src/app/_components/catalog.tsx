@@ -145,6 +145,12 @@ export function ProductFilterBar({
   );
 }
 
+/** Items of several pages joined; if the data changed between pages, no repeats. */
+export function uniqueById<T extends { id: number }>(items: T[]): T[] {
+  const seen = new Set<number>();
+  return items.filter((x) => (seen.has(x.id) ? false : (seen.add(x.id), true)));
+}
+
 /** Text + filters → a page of products, with "Cargar más". */
 export function useProductSearch(text: string, filters: ProductFilterState, pageSize = 30) {
   const q = useDebounced(text.trim(), 200);
@@ -155,19 +161,25 @@ export function useProductSearch(text: string, filters: ProductFilterState, page
     setLastKey(key);
     setPages(1);
   }
-  const res = api.search.products.useQuery(
-    { q: q || undefined, ...filters, limit: pageSize * pages, offset: 0 },
-    { placeholderData: (p) => p },
+  // One request per page (offset = i × pageSize), never one growing request:
+  // the API allows at most 100 per request, so "Cargar más" used to break on
+  // the 4th page (limit 120). Pages already loaded stay cached.
+  const res = api.useQueries((t) =>
+    Array.from({ length: pages }, (_, i) =>
+      t.search.products({ q: q || undefined, ...filters, limit: pageSize, offset: i * pageSize }, { placeholderData: (p) => p }),
+    ),
   );
+  const first = res[0];
+  const last = res[res.length - 1];
   return {
-    items: res.data?.items ?? [],
-    total: res.data?.total ?? 0,
-    suggestionsOnly: res.data?.suggestionsOnly ?? false,
-    didYouMean: res.data?.didYouMean ?? null,
-    loading: res.isLoading,
-    fetching: res.isFetching,
-    error: res.error,
-    hasMore: res.data?.nextOffset != null,
+    items: uniqueById(res.flatMap((r) => r.data?.items ?? [])),
+    total: first?.data?.total ?? 0,
+    suggestionsOnly: first?.data?.suggestionsOnly ?? false,
+    didYouMean: first?.data?.didYouMean ?? null,
+    loading: first?.isLoading ?? true,
+    fetching: res.some((r) => r.isFetching),
+    error: res.find((r) => r.error)?.error ?? null,
+    hasMore: last?.data?.nextOffset != null,
     loadMore: () => setPages((p) => p + 1),
     query: q,
   };

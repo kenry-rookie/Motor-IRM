@@ -6,7 +6,7 @@ started: 2026-11-07
 finished: 2026-11-07
 source: IA (nota de etapa redactada por Claude a pedido de Kenry, a partir de S5, DEC-006, el Restart Plan y la recomendación de tecnologías)
 ai_edit: "Claude — 2026-10-27: nota creada con Requirements como pendiente (decisión del equipo); 2026-10-28: insumos y navegación desde S5; 2026-11-05: nota completa (objetivo, conceptos, qué hacer, alcance de la v1 y criterio de cierre); la arquitectura queda en S8 (decisión de Kenry, 05-nov); 2026-11-07: cambio a TypeScript/Node (DEC-033) y S5 cerrada; S6 ligera cerrada (DEC-036); modelo de clases completo"
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S5 - Relational Model and Normalization - MIRM|← S5]]** · **[[S5 - Relational Schema - MIRM|Esquema relacional]]** · **[[S5 - DDL PostgreSQL - MIRM|DDL]]** · **[[Requirements - MIRM|📋 Requirements]]**
 

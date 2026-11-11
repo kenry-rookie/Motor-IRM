@@ -190,11 +190,11 @@ export const purchasingRouter = createTRPCRouter({
   ),
 
   listInvoices: view
-    .input(z.object({ supplierId: zId.optional(), ...pageFields }).default({}))
+    .input(z.object({ supplierId: zId.optional(), paymentTerms: z.enum(PAYMENT_TERMS).optional(), ...pageFields }).default({}))
     .query(async ({ ctx, input }) => {
       const { cursor, limit } = input;
       const items = await ctx.db.purchaseInvoice.findMany({
-        where: { supplierId: input.supplierId },
+        where: { supplierId: input.supplierId, paymentTerms: input.paymentTerms },
         orderBy: { id: "desc" },
         include: { supplier: true },
         take: limit + 1,
@@ -222,8 +222,9 @@ export const purchasingRouter = createTRPCRouter({
     const p = await ctx.db.purchaseInvoice.findUniqueOrThrow({
       where: { id: input.id },
       include: {
-        payments: true,
+        payments: { orderBy: { paidOn: "asc" } },
         supplier: true,
+        receivedBy: { select: { username: true } },
         lines: { orderBy: { lineNo: "asc" }, include: { product: true, returnLines: { include: { supplierReturn: true } } } },
         returns: { include: { lines: true, returnReason: true } },
       },
@@ -239,7 +240,7 @@ export const purchasingRouter = createTRPCRouter({
         .object({
           supplierId: zId,
           invoiceNumber: zText(30),
-          purchaseDate: zDay.optional(),
+          purchaseDate: zDay.refine((d) => d <= todayInManagua(), "La compra no puede tener fecha futura").optional(),
           paymentTerms: z.enum(PAYMENT_TERMS),
           dueDate: zDay.optional(),
           discountAmount: zMoney.default("0"),
@@ -297,6 +298,14 @@ export const purchasingRouter = createTRPCRouter({
               });
             }
           }
+        }
+        // A cash purchase is paid when it is bought: register that payment, so it
+        // doesn't show up as a debt with the supplier (migration 9a fixed the old ones).
+        const total = gross.minus(input.discountAmount);
+        if (input.paymentTerms === "CONTADO" && total.gt(0)) {
+          await tx.supplierPayment.create({
+            data: { supplierId: input.supplierId, purchaseInvoiceId: invoice.id, amount: total, paidOn: invoice.purchaseDate },
+          });
         }
         return invoice;
       }),
@@ -370,7 +379,7 @@ export const purchasingRouter = createTRPCRouter({
         amount: zPositiveMoney,
         currency: z.enum(CURRENCIES).default("NIO"),
         exchangeRate: zExchangeRate.optional(),
-        paidOn: zDay.optional(),
+        paidOn: zDay.refine((d) => d <= todayInManagua(), "El pago no puede tener fecha futura").optional(),
       }),
     )
     .mutation(({ ctx, input }) =>

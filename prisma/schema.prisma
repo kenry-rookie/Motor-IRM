@@ -15,6 +15,7 @@
 //   - responsible of an order: owner ⇒ no commission (DEC-041)    4_staff_kind_and_balance_views
 //   - balance / commission / margin VIEWS (v_*, DEC-042)          4_staff_kind_and_balance_views
 //     Views are read with $queryRaw from src/server/domain/balances.ts.
+//   - cash_session: one open at a time, close complete-or-nothing, no delete  9c_cash_session
 //   - phone format CHECKs, "at least one service per order" (deferred
 //     constraint trigger), filter views v_*_overview      5_workshop_catalog_phones_filters
 // When you change a column covered by one of those, update the SQL migration too.
@@ -118,6 +119,8 @@ model AppUser {
   purchaseInvoices             PurchaseInvoice[]
   supplierReturns              SupplierReturn[]
   inventoryMovements           InventoryMovement[]
+  cashSessionsOpened           CashSession[]              @relation("CashSessionOpenedBy")
+  cashSessionsClosed           CashSession[]              @relation("CashSessionClosedBy")
 
   @@map("app_user")
 }
@@ -297,6 +300,7 @@ model Product {
   qualityTier       String  @map("quality_tier") @db.VarChar(20) // 'ALTA' | 'MEDIA' | 'BAJA'
   listPrice         Decimal @map("list_price") @db.Decimal(12, 2)
   stock             Int     @default(0) // cache of SUM(inventory_movement), kept by a DB trigger (DEC-039): never write it
+  active            Boolean @default(true) // inactive = hidden from Inventario/Caja/Compras, reactivated in Administración (migration 9b)
 
   category             ProductCategory       @relation(fields: [productCategoryId], references: [id], onDelete: Restrict, map: "fk_product_product_category_id")
   brand                ProductBrand          @relation(fields: [productBrandId], references: [id], onDelete: Restrict, map: "fk_product_product_brand_id")
@@ -372,6 +376,33 @@ model CashWithdrawal {
   reason      CashWithdrawalReason @relation(fields: [cashWithdrawalReasonId], references: [id], onDelete: Restrict, map: "fk_cash_withdrawal_cash_withdrawal_reason_id")
 
   @@map("cash_withdrawal")
+}
+
+/// Apertura y cierre de caja (arqueo) — una por día de negocio (migración 9c).
+/// Lo esperado se calcula de los pagos en efectivo y las salidas de efectivo
+/// del día (src/server/domain/cash.ts) y se guarda al cerrar junto con lo contado.
+/// Reglas en SQL: una sola abierta a la vez (índice parcial), cierre completo
+/// o nada (ck_cash_session_closed_complete), no se borra (trigger).
+model CashSession {
+  id             Int       @id(map: "pk_cash_session") @default(autoincrement())
+  businessDay    DateTime  @unique(map: "uq_cash_session_business_day") @map("business_day") @db.Date
+  openedAt       DateTime  @default(dbgenerated("CURRENT_TIMESTAMP(0)")) @map("opened_at") @db.Timestamptz(0)
+  openedByUserId Int       @map("opened_by_user_id")
+  openingNio     Decimal   @default(0) @map("opening_nio") @db.Decimal(12, 2)
+  openingUsd     Decimal   @default(0) @map("opening_usd") @db.Decimal(12, 2)
+  openingNotes   String?   @map("opening_notes") @db.VarChar(200)
+  closedAt       DateTime? @map("closed_at") @db.Timestamptz(0)
+  closedByUserId Int?      @map("closed_by_user_id")
+  expectedNio    Decimal?  @map("expected_nio") @db.Decimal(12, 2)
+  expectedUsd    Decimal?  @map("expected_usd") @db.Decimal(12, 2)
+  countedNio     Decimal?  @map("counted_nio") @db.Decimal(12, 2)
+  countedUsd     Decimal?  @map("counted_usd") @db.Decimal(12, 2)
+  closingNotes   String?   @map("closing_notes") @db.VarChar(200)
+
+  openedBy AppUser  @relation("CashSessionOpenedBy", fields: [openedByUserId], references: [id], onDelete: Restrict, map: "fk_cash_session_opened_by_user_id")
+  closedBy AppUser? @relation("CashSessionClosedBy", fields: [closedByUserId], references: [id], onDelete: Restrict, map: "fk_cash_session_closed_by_user_id")
+
+  @@map("cash_session")
 }
 
 // ============================================================

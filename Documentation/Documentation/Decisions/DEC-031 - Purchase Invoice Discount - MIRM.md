@@ -7,7 +7,7 @@ status: Tomada (Q-081 sigue abierta para los detalles)
 date: 2026-11-07
 participants: Kenry
 source: IA (redactada por Claude a pedido de Kenry; aplicada y probada por Claude en 01_schema.sql v2)
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S5 - Relational Model and Normalization - MIRM|S5]]** · **[[DEC-030 - Mechanic Pay Period - MIRM|← DEC-030]]** · **[[DEC-032 - Integrity Fixes From S5 Review - MIRM|DEC-032 →]]**
 

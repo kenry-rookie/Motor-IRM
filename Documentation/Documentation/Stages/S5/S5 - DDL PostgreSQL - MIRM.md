@@ -10,7 +10,7 @@ based_on:
 source_of_truth: db/postgres/01_schema.sql (repositorio de GitHub)
 source: IA (nota y dos tablas de ejemplo redactadas por Claude a pedido de Kenry; v1 del DDL escrita por el equipo y Claude; v2 del 07-nov escrita y probada por Claude a pedido de Kenry)
 ai_edit: "Claude — 2026-11-07: versión 2 del script (DEC-029 a DEC-035), §1 reordenada, tabla de pruebas con 61 casos, §6 (seed perdido)"
-reviewed: false
+reviewed: true
 ---
 **[[Motor IRM|← Hub]]** · **[[S5 - Relational Model and Normalization - MIRM|← S5]]** · **[[S5 - Relational Schema - MIRM|Esquema relacional]]**
 

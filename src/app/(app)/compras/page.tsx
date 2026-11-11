@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
 import { SupplierForm, SupplierPayment } from "~/app/(app)/compras/supplier-form";
-import { Alert, Badge, Button, Card, cx, Dialog, Input, PageTitle, Table } from "~/app/_components/ui";
+import { Alert, Badge, Button, Card, cx, Dialog, Input, PageTitle, Segmented, Table } from "~/app/_components/ui";
 import { errorMessage } from "~/lib/errors";
 import { dec, formatDay, money } from "~/lib/format";
 import { api } from "~/trpc/react";
@@ -84,21 +84,46 @@ function Purchases() {
 }
 
 function Invoices({ canManage }: { canManage: boolean }) {
-  const invoices = api.purchasing.listInvoices.useQuery({ limit: 50 });
+  const [terms, setTerms] = useState<"todas" | "CONTADO" | "CREDITO">("todas");
+  // Paged by cursor (50 at a time) with «Cargar más», like the kardex.
+  const invoices = api.purchasing.listInvoices.useInfiniteQuery(
+    { limit: 50, paymentTerms: terms === "todas" ? undefined : terms },
+    { getNextPageParam: (l) => l.nextCursor, initialCursor: null },
+  );
+  const items = invoices.data?.pages.flatMap((pg) => pg.items) ?? [];
   const [paying, setPaying] = useState<{ supplierId: number; purchaseInvoiceId: number; balance: string } | null>(null);
   return (
     <Card>
+      <Segmented
+        label="Tipo de compra"
+        className="mb-3"
+        value={terms}
+        onChange={setTerms}
+        options={[
+          { value: "todas", label: "Todas" },
+          { value: "CONTADO", label: "Contado" },
+          { value: "CREDITO", label: "Crédito" },
+        ]}
+      />
       {invoices.error && <Alert>{errorMessage(invoices.error)}</Alert>}
-      <Table head={["#", "Proveedor", "Factura", "Fecha", "Tipo", "Vence", "Total", "Saldo", ""]} empty={invoices.data?.items.length === 0}>
-        {invoices.data?.items.map((p) => (
+      <Table head={["#", "Proveedor", "Factura", "Fecha", "Tipo", "Vence", "Total", "Saldo", ""]} empty={!invoices.isLoading && items.length === 0}>
+        {items.map((p) => (
           <tr key={p.id}>
-            <td>{p.id}</td>
+            <td>
+              <Link href={`/compras/${p.id}`} className="text-brand-600 hover:underline">
+                {p.id}
+              </Link>
+            </td>
             <td>
               <Link href={`/compras/proveedores/${p.supplier.id}`} className="hover:text-brand-600">
                 {p.supplier.name}
               </Link>
             </td>
-            <td>{p.invoiceNumber}</td>
+            <td>
+              <Link href={`/compras/${p.id}`} className="hover:text-brand-600">
+                {p.invoiceNumber}
+              </Link>
+            </td>
             <td>{formatDay(p.purchaseDate)}</td>
             <td>{p.paymentTerms === "CREDITO" ? "Crédito" : "Contado"}</td>
             <td>{formatDay(p.dueDate)}</td>
@@ -114,6 +139,11 @@ function Invoices({ canManage }: { canManage: boolean }) {
           </tr>
         ))}
       </Table>
+      {invoices.hasNextPage && (
+        <Button variant="secondary" className="mt-3" onClick={() => void invoices.fetchNextPage()} disabled={invoices.isFetchingNextPage}>
+          Cargar más
+        </Button>
+      )}
       <Dialog open={!!paying} onClose={() => setPaying(null)} title="Pago a proveedor">
         {paying && <SupplierPayment {...paying} onDone={() => setPaying(null)} />}
       </Dialog>

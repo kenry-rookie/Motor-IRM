@@ -61,7 +61,14 @@ export function ProductForm({
         <Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
       </Field>
       <Field label="Código de barras (opcional)" error={errs.barcode}>
-        <Input value={f.barcode} onChange={(e) => setF({ ...f, barcode: e.target.value })} />
+        {/* Only digits: whatever else is typed or pasted is dropped (the scanner sends digits). */}
+        <Input
+          inputMode="numeric"
+          maxLength={14}
+          placeholder="Solo números, 8 a 14 dígitos"
+          value={f.barcode}
+          onChange={(e) => setF({ ...f, barcode: e.target.value.replace(/\D/g, "") })}
+        />
       </Field>
       <Field label="Categoría">
         <Select value={f.productCategoryId} onChange={(e) => setF({ ...f, productCategoryId: Number(e.target.value) })}>

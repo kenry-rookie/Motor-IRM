@@ -147,14 +147,15 @@ function ReturnForm({ invoiceId, lines, onDone }: { invoiceId: number; lines: { 
       <Select value={reasonId} onChange={(e) => setReasonId(Number(e.target.value))}>
         <option value={0}>Motivo…</option>
         {reasons.data
-          ?.filter((r) => r.active)
+          // «Anulación de factura» is only for the «Anular factura» button.
+          ?.filter((r) => r.active && r.name.trim().toLowerCase() !== "anulación de factura")
           .map((r) => (
             <option key={r.id} value={r.id}>
               {r.name}
             </option>
           ))}
       </Select>
-      <Alert kind="info">La devolución baja el saldo de la factura y regresa el producto al inventario. El reembolso en efectivo aún no se registra (Q-011).</Alert>
+      <Alert kind="info">La devolución baja el saldo de la factura y regresa el producto al inventario. Si le devuelve efectivo al cliente, regístrelo en Retiros de caja.</Alert>
       <Alert>{ret.error && errorMessage(ret.error)}</Alert>
       <Button className="w-full" disabled={!reasonId || chosen.length === 0 || ret.isPending} onClick={() => ret.mutate({ saleInvoiceId: invoiceId, returnReasonId: reasonId, lines: chosen })}>
         Registrar devolución

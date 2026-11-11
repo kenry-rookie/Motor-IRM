@@ -3,7 +3,7 @@ import { z } from "zod";
 import { fail } from "~/server/api/errors";
 import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
 import { type Prisma } from "~/server/db";
-import { QUALITY_TIERS, zId, zMoney, zOptText, pageFields, zQty, zText } from "~/server/domain/constants";
+import { QUALITY_TIERS, zId, zMoney, pageFields, zQty, zText, zOptBarcode } from "~/server/domain/constants";
 import { lastCost, recordMovement } from "~/server/domain/inventory";
 import { productInclude } from "~/server/domain/search";
 
@@ -18,7 +18,7 @@ const zProductData = z.object({
   productCategoryId: zId,
   productBrandId: zId,
   name: zText(150),
-  barcode: zOptText(50),
+  barcode: zOptBarcode,
   qualityTier: z.enum(QUALITY_TIERS),
 });
 
@@ -53,7 +53,8 @@ export const inventoryRouter = createTRPCRouter({
 
   /** Fast lookup for the barcode scanner at the counter (API-021). */
   byBarcode: view.input(z.object({ barcode: zText(50) })).query(({ ctx, input }) =>
-    ctx.db.product.findUnique({ where: { barcode: input.barcode }, include: productInclude }),
+    // A deactivated product can't be sold or bought: the scanner doesn't find it.
+    ctx.db.product.findFirst({ where: { barcode: input.barcode, active: true }, include: productInclude }),
   ),
 
   get: view.input(z.object({ id: zId })).query(async ({ ctx, input }) => {
@@ -119,6 +120,15 @@ export const inventoryRouter = createTRPCRouter({
       const { id, ...data } = input;
       return ctx.db.product.update({ where: { id }, data: { ...data, barcode: data.barcode ?? null } });
     }),
+
+  /**
+   * Deactivate / reactivate (migration 9b). A product is never deleted: it has
+   * sales, purchases and kardex. Deactivated = hidden from Inventario, Caja and
+   * Compras; it is reactivated from Administración → Productos desactivados.
+   */
+  setActive: manage
+    .input(z.object({ id: zId, active: z.boolean() }))
+    .mutation(({ ctx, input }) => ctx.db.product.update({ where: { id: input.id }, data: { active: input.active } })),
 
   /** list_price + price history in one transaction. */
   changePrice: permissionProcedure("inventario.precios")
