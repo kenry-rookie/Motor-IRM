@@ -8,6 +8,7 @@ import { CustomerForm } from "~/app/(app)/clientes/customer-form";
 import { errorMessage } from "~/lib/errors";
 import { money } from "~/lib/format";
 import { useDebounced } from "~/lib/use-debounced";
+import { SearchField } from "~/app/_components/pickers";
 import { api } from "~/trpc/react";
 
 /** CLI-009 — Customers (search by name, phone, cédula or plate) and who owes money. */
@@ -16,12 +17,15 @@ export default function CustomersPage() {
   const [search, setSearch] = useState("");
   const [creating, setCreating] = useState(false);
   const dsearch = useDebounced(search.trim(), 200);
+  // Without text: browse page by page. With text: the one search service (DEC-043).
   const list = api.customer.list.useInfiniteQuery(
-    { search: dsearch || undefined, limit: 50 },
-    { getNextPageParam: (l) => l.nextCursor, initialCursor: null },
+    { limit: 50 },
+    { getNextPageParam: (l) => l.nextCursor, initialCursor: null, enabled: !dsearch },
   );
+  const found = api.search.customers.useQuery({ q: dsearch, limit: 50 }, { enabled: !!dsearch, placeholderData: (p) => p });
   const receivables = api.sales.receivables.useQuery();
-  const items = list.data?.pages.flatMap((p) => p.items) ?? [];
+  const items = dsearch ? (found.data?.items ?? []) : (list.data?.pages.flatMap((p) => p.items) ?? []);
+  const loading = dsearch ? found.isLoading : list.isLoading;
   return (
     <>
       <PageTitle
@@ -30,13 +34,19 @@ export default function CustomersPage() {
       />
       <div className="grid gap-4 lg:grid-cols-[1fr_380px]">
         <Card>
-          <input
-            className="mb-4 w-full max-w-sm rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2"
+          <SearchField
+            className="mb-4 w-full max-w-md"
+            label="Buscar cliente"
             placeholder="Nombre, teléfono, cédula o placa…"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onValue={setSearch}
           />
-          <Table head={["Cliente", "Teléfono", "Motos"]} empty={!list.isLoading && items.length === 0}>
+          {dsearch && found.data?.suggestionsOnly && (
+            <div className="mb-3">
+              <Alert kind="info">Nadie se llama exactamente «{dsearch}». Estos se parecen.</Alert>
+            </div>
+          )}
+          <Table head={["Cliente", "Teléfono", "Motos"]} empty={!loading && items.length === 0}>
             {items.map((c) => (
               <tr key={c.id}>
                 <td>
@@ -51,7 +61,7 @@ export default function CustomersPage() {
               </tr>
             ))}
           </Table>
-          {list.hasNextPage && (
+          {!dsearch && list.hasNextPage && (
             <Button variant="secondary" className="mt-3" onClick={() => void list.fetchNextPage()}>
               Cargar más
             </Button>

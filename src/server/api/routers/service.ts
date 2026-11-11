@@ -49,6 +49,17 @@ async function assertOpen(tx: Tx, serviceOrderId: number) {
   return status;
 }
 
+/**
+ * DEC-041 — who can be responsible and with what rate. The database checks it
+ * again (tg_service_order_check_responsible); this gives a clear message first.
+ */
+async function responsibleRate(tx: Tx, staffId: number) {
+  const staff = await tx.staff.findUniqueOrThrow({ where: { id: staffId } });
+  if (!staff.active || !staff.canRepair) throw fail(`${staff.name} no está activo o no repara motos.`);
+  const appliedCommissionRate = staff.kind === "DUENO" ? null : staff.commissionRate;
+  return { staff, appliedCommissionRate };
+}
+
 const orderListInclude = {
   motorcycle: { include: { customer: true, model: { include: { brand: true } } } },
   mechanic: true,
@@ -101,8 +112,9 @@ export const serviceRouter = createTRPCRouter({
   /**
    * Reception: the motorcycle arrives. No bill, no price yet.
    * For speed, a NEW customer and/or motorcycle can be registered in the same
-   * step (one transaction): brand and model are typed as text and found or
-   * created (case-insensitive), so nobody has to go to Clientes first.
+   * step (one transaction). The model is CHOSEN from the catalog (its id): the
+   * old find-or-create by typed text allowed "Bajaj", "bajaj " and "Bajah" as
+   * three brands, so it was removed (DEC-044).
    */
   receive: manage
     .input(
@@ -115,8 +127,7 @@ export const serviceRouter = createTRPCRouter({
               newCustomer: z
                 .object({ name: zText(100), phone: zText(20), nationalId: zOptText(20) })
                 .optional(),
-              brandName: zText(50),
-              modelName: zText(50),
+              motorcycleModelId: z.number().int().positive("Elija la marca y el modelo de la moto"),
               color: zText(30),
               plate: zOptText(15),
             })
@@ -146,25 +157,15 @@ export const serviceRouter = createTRPCRouter({
                 data: { name: m.newCustomer!.name, phone: m.newCustomer!.phone, nationalId: m.newCustomer!.nationalId ?? null },
               })
             ).id;
-          const brand =
-            (await tx.motorcycleBrand.findFirst({ where: { name: { equals: m.brandName, mode: "insensitive" } } })) ??
-            (await tx.motorcycleBrand.create({ data: { name: m.brandName } }));
-          const model =
-            (await tx.motorcycleModel.findFirst({
-              where: { motorcycleBrandId: brand.id, name: { equals: m.modelName, mode: "insensitive" } },
-            })) ?? (await tx.motorcycleModel.create({ data: { motorcycleBrandId: brand.id, name: m.modelName } }));
           motorcycleId = (
             await tx.motorcycle.create({
-              data: { customerId, motorcycleModelId: model.id, color: m.color, plate: m.plate ?? null },
+              data: { customerId, motorcycleModelId: m.motorcycleModelId, color: m.color, plate: m.plate ?? null },
             })
           ).id;
         }
-        let appliedCommissionRate: Prisma.Decimal | null = null;
-        if (input.mechanicStaffId) {
-          const mech = await tx.staff.findUniqueOrThrow({ where: { id: input.mechanicStaffId } });
-          if (!mech.commissionRate || !mech.active) throw fail("Esa persona no es un mecánico activo.");
-          appliedCommissionRate = mech.commissionRate;
-        }
+        const appliedCommissionRate = input.mechanicStaffId
+          ? (await responsibleRate(tx, input.mechanicStaffId)).appliedCommissionRate
+          : null;
         const order = await tx.serviceOrder.create({
           data: {
             motorcycleId: motorcycleId!,
@@ -180,7 +181,11 @@ export const serviceRouter = createTRPCRouter({
       }),
     ),
 
-  /** One mechanic per motorcycle (business rule); the commission rate is frozen here. */
+  /**
+   * One responsible per motorcycle (business rule): a mechanic or an owner
+   * (DEC-041). The commission rate is frozen here; an owner, or a mechanic
+   * without a rate, leaves it empty and earns no commission.
+   */
   assignMechanic: manage
     .input(z.object({ serviceOrderId: zId, mechanicStaffId: zId }))
     .mutation(({ ctx, input }) =>
@@ -188,11 +193,10 @@ export const serviceRouter = createTRPCRouter({
         await assertOpen(tx, input.serviceOrderId);
         const order = await tx.serviceOrder.findUniqueOrThrow({ where: { id: input.serviceOrderId } });
         if (order.staffPayoutId) throw fail("La comisión de esta orden ya se pagó.");
-        const m = await tx.staff.findUniqueOrThrow({ where: { id: input.mechanicStaffId } });
-        if (!m.commissionRate || !m.active) throw fail("Esa persona no es un mecánico activo.");
+        const { staff, appliedCommissionRate } = await responsibleRate(tx, input.mechanicStaffId);
         return tx.serviceOrder.update({
           where: { id: input.serviceOrderId },
-          data: { mechanicStaffId: m.id, appliedCommissionRate: m.commissionRate },
+          data: { mechanicStaffId: staff.id, appliedCommissionRate },
         });
       }),
     ),
@@ -288,7 +292,7 @@ export const serviceRouter = createTRPCRouter({
           where: { id: input.serviceOrderId },
           include: { motorcycle: true, additionalFaults: true },
         });
-        if (!order.mechanicStaffId) throw fail("Asigne un mecánico antes de cerrar la orden.");
+        if (!order.mechanicStaffId) throw fail("Asigne un responsable (mecánico o dueño) antes de cerrar la orden.");
         const customerId = input.terms.customerId ?? order.motorcycle.customerId;
         if (customerId !== order.motorcycle.customerId) throw fail("La factura es para el dueño de la moto.");
         const pending = order.additionalFaults.filter((f) => f.decision === "PENDIENTE");

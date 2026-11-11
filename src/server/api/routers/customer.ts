@@ -1,17 +1,11 @@
 import { z } from "zod";
 
 import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
-import { type Prisma } from "~/server/db";
-import {
-  estimatedInterest,
-  invoiceBalance,
-  invoiceBalanceInclude,
-  openingBalanceInclude,
-  openingBalanceRemaining,
-} from "~/server/domain/billing";
-import { dayToDate, todayInManagua, zDay, zId, zOptText, pageFields, zPositiveMoney, zRate, zText } from "~/server/domain/constants";
+import { customerInclude } from "~/server/domain/search";
+import { customerInvoiceBalances, openingBalances } from "~/server/domain/balances";
+import { estimatedInterest } from "~/server/domain/billing";
+import { dayToDate, zDay, zId, zOptText, pageFields, zPositiveMoney, zRate, zText } from "~/server/domain/constants";
 import { sum } from "~/server/domain/money";
-import { inRankOrder, rankCustomers } from "~/server/domain/search";
 
 /** Customers, motorcycles, opening balances and the account statement (API-014). */
 const view = permissionProcedure("clientes.ver");
@@ -31,30 +25,17 @@ const zMotorcycle = z.object({
 });
 
 export const customerRouter = createTRPCRouter({
-  /** Search by name, phone or cédula (API-021); paged (API-022). */
-  list: view
-    .input(z.object({ search: z.string().trim().max(100).optional(), ...pageFields }).default({}))
-    .query(async ({ ctx, input }) => {
-      const include = { motorcycles: { include: { model: { include: { brand: true } } } } } as const;
-      if (input.search) {
-        const ranked = await rankCustomers(ctx.db, input.search, input.limit);
-        const rows = await ctx.db.customer.findMany({ where: { id: { in: ranked.map((r) => r.id) } }, include });
-        return { items: inRankOrder(ranked, rows), nextCursor: null };
-      }
-      const where: Prisma.CustomerWhereInput = {};
-      const { cursor, limit } = input;
-      const items = await ctx.db.customer.findMany({
-        where,
-        orderBy: { id: "asc" },
-        include,
-        take: limit + 1,
-        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-      });
-      return {
-        items: items.slice(0, limit).map((c) => ({ ...c, exact: true, score: 0 })),
-        nextCursor: items.length > limit ? items[limit - 1]!.id : null,
-      };
-    }),
+  /** Paged list to browse (API-022). Text search is `search.customers` (DEC-043). */
+  list: view.input(z.object({ ...pageFields }).default({})).query(async ({ ctx, input }) => {
+    const { cursor, limit } = input;
+    const items = await ctx.db.customer.findMany({
+      orderBy: { id: "asc" },
+      include: customerInclude,
+      take: limit + 1,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
+    return { items: items.slice(0, limit), nextCursor: items.length > limit ? items[limit - 1]!.id : null };
+  }),
 
   get: view.input(z.object({ id: zId })).query(({ ctx, input }) =>
     ctx.db.customer.findUniqueOrThrow({
@@ -137,44 +118,53 @@ export const customerRouter = createTRPCRouter({
    */
   statement: view.input(z.object({ customerId: zId })).query(async ({ ctx, input }) => {
     const customer = await ctx.db.customer.findUniqueOrThrow({ where: { id: input.customerId } });
-    const invoices = await ctx.db.saleInvoice.findMany({
-      where: { customerId: input.customerId },
-      include: invoiceBalanceInclude,
-      orderBy: { createdAt: "desc" },
-    });
-    const openings = await ctx.db.customerOpeningBalance.findMany({
-      where: { customerId: input.customerId },
-      include: openingBalanceInclude,
-      orderBy: { asOfDate: "desc" },
-    });
-    const today = todayInManagua();
-    const invoiceRows = invoices.map((inv) => {
-      const b = invoiceBalance(inv);
-      const due = inv.extendedDueDate ?? inv.dueDate;
+    // Balances come from the views (DEC-042); the rest of each row from its table.
+    const balances = await customerInvoiceBalances(ctx.db, input.customerId);
+    const invoices = new Map(
+      (
+        await ctx.db.saleInvoice.findMany({
+          where: { customerId: input.customerId },
+          select: { id: true, invoiceNumber: true, monthlyInterest: true },
+        })
+      ).map((i) => [i.id, i]),
+    );
+    const openingInfo = new Map(
+      (
+        await ctx.db.customerOpeningBalance.findMany({
+          where: { customerId: input.customerId },
+          select: { id: true, monthlyInterest: true, notes: true },
+        })
+      ).map((o) => [o.id, o]),
+    );
+    const invoiceRows = balances.map((b) => {
+      const inv = invoices.get(b.saleInvoiceId)!;
       return {
         kind: "FACTURA" as const,
-        id: inv.id,
+        id: b.saleInvoiceId,
         invoiceNumber: inv.invoiceNumber,
-        createdAt: inv.createdAt,
-        paymentTerms: inv.paymentTerms,
-        dueDate: due,
-        ...b,
-        overdue: !!due && b.balance.gt(0) && due.toISOString().slice(0, 10) < today,
-        interest: estimatedInterest(b.balance, inv.monthlyInterest, due),
+        createdAt: b.createdAt,
+        paymentTerms: b.paymentTerms,
+        dueDate: b.dueDate,
+        total: b.total,
+        returned: b.returned,
+        paid: b.paid,
+        balance: b.balance,
+        overdue: (b.daysOverdue ?? 0) > 0,
+        interest: estimatedInterest(b.balance, inv.monthlyInterest, b.dueDate),
       };
     });
-    const openingRows = openings.map((ob) => {
-      const balance = openingBalanceRemaining(ob);
+    const openingRows = (await openingBalances(ctx.db, { customerId: input.customerId })).map((ob) => {
+      const info = openingInfo.get(ob.customerOpeningBalanceId)!;
       return {
         kind: "SALDO_INICIAL" as const,
-        id: ob.id,
+        id: ob.customerOpeningBalanceId,
         asOfDate: ob.asOfDate,
         dueDate: ob.dueDate,
         amount: ob.amount,
-        balance,
-        overdue: balance.gt(0) && ob.dueDate.toISOString().slice(0, 10) < today,
-        interest: estimatedInterest(balance, ob.monthlyInterest, ob.dueDate),
-        notes: ob.notes,
+        balance: ob.balance,
+        overdue: (ob.daysOverdue ?? 0) > 0,
+        interest: estimatedInterest(ob.balance, info.monthlyInterest, ob.dueDate),
+        notes: info.notes,
       };
     });
     const total = sum([...invoiceRows.map((r) => r.balance), ...openingRows.map((r) => r.balance)]);

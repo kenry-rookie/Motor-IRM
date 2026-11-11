@@ -2,14 +2,14 @@
 
 import { useState } from "react";
 
-import { Alert, Button, Field, Input, Select } from "~/app/_components/ui";
+import { MotorcycleModelSelect } from "~/app/_components/pickers";
+import { Alert, Button, Field, Input } from "~/app/_components/ui";
 import { errorMessage, fieldErrors } from "~/lib/errors";
 import { api } from "~/trpc/react";
 
 /** New customer, optionally with their motorcycle in the same step. */
 export function CustomerForm({ onDone }: { onDone: () => void }) {
   const utils = api.useUtils();
-  const models = api.admin.motorcycleModels.useQuery();
   const [f, setF] = useState({ name: "", phone: "", nationalId: "", address: "" });
   const [moto, setMoto] = useState({ motorcycleModelId: 0, color: "", plate: "" });
   const create = api.customer.create.useMutation({
@@ -34,20 +34,14 @@ export function CustomerForm({ onDone }: { onDone: () => void }) {
         <Input value={f.address} onChange={(e) => setF({ ...f, address: e.target.value })} />
       </Field>
       <h3 className="mt-2 text-sm font-semibold sm:col-span-2">Moto (opcional)</h3>
-      <Field label="Modelo">
-        <Select value={moto.motorcycleModelId} onChange={(e) => setMoto({ ...moto, motorcycleModelId: Number(e.target.value) })}>
-          <option value={0}>Sin moto</option>
-          {models.data?.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.brand.name} {m.name}
-            </option>
-          ))}
-        </Select>
-      </Field>
+      <p className="text-xs text-neutral-500 sm:col-span-2">
+        No todos los clientes traen moto: deje la marca sin elegir si solo compra repuestos.
+      </p>
+      <MotorcycleModelSelect value={moto.motorcycleModelId} onChange={(id) => setMoto({ ...moto, motorcycleModelId: id })} />
       <Field label="Color">
         <Input value={moto.color} onChange={(e) => setMoto({ ...moto, color: e.target.value })} />
       </Field>
-      <Field label="Placa">
+      <Field label="Placa (opcional)">
         <Input value={moto.plate} onChange={(e) => setMoto({ ...moto, plate: e.target.value })} />
       </Field>
       <div className="sm:col-span-2">

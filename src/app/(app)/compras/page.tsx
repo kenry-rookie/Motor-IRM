@@ -2,13 +2,12 @@
 
 import { useState } from "react";
 
-import { ProductSearch } from "~/app/_components/pickers";
+import { type Product, ProductPicker } from "~/app/_components/pickers";
 import { Alert, Button, Card, Dialog, Field, Input, PageTitle, Select, Table } from "~/app/_components/ui";
 import { errorMessage } from "~/lib/errors";
 import { addDaysISO, dec, formatDay, money, todayISO } from "~/lib/format";
-import { api, type RouterOutputs } from "~/trpc/react";
+import { api } from "~/trpc/react";
 
-type Product = RouterOutputs["inventory"]["listProducts"]["items"][number];
 
 /** CLI-012 — Purchases (stock entry), supplier payments and suppliers. */
 export default function PurchasesPage() {
@@ -126,7 +125,7 @@ function PurchaseForm({ onDone }: { onDone: () => void }) {
           <Input inputMode="decimal" value={f.discountAmount} onChange={(e) => setF({ ...f, discountAmount: e.target.value })} />
         </Field>
       </div>
-      <ProductSearch placeholder="Agregar producto…" onPick={(p) => setLines([...lines, { product: p, quantity: "1", unitCost: "" }])} />
+      <ProductPicker placeholder="Agregar producto…" onPick={(p) => setLines([...lines, { product: p, quantity: "1", unitCost: "" }])} />
       <Table head={["Producto", "Cantidad", "Costo unit.", ""]}>
         {lines.map((l, i) => (
           <tr key={i}>

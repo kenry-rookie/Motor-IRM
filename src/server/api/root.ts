@@ -4,6 +4,7 @@ import { customerRouter } from "~/server/api/routers/customer";
 import { inventoryRouter } from "~/server/api/routers/inventory";
 import { purchasingRouter } from "~/server/api/routers/purchasing";
 import { reportsRouter } from "~/server/api/routers/reports";
+import { searchRouter } from "~/server/api/routers/search";
 import { salesRouter } from "~/server/api/routers/sales";
 import { serviceRouter } from "~/server/api/routers/service";
 import { staffRouter } from "~/server/api/routers/staff";
@@ -23,6 +24,7 @@ export const appRouter = createTRPCRouter({
   purchasing: purchasingRouter,
   staff: staffRouter,
   reports: reportsRouter,
+  search: searchRouter,
 });
 
 export type AppRouter = typeof appRouter;

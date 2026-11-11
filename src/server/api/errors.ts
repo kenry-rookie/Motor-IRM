@@ -31,6 +31,7 @@ const MESSAGES: Record<string, string> = {
   uq_app_user_staff_id: "Esa persona ya tiene un usuario.",
   uq_customer_national_id: "Ya existe un cliente con esa cédula.",
   uq_motorcycle_plate: "Ya existe una moto con esa placa.",
+  fk_motorcycle_motorcycle_model_id: "Ese modelo de moto no está en el catálogo; elíjalo de la lista.",
   uq_permission_code: "Ese código de permiso ya existe.",
   // Sales
   uq_sale_invoice_invoice_number: "Ya existe una factura con ese número.",
@@ -52,6 +53,11 @@ const MESSAGES: Record<string, string> = {
   ck_customer_payment_allocation_target: "Cada abono se aplica a una factura o a un saldo inicial (uno solo).",
   // Service
   ck_service_order_payout_rate: "Para pagar la comisión, la orden necesita mecánico y porcentaje.",
+  ck_service_order_rate_needs_responsible: "Una orden sin responsable no lleva porcentaje de comisión.",
+  tg_service_order_responsible_can_repair: "Esa persona no está activa o no repara motos; elija otro responsable.",
+  tg_service_order_owner_no_commission: "Un dueño no cobra comisión: la orden queda sin porcentaje.",
+  ck_staff_owner_no_commission: "Un dueño no cobra comisión; deje el porcentaje vacío.",
+  ck_staff_kind: "El tipo de persona debe ser Dueño, Mecánico o Encargado.",
   ck_warranty_claim_refund: "El reembolso solo se registra cuando el resultado es REEMBOLSO (y entonces es obligatorio).",
   ck_warranty_claim_new_service_order: "La nueva orden solo aplica cuando es otra falla, y no puede ser la misma orden.",
   uq_staff_payout_staff_id_period_start: "Ese mecánico ya tiene un pago que empieza en esa fecha.",

@@ -18,17 +18,17 @@ INSERT INTO service_type (name, reference_price) VALUES
 
 -- 2. Personal
 INSERT INTO staff (name, phone, role) VALUES
-    ('Dueño Uno',     '8840-3201', 'DUENO'),
-    ('Dueño Dos',     '8620-0452', 'DUENO'),
-    ('Freddy Orozco', '8190-6003', 'MECANICO'),
-    ('Carlos Padel',  '5790-2104', 'MECANICO'),
-    ('Encargado',     '8310-5505', 'ENCARGADO');
+    ('Dueño Uno',     '8000-0011', 'DUENO'),
+    ('Dueño Dos',     '8000-0012', 'DUENO'),
+    ('Mecánico Uno',  '8000-0001', 'MECANICO'),
+    ('Mecánico Dos',  '8000-0002', 'MECANICO'),
+    ('Encargado',     '8000-0004', 'ENCARGADO');
 
 INSERT INTO owner (id_owner)
 SELECT id_staff FROM staff WHERE role = 'DUENO';
 
 INSERT INTO mechanic (id_mechanic, commission_rate)
-SELECT id_staff, CASE name WHEN 'Freddy Orozco' THEN 0.60 ELSE 1.00 END
+SELECT id_staff, CASE name WHEN 'Mecánico Uno' THEN 0.60 ELSE 1.00 END
 FROM staff WHERE role = 'MECANICO';
 
 -- 3. Proveedor
@@ -262,7 +262,7 @@ INSERT INTO mechanical_service (id_mechanical_service, id_motorcycle, id_respons
 SELECT d.id_billable_document, mo.id_motorcycle, me.id_mechanic, 'Instalar protector de radiador', me.commission_rate
 FROM billable_document d
 JOIN motorcycle mo ON mo.plate = 'M 123-456'
-JOIN mechanic me   ON me.id_mechanic = (SELECT id_staff FROM staff WHERE name = 'Freddy Orozco')
+JOIN mechanic me   ON me.id_mechanic = (SELECT id_staff FROM staff WHERE name = 'Mecánico Uno')
 WHERE d.id_billable_document = (SELECT max(id_billable_document) FROM billable_document WHERE kind = 'SERVICIO');
 
 INSERT INTO status_change (id_mechanical_service, changed_at, status, id_registered_by)
@@ -313,7 +313,7 @@ SELECT (SELECT max(id_billable_document) FROM billable_document WHERE kind = 'SE
        mo.id_motorcycle, me.id_mechanic, 'Engrase y revisar frenos', me.commission_rate
 FROM motorcycle mo
 JOIN customer c  ON c.id_customer = mo.id_customer AND c.name = 'María López'
-JOIN mechanic me ON me.id_mechanic = (SELECT id_staff FROM staff WHERE name = 'Carlos Padel');
+JOIN mechanic me ON me.id_mechanic = (SELECT id_staff FROM staff WHERE name = 'Mecánico Dos');
 
 INSERT INTO status_change (id_mechanical_service, changed_at, status, id_registered_by)
 SELECT ms.id_mechanical_service, LOCALTIMESTAMP - v.hace, v.status, (SELECT id_staff FROM staff WHERE name = 'Dueño Dos')
@@ -371,11 +371,11 @@ FROM billable_document WHERE receipt_number = 'C-0003';
 -- 14. Un adelanto y el pago semanal 
 INSERT INTO weekly_payout (id_mechanic, period_start, period_end)
 SELECT id_staff, date_trunc('week', CURRENT_DATE)::date, date_trunc('week', CURRENT_DATE)::date + 5
-FROM staff WHERE name = 'Freddy Orozco';
+FROM staff WHERE name = 'Mecánico Uno';
 
 INSERT INTO advance (id_mechanic, amount, id_given_by, id_weekly_payout)
 SELECT wp.id_mechanic, 50, (SELECT id_staff FROM staff WHERE name = 'Dueño Uno'), wp.id_weekly_payout
-FROM weekly_payout wp JOIN staff s ON s.id_staff = wp.id_mechanic WHERE s.name = 'Freddy Orozco';
+FROM weekly_payout wp JOIN staff s ON s.id_staff = wp.id_mechanic WHERE s.name = 'Mecánico Uno';
 
 UPDATE mechanical_service SET id_weekly_payout = (SELECT max(id_weekly_payout) FROM weekly_payout)
 WHERE requested_work = 'Instalar protector de radiador';

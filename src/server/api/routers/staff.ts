@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { fail } from "~/server/api/errors";
 import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
-import { dayToDate, todayInManagua, zDay, zId, zOptText, zPositiveMoney, zRate, zText } from "~/server/domain/constants";
+import { dayToDate, STAFF_KINDS, todayInManagua, zDay, zId, zOptText, zPositiveMoney, zRate, zText } from "~/server/domain/constants";
 import { totalOf, unpaidCommissions, unsettledAdvances } from "~/server/domain/commission";
 import { D } from "~/server/domain/money";
 
@@ -20,31 +20,49 @@ const dayEnd = (day: string) => new Date(new Date(`${day}T00:00:00-06:00`).getTi
 
 export const staffRouter = createTRPCRouter({
   list: view
-    .input(z.object({ includeInactive: z.boolean().default(false) }).default({}))
+    .input(
+      z
+        .object({
+          includeInactive: z.boolean().default(false),
+          /** Only people who can be the responsible of an order (DEC-041). */
+          onlyRepairers: z.boolean().default(false),
+        })
+        .default({}),
+    )
     .query(({ ctx, input }) =>
       ctx.db.staff.findMany({
-        where: input.includeInactive ? {} : { active: true },
-        orderBy: { name: "asc" },
+        where: { active: input.includeInactive ? undefined : true, canRepair: input.onlyRepairers ? true : undefined },
+        orderBy: [{ kind: "asc" }, { name: "asc" }],
         include: { appUser: { select: { id: true, username: true } } },
       }),
     ),
 
-  /** Mechanics are staff with a commission rate (e.g. 0.60 = 60 % of labor). */
+  /**
+   * DEC-041: who the person is (owner, mechanic, manager), whether they repair
+   * motorcycles, and their commission (e.g. 0.60 = 60 % of labor). No rate = no
+   * commission: owners and the "100 %" mechanic, who is not paid by the system.
+   */
   save: permissionProcedure("admin.usuarios")
     .input(
       z.object({
         id: zId.optional(),
         name: zText(100),
         phone: zText(20),
+        kind: z.enum(STAFF_KINDS).default("MECANICO"),
+        canRepair: z.boolean().optional(),
         commissionRate: zRate.nullish(),
         active: z.boolean().default(true),
       }),
     )
     .mutation(({ ctx, input }) => {
+      const hasRate = !!input.commissionRate && D(input.commissionRate).gt(0);
+      if (input.kind === "DUENO" && hasRate) throw fail("Un dueño no cobra comisión.");
       const data = {
         name: input.name,
         phone: input.phone,
-        commissionRate: input.commissionRate && D(input.commissionRate).gt(0) ? input.commissionRate : null,
+        kind: input.kind,
+        canRepair: input.canRepair ?? input.kind !== "ENCARGADO",
+        commissionRate: hasRate ? input.commissionRate : null,
         active: input.active,
       };
       return input.id ? ctx.db.staff.update({ where: { id: input.id }, data }) : ctx.db.staff.create({ data });

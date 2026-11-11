@@ -2,16 +2,105 @@
 
 import { forwardRef, type ReactNode, useId, useImperativeHandle, useRef, useState } from "react";
 
-import { Badge, cx, Input } from "~/app/_components/ui";
+import { Alert, Badge, Button, cx, Dialog, Field, Input, Select } from "~/app/_components/ui";
+import { errorMessage } from "~/lib/errors";
 import { money } from "~/lib/format";
 import { useDebounced } from "~/lib/use-debounced";
 import { api, type RouterOutputs } from "~/trpc/react";
 
-export type Product = RouterOutputs["inventory"]["search"]["items"][number];
-export type Customer = RouterOutputs["customer"]["list"]["items"][number];
+/**
+ * The ONLY pickers of the app (DEC-043). Every screen that chooses a product,
+ * a customer, a motorcycle or the responsible of an order uses one of these:
+ *
+ *   SearchField          the search box (with a real «Buscar» button)
+ *   ProductPicker        products: scanner or typed name, typo-tolerant
+ *   CustomerPicker       customers: name, phone, cédula or plate
+ *   MotorcyclePicker     one of the customer's motorcycles, or a new one
+ *   MotorcycleModelSelect brand + model from the catalog (never typed, §7.4)
+ *   ResponsibleSelect    mechanic or owner of a service order (DEC-041)
+ *
+ * Text search always goes through the server's `search` router.
+ */
+export type Product = RouterOutputs["search"]["products"]["items"][number];
+export type Customer = RouterOutputs["search"]["customers"]["items"][number];
+
+// ---------------------------------------------------------------------------
+//  Search field
+// ---------------------------------------------------------------------------
 
 /**
- * Generic keyboard combobox: type, ↑/↓ to move, Enter to pick, Esc to close.
+ * Text box + visible «Buscar» and «Limpiar» buttons: everything can be done with
+ * the mouse; the keyboard shortcut (F2 at the counter) is only a shortcut.
+ */
+export function SearchField({
+  value,
+  onValue,
+  placeholder,
+  label,
+  onSearch,
+  inputRef,
+  inputProps,
+  className,
+}: {
+  value: string;
+  onValue: (v: string) => void;
+  placeholder: string;
+  label: string;
+  /** What «Buscar» does; by default it just focuses the box (results come as you type). */
+  onSearch?: () => void;
+  inputRef?: React.Ref<HTMLInputElement>;
+  inputProps?: React.ComponentProps<"input">;
+  className?: string;
+}) {
+  const own = useRef<HTMLInputElement>(null);
+  const ref = (inputRef ?? own) as React.RefObject<HTMLInputElement | null>;
+  return (
+    <div className={cx("flex gap-2", className)}>
+      <Input
+        ref={ref}
+        type="search"
+        aria-label={label}
+        autoComplete="off"
+        placeholder={placeholder}
+        value={value}
+        className="h-11 text-base"
+        onChange={(e) => onValue(e.target.value)}
+        {...inputProps}
+      />
+      <Button
+        type="button"
+        variant="secondary"
+        className="h-11 shrink-0"
+        onClick={() => {
+          ref.current?.focus();
+          onSearch?.();
+        }}
+      >
+        Buscar
+      </Button>
+      {value && (
+        <Button
+          type="button"
+          variant="ghost"
+          className="h-11 shrink-0"
+          onClick={() => {
+            onValue("");
+            ref.current?.focus();
+          }}
+        >
+          Limpiar
+        </Button>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+//  Combobox (internal)
+// ---------------------------------------------------------------------------
+
+/**
+ * Type, ↑/↓ to move, Enter to pick, Esc to close — or just click.
  * Results come from the server's typo-tolerant search.
  */
 function Combobox<T extends { id: number }>({
@@ -40,7 +129,7 @@ function Combobox<T extends { id: number }>({
   placeholder: string;
   header?: ReactNode;
   footer?: ReactNode;
-  inputRef?: React.Ref<HTMLInputElement>;
+  inputRef?: React.RefObject<HTMLInputElement | null>;
   autoFocus?: boolean;
   label: string;
 }) {
@@ -56,40 +145,41 @@ function Combobox<T extends { id: number }>({
 
   return (
     <div className="relative">
-      <Input
-        ref={inputRef}
-        role="combobox"
-        aria-label={label}
-        aria-expanded={show}
-        aria-controls={listId}
-        aria-activedescendant={show && items[active] ? `${listId}-${active}` : undefined}
-        autoComplete="off"
-        autoFocus={autoFocus}
-        placeholder={placeholder}
+      <SearchField
+        label={label}
         value={value}
-        className="h-11 text-base"
-        onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 120)}
-        onChange={(e) => {
-          onValue(e.target.value);
+        onValue={(v) => {
+          onValue(v);
           setOpen(true);
           setActive(0);
         }}
-        onKeyDown={(e) => {
-          if (e.key === "ArrowDown") {
-            e.preventDefault();
-            setActive((a) => Math.min(a + 1, items.length - 1));
-          } else if (e.key === "ArrowUp") {
-            e.preventDefault();
-            setActive((a) => Math.max(a - 1, 0));
-          } else if (e.key === "Enter") {
-            e.preventDefault();
-            const it = items[active];
-            if (it) pick(it);
-            else onEnterEmpty?.();
-          } else if (e.key === "Escape") {
-            setOpen(false);
-          }
+        placeholder={placeholder}
+        inputRef={inputRef}
+        onSearch={() => setOpen(true)}
+        inputProps={{
+          role: "combobox",
+          "aria-expanded": show,
+          "aria-controls": listId,
+          "aria-activedescendant": show && items[active] ? `${listId}-${active}` : undefined,
+          autoFocus,
+          onFocus: () => setOpen(true),
+          onBlur: () => setTimeout(() => setOpen(false), 150),
+          onKeyDown: (e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setActive((a) => Math.min(a + 1, items.length - 1));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setActive((a) => Math.max(a - 1, 0));
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              const it = items[active];
+              if (it) pick(it);
+              else onEnterEmpty?.();
+            } else if (e.key === "Escape") {
+              setOpen(false);
+            }
+          },
         }}
       />
       {show && (
@@ -107,7 +197,7 @@ function Combobox<T extends { id: number }>({
                   pick(it);
                 }}
                 onMouseEnter={() => setActive(i)}
-                className={cx("cursor-pointer px-3 py-2 text-sm", i === active && "bg-brand-600/8")}
+                className={cx("min-h-10 cursor-pointer px-3 py-2 text-sm", i === active && "bg-brand-600/8")}
               >
                 {render(it, i === active)}
               </li>
@@ -121,23 +211,28 @@ function Combobox<T extends { id: number }>({
   );
 }
 
-export type ProductSearchHandle = { focus: () => void };
+// ---------------------------------------------------------------------------
+//  Products
+// ---------------------------------------------------------------------------
+
+export type ProductPickerHandle = { focus: () => void };
 
 /**
- * Product search for the counter. A barcode scanner types the code and presses
- * Enter: it is added at once. Typing a name shows the best matches, even with
- * spelling mistakes ("bugia" → Bujía), and says so when they are suggestions.
+ * Product search for the counter and purchases. A barcode scanner types the
+ * code and presses Enter: it is added at once. Typing a name shows the best
+ * matches, even with spelling mistakes ("bugia" → Bujía), and says so when they
+ * are only suggestions.
  */
-export const ProductSearch = forwardRef<
-  ProductSearchHandle,
-  { onPick: (p: Product) => void; placeholder?: string; autoFocus?: boolean }
->(function ProductSearch({ onPick, placeholder, autoFocus = true }, ref) {
+export const ProductPicker = forwardRef<
+  ProductPickerHandle,
+  { onPick: (p: Product) => void; placeholder?: string; autoFocus?: boolean; label?: string }
+>(function ProductPicker({ onPick, placeholder, autoFocus = true, label = "Buscar producto" }, ref) {
   const [q, setQ] = useState("");
   const input = useRef<HTMLInputElement>(null);
   useImperativeHandle(ref, () => ({ focus: () => input.current?.focus() }));
   const dq = useDebounced(q.trim(), 150);
   const utils = api.useUtils();
-  const res = api.inventory.search.useQuery({ q: dq, limit: 8 }, { enabled: dq.length >= 2, placeholderData: (p) => p });
+  const res = api.search.products.useQuery({ q: dq, limit: 8 }, { enabled: dq.length >= 2, placeholderData: (p) => p });
   const items = dq.length >= 2 ? (res.data?.items ?? []) : [];
 
   const done = (p: Product) => {
@@ -148,7 +243,7 @@ export const ProductSearch = forwardRef<
 
   return (
     <Combobox
-      label="Buscar producto"
+      label={label}
       inputRef={input}
       autoFocus={autoFocus}
       value={q}
@@ -194,6 +289,10 @@ export const ProductSearch = forwardRef<
   );
 });
 
+// ---------------------------------------------------------------------------
+//  Customers
+// ---------------------------------------------------------------------------
+
 /**
  * Customer search by name (typo-tolerant), phone, cédula or plate. Optionally
  * offers "Registrar «texto» como cliente nuevo" so nobody leaves the screen.
@@ -211,22 +310,21 @@ export function CustomerPicker({
 }) {
   const [q, setQ] = useState("");
   const dq = useDebounced(q.trim(), 150);
-  const res = api.customer.list.useQuery({ search: dq, limit: 8 }, { enabled: dq.length >= 2 && !value, placeholderData: (p) => p });
+  const res = api.search.customers.useQuery({ q: dq, limit: 8 }, { enabled: dq.length >= 2 && !value, placeholderData: (p) => p });
   const items = dq.length >= 2 ? (res.data?.items ?? []) : [];
 
   if (value) {
     return (
-      <div className="flex items-center justify-between gap-2 rounded-md border border-neutral-700 bg-neutral-800/30 px-3 py-2 text-sm">
+      <div className="flex min-h-11 items-center justify-between gap-2 rounded-md border border-neutral-700 bg-neutral-800/30 px-3 py-2 text-sm">
         <span className="min-w-0 truncate">
           <span className="font-medium">{value.name}</span> <span className="text-neutral-500">· {value.phone}</span>
         </span>
-        <button type="button" className="shrink-0 text-sm text-brand-600 hover:underline" onClick={() => onChange(null)}>
-          Cambiar
-        </button>
+        <Button type="button" variant="ghost" className="shrink-0" onClick={() => onChange(null)}>
+          Cambiar cliente
+        </Button>
       </div>
     );
   }
-  const suggestionsOnly = items.length > 0 && !items.some((c) => c.exact);
   return (
     <Combobox
       label="Buscar cliente"
@@ -241,7 +339,7 @@ export function CustomerPicker({
         setQ("");
       }}
       header={
-        suggestionsOnly ? (
+        res.data?.suggestionsOnly ? (
           <p className="border-b border-neutral-800 bg-warn-bg px-3 py-2 text-xs text-warn-fg">
             Nadie se llama exactamente «{dq}». Estos se parecen:
           </p>
@@ -256,7 +354,7 @@ export function CustomerPicker({
               onCreateNew(q.trim());
               setQ("");
             }}
-            className="w-full border-t border-neutral-800 px-3 py-2.5 text-left text-sm font-medium text-brand-600 hover:bg-brand-600/8"
+            className="min-h-10 w-full border-t border-neutral-800 px-3 py-2.5 text-left text-sm font-medium text-brand-600 hover:bg-brand-600/8"
           >
             + Registrar «{q.trim()}» como cliente nuevo
           </button>
@@ -273,5 +371,283 @@ export function CustomerPicker({
         </div>
       )}
     />
+  );
+}
+
+// ---------------------------------------------------------------------------
+//  Motorcycles
+// ---------------------------------------------------------------------------
+
+/**
+ * Brand and model are CHOSEN from the catalog, never typed (prompt v2 §7.4):
+ * "Bajaj", "bajaj " and "Bajah" can't become three brands. If the model is not
+ * there, an owner (permission catalogos.gestionar) registers it right here
+ * without losing what was already filled in.
+ */
+export function MotorcycleModelSelect({
+  value,
+  onChange,
+  error,
+}: {
+  value: number;
+  onChange: (motorcycleModelId: number) => void;
+  error?: string;
+}) {
+  const me = api.auth.me.useQuery();
+  const models = api.admin.motorcycleModels.useQuery();
+  const [brandId, setBrandId] = useState(0);
+  const [registering, setRegistering] = useState(false);
+  const selected = models.data?.find((m) => m.id === value);
+  const currentBrand = brandId !== 0 ? brandId : (selected?.motorcycleBrandId ?? 0);
+  const brands = [...new Map((models.data ?? []).map((m) => [m.brand.id, m.brand])).values()].sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+  const brandModels = (models.data ?? []).filter((m) => m.motorcycleBrandId === currentBrand);
+  const canRegister = me.data?.permissions.includes("catalogos.gestionar");
+
+  return (
+    <>
+      <Field label="Marca">
+        <Select
+          value={currentBrand}
+          onChange={(e) => {
+            setBrandId(Number(e.target.value));
+            onChange(0);
+          }}
+        >
+          <option value={0}>Elija la marca…</option>
+          {brands.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field
+        label="Modelo"
+        error={error}
+        hint={canRegister ? undefined : "¿No aparece? Pídale a un dueño que lo registre."}
+      >
+        <Select value={value} disabled={!currentBrand} onChange={(e) => onChange(Number(e.target.value))}>
+          <option value={0}>{currentBrand ? "Elija el modelo…" : "Primero la marca"}</option>
+          {brandModels.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      {canRegister && (
+        <div className="flex items-end">
+          <Button type="button" variant="ghost" className="h-10" onClick={() => setRegistering(true)}>
+            + Registrar marca o modelo
+          </Button>
+        </div>
+      )}
+      <Dialog open={registering} onClose={() => setRegistering(false)} title="Registrar marca o modelo de moto">
+        <RegisterModelForm
+          initialBrandId={currentBrand}
+          onDone={(model) => {
+            setRegistering(false);
+            setBrandId(model.motorcycleBrandId);
+            onChange(model.id);
+          }}
+        />
+      </Dialog>
+    </>
+  );
+}
+
+function RegisterModelForm({
+  initialBrandId,
+  onDone,
+}: {
+  initialBrandId: number;
+  onDone: (m: { id: number; motorcycleBrandId: number }) => void;
+}) {
+  const utils = api.useUtils();
+  const brands = api.admin.catalog.useQuery({ kind: "motorcycleBrand" });
+  const [brandId, setBrandId] = useState(initialBrandId);
+  const [newBrand, setNewBrand] = useState("");
+  const [model, setModel] = useState("");
+  const createBrand = api.admin.createCatalogItem.useMutation();
+  const saveModel = api.admin.saveMotorcycleModel.useMutation();
+  const err = createBrand.error ?? saveModel.error;
+
+  const save = async () => {
+    let id = brandId;
+    if (!id) {
+      const b = await createBrand.mutateAsync({ kind: "motorcycleBrand", name: newBrand });
+      id = b.id;
+    }
+    const m = await saveModel.mutateAsync({ motorcycleBrandId: id, name: model });
+    await Promise.all([utils.admin.motorcycleModels.invalidate(), utils.admin.catalog.invalidate()]);
+    onDone(m);
+  };
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-neutral-400">
+        Revise la lista antes de crear: una marca mal escrita queda como otra marca distinta.
+      </p>
+      <Field label="Marca">
+        <Select value={brandId} onChange={(e) => setBrandId(Number(e.target.value))}>
+          <option value={0}>+ Marca nueva</option>
+          {brands.data?.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      {!brandId && (
+        <Field label="Nombre de la marca nueva">
+          <Input value={newBrand} onChange={(e) => setNewBrand(e.target.value)} placeholder="Ej.: Genesis" />
+        </Field>
+      )}
+      <Field label="Modelo">
+        <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder="Ej.: Pulsar 150" />
+      </Field>
+      {err && <Alert>{errorMessage(err)}</Alert>}
+      <Button
+        type="button"
+        disabled={!model.trim() || (!brandId && !newBrand.trim()) || createBrand.isPending || saveModel.isPending}
+        onClick={() => void save().catch(() => undefined)}
+      >
+        Guardar y usar
+      </Button>
+    </div>
+  );
+}
+
+export type MotorcycleChoice =
+  | { kind: "existing"; motorcycleId: number }
+  | { kind: "new"; motorcycleModelId: number; color: string; plate: string };
+
+type NewMotorcycle = Extract<MotorcycleChoice, { kind: "new" }>;
+export const NEW_MOTORCYCLE: NewMotorcycle = { kind: "new", motorcycleModelId: 0, color: "", plate: "" };
+
+/** One of the customer's motorcycles, or the data of a new one. */
+export function MotorcyclePicker({
+  motorcycles,
+  value,
+  onChange,
+  errors = {},
+}: {
+  motorcycles: Customer["motorcycles"];
+  value: MotorcycleChoice;
+  onChange: (v: MotorcycleChoice) => void;
+  errors?: Record<string, string | undefined>;
+}) {
+  const [draft, setDraft] = useState<NewMotorcycle>(value.kind === "new" ? value : NEW_MOTORCYCLE);
+  const setNew = (d: NewMotorcycle) => {
+    setDraft(d);
+    onChange(d);
+  };
+  const card = (checked: boolean) =>
+    cx(
+      "min-h-11 rounded-lg border px-3 py-2 text-left text-sm",
+      checked ? "border-brand-600 bg-brand-600/8" : "border-neutral-700 hover:bg-neutral-800/50",
+    );
+  return (
+    <div className="space-y-3">
+      {motorcycles.length > 0 && (
+        <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Moto del cliente">
+          {motorcycles.map((m) => {
+            const checked = value.kind === "existing" && value.motorcycleId === m.id;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                role="radio"
+                aria-checked={checked}
+                onClick={() => onChange({ kind: "existing", motorcycleId: m.id })}
+                className={card(checked)}
+              >
+                <span className="block font-medium">
+                  {m.model.brand.name} {m.model.name}
+                </span>
+                <span className="block text-xs text-neutral-500">
+                  {m.color} · {m.plate ?? "sin placa"}
+                </span>
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            role="radio"
+            aria-checked={value.kind === "new"}
+            onClick={() => onChange(draft)}
+            className={cx(card(value.kind === "new"), "border-dashed")}
+          >
+            + Otra moto
+          </button>
+        </div>
+      )}
+      {value.kind === "new" && (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <MotorcycleModelSelect
+            value={draft.motorcycleModelId}
+            error={errors.motorcycleModelId}
+            onChange={(id) => setNew({ ...draft, motorcycleModelId: id })}
+          />
+          <Field label="Color" error={errors.color}>
+            <Input value={draft.color} onChange={(e) => setNew({ ...draft, color: e.target.value })} />
+          </Field>
+          <Field label="Placa (opcional)" hint="Las motos nuevas pueden no tener placa.">
+            <Input value={draft.plate} onChange={(e) => setNew({ ...draft, plate: e.target.value.toUpperCase() })} />
+          </Field>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+//  Responsible of a service order (DEC-041)
+// ---------------------------------------------------------------------------
+
+type Staff = RouterOutputs["staff"]["list"][number];
+
+/** «Mario · 60 % de mano de obra», «Ana · dueño, sin comisión». */
+export function responsibleLabel(s: Pick<Staff, "name" | "kind" | "commissionRate">) {
+  if (s.kind === "DUENO") return `${s.name} · dueño, sin comisión`;
+  if (!s.commissionRate) return `${s.name} · sin comisión`;
+  return `${s.name} · ${Math.round(Number(s.commissionRate.toString()) * 100)} % de mano de obra`;
+}
+
+/** Mechanics and owners who repair motorcycles. */
+export function ResponsibleSelect({
+  value,
+  onChange,
+  disabled,
+  emptyLabel = "Asignar después",
+}: {
+  value: number;
+  onChange: (staffId: number) => void;
+  disabled?: boolean;
+  emptyLabel?: string;
+}) {
+  const staff = api.staff.list.useQuery({ onlyRepairers: true });
+  const groups = [
+    { label: "Mecánicos", rows: staff.data?.filter((s) => s.kind === "MECANICO") ?? [] },
+    { label: "Dueños", rows: staff.data?.filter((s) => s.kind === "DUENO") ?? [] },
+  ];
+  return (
+    <Select value={value} disabled={disabled} onChange={(e) => onChange(Number(e.target.value))}>
+      <option value={0}>{emptyLabel}</option>
+      {groups.map(
+        (g) =>
+          g.rows.length > 0 && (
+            <optgroup key={g.label} label={g.label}>
+              {g.rows.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {responsibleLabel(s)}
+                </option>
+              ))}
+            </optgroup>
+          ),
+      )}
+    </Select>
   );
 }

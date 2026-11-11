@@ -14,7 +14,7 @@ import {
   type Tab,
   useTabs,
 } from "~/app/(app)/ventas/tabs-store";
-import { CustomerPicker, type Product, ProductSearch, type ProductSearchHandle } from "~/app/_components/pickers";
+import { CustomerPicker, type Product, ProductPicker, type ProductPickerHandle } from "~/app/_components/pickers";
 import { cleanTerms, TermsForm } from "~/app/_components/terms-form";
 import { Alert, Badge, Button, Card, cx, EmptyState, Input, Kbd, PageTitle, Select } from "~/app/_components/ui";
 import { errorMessage } from "~/lib/errors";
@@ -73,7 +73,7 @@ function addProduct(lines: ProductLine[], p: Product) {
 function Caja({ username, perms }: { username: string; perms: string[] }) {
   const t = useTabs(username);
   const discounts = api.admin.discounts.useQuery();
-  const searchRef = useRef<ProductSearchHandle>(null);
+  const searchRef = useRef<ProductPickerHandle>(null);
   const chargeRef = useRef<() => void>(() => undefined);
   const [receipt, setReceipt] = useState<{ id: number; total: string; label: string } | null>(null);
   const [mounted, setMounted] = useState(false);
@@ -274,7 +274,7 @@ type TicketProps<T extends Tab> = {
   tab: T;
   perms: string[];
   discounts: Discount[] | undefined;
-  searchRef: React.RefObject<ProductSearchHandle | null>;
+  searchRef: React.RefObject<ProductPickerHandle | null>;
   chargeRef: React.RefObject<() => void>;
   update: (patch: Partial<T>) => void;
   onCharged: (tab: Tab, invoiceId: number, total: string) => void;
@@ -445,7 +445,7 @@ function SaleTicket({ tab, perms, discounts, searchRef, chargeRef, update, onCha
       <Card>
         <div className="flex items-center gap-2">
           <div className="flex-1">
-            <ProductSearch ref={searchRef} onPick={(p) => update({ lines: addProduct(tab.lines, p) })} />
+            <ProductPicker ref={searchRef} onPick={(p) => update({ lines: addProduct(tab.lines, p) })} />
           </div>
           <span className="hidden text-xs text-neutral-500 sm:inline">
             <Kbd>F2</Kbd> buscar
@@ -612,7 +612,7 @@ function ServiceTicket({ tab, perms, discounts, searchRef, chargeRef, update, on
         </Card>
 
         <Card title="Repuestos e insumos">
-          <ProductSearch ref={searchRef} autoFocus={false} placeholder="Buscar repuesto o insumo…" onPick={(p) => update({ parts: addProduct(tab.parts, p) })} />
+          <ProductPicker ref={searchRef} autoFocus={false} placeholder="Buscar repuesto o insumo…" onPick={(p) => update({ parts: addProduct(tab.parts, p) })} />
           <ProductLines lines={tab.parts} discounts={discounts} onChange={(parts) => update({ parts })} />
         </Card>
 

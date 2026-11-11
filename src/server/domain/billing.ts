@@ -208,33 +208,8 @@ export async function createInvoice(
 }
 
 // ---------------------------------------------------------------------------
-//  Balances (API-014). Everything in córdobas (DEC-025).
+//  Balances (API-014) live in SQL views now: see ~/server/domain/balances.ts (DEC-042).
 // ---------------------------------------------------------------------------
-
-export const invoiceBalanceInclude = {
-  lines: { include: { returnLines: true } },
-  paymentAllocations: true,
-} satisfies Prisma.SaleInvoiceInclude;
-
-type InvoiceForBalance = Prisma.SaleInvoiceGetPayload<{ include: typeof invoiceBalanceInclude }>;
-
-/** total − returns − payments. A returned unit is worth its net price (discount spread per unit). */
-export function invoiceBalance(inv: InvoiceForBalance) {
-  const total = sum(inv.lines.map(lineNet));
-  const returned = sum(
-    inv.lines.flatMap((l) =>
-      l.returnLines.map((r) => round2(lineNet(l).div(l.quantity).times(r.quantity))),
-    ),
-  );
-  const paid = sum(inv.paymentAllocations.map((a) => a.amount));
-  return { total, returned, paid, balance: total.minus(returned).minus(paid) };
-}
-
-export const openingBalanceInclude = { paymentAllocations: true } satisfies Prisma.CustomerOpeningBalanceInclude;
-type OpeningForBalance = Prisma.CustomerOpeningBalanceGetPayload<{ include: typeof openingBalanceInclude }>;
-export function openingBalanceRemaining(ob: OpeningForBalance) {
-  return D(ob.amount).minus(sum(ob.paymentAllocations.map((a) => a.amount)));
-}
 
 /**
  * Provisional monthly interest (Q-009, Q-021 still open): simple interest on the

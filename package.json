@@ -7,6 +7,7 @@
     "build": "next build",
     "check": "next lint && tsc --noEmit",
     "db:down": "docker compose down",
+    "db:dump-schema": "node scripts/dump-schema.mjs",
     "db:logs": "docker compose logs -f db",
     "db:migrate": "prisma migrate deploy",
     "db:migrate:new": "prisma migrate dev --create-only",

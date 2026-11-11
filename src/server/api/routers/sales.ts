@@ -5,20 +5,16 @@ import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
 import { Prisma } from "~/server/db";
 import { resolveAuthorizer, zAuthorizer } from "~/server/domain/authorize";
 import {
-  buildProductLines,
-  createInvoice,
+  customerBalances,
+  customerInvoiceBalances,
   invoiceBalance,
-  invoiceBalanceInclude,
-  lineNet,
-  openingBalanceInclude,
-  openingBalanceRemaining,
-  zProductLine,
-  zTerms,
-} from "~/server/domain/billing";
+  invoiceBalances,
+  openingBalances,
+} from "~/server/domain/balances";
+import { buildProductLines, createInvoice, lineNet, zProductLine, zTerms } from "~/server/domain/billing";
 import {
   CURRENCIES,
   dayToDate,
-  todayInManagua,
   zDay,
   zExchangeRate,
   zId,
@@ -57,12 +53,16 @@ export const salesRouter = createTRPCRouter({
           },
         },
         orderBy: { id: "desc" },
-        include: { ...invoiceBalanceInclude, customer: true, createdBy: { select: { username: true } } },
+        include: { customer: true, createdBy: { select: { username: true } } },
         take: limit + 1,
         ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       });
+      const page = items.slice(0, limit);
+      const balances = await invoiceBalances(ctx.db, page.map((i) => i.id));
       return {
-        items: items.slice(0, limit).map((inv) => ({
+        items: page.map((inv) => {
+          const b = balances.get(inv.id)!;
+          return {
           id: inv.id,
           invoiceNumber: inv.invoiceNumber,
           createdAt: inv.createdAt,
@@ -70,8 +70,12 @@ export const salesRouter = createTRPCRouter({
           customer: inv.customer,
           createdBy: inv.createdBy.username,
           serviceOrderId: inv.serviceOrderId,
-          ...invoiceBalance(inv),
-        })),
+          total: b.total,
+          returned: b.returned,
+          paid: b.paid,
+          balance: b.balance,
+          };
+        }),
         nextCursor: items.length > limit ? items[limit - 1]!.id : null,
       };
     }),
@@ -93,6 +97,7 @@ export const salesRouter = createTRPCRouter({
           returns: { include: { lines: true, returnReason: true } },
         },
       });
+      const b = await invoiceBalance(ctx.db, inv.id);
       return {
         ...inv,
         lines: inv.lines.map((l) => ({
@@ -100,7 +105,10 @@ export const salesRouter = createTRPCRouter({
           net: lineNet(l),
           returnedQuantity: l.returnLines.reduce((a, r) => a + r.quantity, 0),
         })),
-        ...invoiceBalance(inv),
+        total: b.total,
+        returned: b.returned,
+        paid: b.paid,
+        balance: b.balance,
       };
     }),
 
@@ -201,29 +209,24 @@ export const salesRouter = createTRPCRouter({
   pendingForCustomer: permissionProcedure("cobros.registrar")
     .input(z.object({ customerId: zId }))
     .query(async ({ ctx, input }) => {
-      const invoices = await ctx.db.saleInvoice.findMany({
-        where: { customerId: input.customerId },
-        include: invoiceBalanceInclude,
-        orderBy: { createdAt: "asc" },
-      });
-      const openings = await ctx.db.customerOpeningBalance.findMany({
-        where: { customerId: input.customerId },
-        include: openingBalanceInclude,
-        orderBy: { asOfDate: "asc" },
-      });
+      const openings = await openingBalances(ctx.db, { customerId: input.customerId }, true);
+      const invoices = await customerInvoiceBalances(ctx.db, input.customerId, true);
+      // Oldest first: that is the order a payment is usually applied in.
       return [
-        ...openings
-          .map((o) => ({ kind: "SALDO_INICIAL" as const, id: o.id, date: o.asOfDate, dueDate: o.dueDate, balance: openingBalanceRemaining(o) }))
-          .filter((o) => o.balance.gt(0)),
-        ...invoices
-          .map((i) => ({
-            kind: "FACTURA" as const,
-            id: i.id,
-            date: i.createdAt,
-            dueDate: i.extendedDueDate ?? i.dueDate,
-            balance: invoiceBalance(i).balance,
-          }))
-          .filter((i) => i.balance.gt(0)),
+        ...openings.reverse().map((o) => ({
+          kind: "SALDO_INICIAL" as const,
+          id: o.customerOpeningBalanceId,
+          date: o.asOfDate,
+          dueDate: o.dueDate,
+          balance: o.balance,
+        })),
+        ...invoices.reverse().map((i) => ({
+          kind: "FACTURA" as const,
+          id: i.saleInvoiceId,
+          date: i.createdAt,
+          dueDate: i.dueDate,
+          balance: i.balance,
+        })),
       ];
     }),
 
@@ -270,22 +273,18 @@ export const salesRouter = createTRPCRouter({
         if (openingIds.length) {
           await tx.$queryRaw`SELECT id FROM customer_opening_balance WHERE id IN (${Prisma.join(openingIds)}) FOR UPDATE`;
         }
-        const invoices = await tx.saleInvoice.findMany({ where: { id: { in: invoiceIds } }, include: invoiceBalanceInclude });
-        const openings = await tx.customerOpeningBalance.findMany({
-          where: { id: { in: openingIds } },
-          include: openingBalanceInclude,
-        });
+        // Read AFTER the locks, so the balances can't change under us.
+        const invoices = await invoiceBalances(tx, invoiceIds);
+        const openings = openingIds.length ? await openingBalances(tx, { ids: openingIds }) : [];
         for (const a of input.allocations) {
           if (a.saleInvoiceId) {
-            const inv = invoices.find((i) => i.id === a.saleInvoiceId);
+            const inv = invoices.get(a.saleInvoiceId);
             if (inv?.customerId !== input.customerId) throw fail(`La factura ${a.saleInvoiceId} no es de este cliente.`);
-            const { balance } = invoiceBalance(inv);
-            if (D(a.amount).gt(balance)) throw fail(`La factura ${inv.id} solo debe C$ ${balance.toFixed(2)}.`);
+            if (D(a.amount).gt(inv.balance)) throw fail(`La factura ${inv.saleInvoiceId} solo debe C$ ${inv.balance.toFixed(2)}.`);
           } else if (a.customerOpeningBalanceId) {
-            const ob = openings.find((o) => o.id === a.customerOpeningBalanceId);
+            const ob = openings.find((o) => o.customerOpeningBalanceId === a.customerOpeningBalanceId);
             if (ob?.customerId !== input.customerId) throw fail("El saldo inicial no es de este cliente.");
-            const balance = openingBalanceRemaining(ob);
-            if (D(a.amount).gt(balance)) throw fail(`El saldo inicial solo debe C$ ${balance.toFixed(2)}.`);
+            if (D(a.amount).gt(ob.balance)) throw fail(`El saldo inicial solo debe C$ ${ob.balance.toFixed(2)}.`);
           } else {
             throw fail("Cada abono se aplica a una factura o a un saldo inicial.");
           }
@@ -316,29 +315,10 @@ export const salesRouter = createTRPCRouter({
   receivables: permissionProcedure("clientes.ver")
     .input(z.object({ onlyOverdue: z.boolean().default(false) }).default({}))
     .query(async ({ ctx, input }) => {
-      const today = todayInManagua();
-      const invoices = await ctx.db.saleInvoice.findMany({
-        where: { customerId: { not: null }, paymentTerms: "CREDITO" },
-        include: { ...invoiceBalanceInclude, customer: true },
-      });
-      const openings = await ctx.db.customerOpeningBalance.findMany({
-        include: { ...openingBalanceInclude, customer: true },
-      });
-      type Row = { customerId: number; name: string; phone: string; balance: Prisma.Decimal; overdue: Prisma.Decimal; oldestDue: string | null };
-      const rows = new Map<number, Row>();
-      const add = (c: { id: number; name: string; phone: string }, balance: Prisma.Decimal, due: Date | null) => {
-        if (balance.lte(0)) return;
-        const row = rows.get(c.id) ?? { customerId: c.id, name: c.name, phone: c.phone, balance: D(0), overdue: D(0), oldestDue: null };
-        row.balance = row.balance.plus(balance);
-        const dueDay = due?.toISOString().slice(0, 10) ?? null;
-        if (dueDay && dueDay < today) row.overdue = row.overdue.plus(balance);
-        if (dueDay && (!row.oldestDue || dueDay < row.oldestDue)) row.oldestDue = dueDay;
-        rows.set(c.id, row);
-      };
-      for (const inv of invoices) add(inv.customer!, invoiceBalance(inv).balance, inv.extendedDueDate ?? inv.dueDate);
-      for (const ob of openings) add(ob.customer, openingBalanceRemaining(ob), ob.dueDate);
-      const list = [...rows.values()].filter((r) => !input.onlyOverdue || r.overdue.gt(0));
-      list.sort((a, b) => b.overdue.comparedTo(a.overdue) || b.balance.comparedTo(a.balance));
+      const list = (await customerBalances(ctx.db, { onlyOverdue: input.onlyOverdue })).map((r) => ({
+        ...r,
+        oldestDue: r.oldestDueDate?.toISOString().slice(0, 10) ?? null,
+      }));
       return { rows: list, total: sum(list.map((r) => r.balance)), overdue: sum(list.map((r) => r.overdue)) };
     }),
 

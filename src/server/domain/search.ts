@@ -17,6 +17,12 @@ import { type DbClient, type Prisma } from "~/server/db";
 const MIN_SIMILARITY = 0.3;
 
 type Db = DbClient | Prisma.TransactionClient;
+
+/** What a product / customer row carries wherever it is listed or searched. */
+export const productInclude = { category: true, brand: true } satisfies Prisma.ProductInclude;
+export const customerInclude = {
+  motorcycles: { include: { model: { include: { brand: true } } } },
+} satisfies Prisma.CustomerInclude;
 export type Ranked = { id: number; score: number; exact: boolean };
 
 /** Escapes LIKE wildcards so "50%" searches the text "50%". */

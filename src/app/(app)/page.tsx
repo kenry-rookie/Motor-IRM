@@ -65,7 +65,6 @@ export default function HomePage() {
     { ...range, granularity: gran },
     { enabled: !!canReport && range.from <= range.to, placeholderData: (p) => p },
   );
-  const today = api.reports.daySummary.useQuery(undefined, { enabled: !!canReport });
 
   const rows = useMemo(
     () =>
@@ -87,7 +86,7 @@ export default function HomePage() {
   const vs = "periodo anterior";
   const avgTicket = cur && cur.invoices > 0 ? Number(cur.sales) / cur.invoices : 0;
   const prevAvg = prev && prev.invoices > 0 ? Number(prev.sales) / prev.invoices : 0;
-  const t = today.data;
+  const t = report.data;
 
   return (
     <>
@@ -195,11 +194,14 @@ export default function HomePage() {
 
       {t && (
         <section className="mt-8">
-          <h2 className="font-display mb-3 text-xl font-semibold text-neutral-50">Hoy en el negocio</h2>
+          <h2 className="font-display mb-3 text-xl font-semibold text-neutral-50">
+            {preset === "hoy" ? "Hoy en el negocio" : "Dinero del periodo y taller ahora"}
+          </h2>
           <div className="grid gap-4 lg:grid-cols-3">
-            <Card title="Caja de hoy">
+            <Card title={preset === "hoy" ? "Caja de hoy" : "Dinero del periodo"}>
               <dl className="space-y-1.5 text-sm">
-                {t.received.byMethod.map((m) => (
+                {t.receivedByMethod.length === 0 && <p className="text-neutral-500">No entró dinero en este periodo.</p>}
+                {t.receivedByMethod.map((m) => (
                   <div key={m.method} className="flex justify-between">
                     <dt className="text-neutral-400">{m.method}</dt>
                     <dd className="tabular-nums">{money(m.amount)}</dd>
@@ -214,8 +216,8 @@ export default function HomePage() {
                   <dd className="tabular-nums">−{money(t.advances)}</dd>
                 </div>
                 <div className="flex justify-between border-t border-neutral-800 pt-1.5 font-semibold">
-                  <dt>Debe haber en caja</dt>
-                  <dd className="tabular-nums">{money(t.cashBalance)}</dd>
+                  <dt>{preset === "hoy" ? "Debe haber en caja" : "Neto del periodo"}</dt>
+                  <dd className="tabular-nums">{money(t.cashNet)}</dd>
                 </div>
               </dl>
             </Card>

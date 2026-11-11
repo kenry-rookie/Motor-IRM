@@ -7,6 +7,7 @@ import { Alert, Badge, Button, Card, Dialog, Field, Input, PageTitle, Select, Ta
 import { errorMessage, fieldErrors } from "~/lib/errors";
 import { money } from "~/lib/format";
 import { useDebounced } from "~/lib/use-debounced";
+import { SearchField } from "~/app/_components/pickers";
 import { api } from "~/trpc/react";
 
 /** CLI-008 — Product list with stock, search and creation. */
@@ -16,11 +17,17 @@ export default function InventoryPage() {
   const [onlyLow, setOnlyLow] = useState(false);
   const [creating, setCreating] = useState(false);
   const dsearch = useDebounced(search.trim(), 200);
+  // Without text: browse page by page. With text: the one search service (DEC-043).
   const list = api.inventory.listProducts.useInfiniteQuery(
-    { search: dsearch || undefined, lowStock: onlyLow ? 2 : undefined, limit: 50 },
-    { getNextPageParam: (last) => last.nextCursor, initialCursor: null },
+    { lowStock: onlyLow ? 2 : undefined, limit: 50 },
+    { getNextPageParam: (last) => last.nextCursor, initialCursor: null, enabled: !dsearch },
   );
-  const items = list.data?.pages.flatMap((p) => p.items) ?? [];
+  const found = api.search.products.useQuery(
+    { q: dsearch, limit: 50, lowStock: onlyLow ? 2 : undefined },
+    { enabled: !!dsearch, placeholderData: (p) => p },
+  );
+  const items = dsearch ? (found.data?.items ?? []) : (list.data?.pages.flatMap((p) => p.items) ?? []);
+  const loading = dsearch ? found.isLoading : list.isLoading;
   const canManage = me.data?.permissions.includes("inventario.gestionar");
 
   return (
@@ -32,17 +39,17 @@ export default function InventoryPage() {
       />
       <Card>
         <div className="mb-4 flex flex-wrap gap-3">
-          <Input className="max-w-sm" placeholder="Buscar por nombre o código…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <SearchField className="w-full max-w-md" label="Buscar producto" placeholder="Buscar por nombre, marca o código…" value={search} onValue={setSearch} />
           <label className="flex items-center gap-2 text-sm text-neutral-300">
             <input type="checkbox" checked={onlyLow} onChange={(e) => setOnlyLow(e.target.checked)} /> Solo poco stock (≤ 2)
           </label>
         </div>
-        {search && items.length > 0 && !items.some((p) => p.exact) && (
+        {dsearch && found.data?.suggestionsOnly && (
           <div className="mb-3">
             <Alert kind="info">Ningún producto dice «{search}». Estos son los más parecidos.</Alert>
           </div>
         )}
-        <Table head={["Producto", "Categoría", "Marca", "Calidad", "Precio", "Stock"]} empty={!list.isLoading && items.length === 0}>
+        <Table head={["Producto", "Categoría", "Marca", "Calidad", "Precio", "Stock"]} empty={!loading && items.length === 0}>
           {items.map((p) => (
             <tr key={p.id}>
               <td>
@@ -61,7 +68,7 @@ export default function InventoryPage() {
             </tr>
           ))}
         </Table>
-        {list.hasNextPage && (
+        {!dsearch && list.hasNextPage && (
           <Button variant="secondary" className="mt-3" onClick={() => void list.fetchNextPage()} disabled={list.isFetchingNextPage}>
             Cargar más
           </Button>

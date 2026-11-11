@@ -6,6 +6,8 @@ import { z } from "zod";
  * Must match prisma/migrations/0_init/migration.sql; if a CHECK changes, change it here.
  */
 export const PAYMENT_TERMS = ["CONTADO", "CREDITO"] as const;
+/** ck_staff_kind (DEC-041). */
+export const STAFF_KINDS = ["DUENO", "MECANICO", "ENCARGADO"] as const;
 export const CURRENCIES = ["NIO", "USD"] as const;
 export const QUALITY_TIERS = ["ALTA", "MEDIA", "BAJA"] as const;
 export const DISCOUNT_TYPES = ["PORCENTAJE", "MONTO"] as const;
@@ -30,6 +32,7 @@ export const MOVEMENT_TYPES_OUT = ["VENTA", "USO_SERVICIO", "DEVOLUCION_PROVEEDO
 export const MOVEMENT_TYPES = [...MOVEMENT_TYPES_IN, ...MOVEMENT_TYPES_OUT] as const;
 
 export type PaymentTerms = (typeof PAYMENT_TERMS)[number];
+export type StaffKind = (typeof STAFF_KINDS)[number];
 export type Currency = (typeof CURRENCIES)[number];
 export type QualityTier = (typeof QUALITY_TIERS)[number];
 export type LineType = (typeof LINE_TYPES)[number];
@@ -42,6 +45,7 @@ export const FINAL_SERVICE_STATUSES: readonly ServiceOrderStatus[] = ["ENTREGADA
 /** Spanish labels for the UI. */
 export const LABELS = {
   paymentTerms: { CONTADO: "Contado", CREDITO: "Crédito" },
+  staffKind: { DUENO: "Dueño", MECANICO: "Mecánico", ENCARGADO: "Encargado" },
   qualityTier: { ALTA: "Alta", MEDIA: "Media", BAJA: "Baja" },
   lineType: { PRODUCTO: "Producto", MANO_OBRA: "Mano de obra", CARGO_EXTERNO: "Cargo externo" },
   serviceStatus: {

@@ -4,6 +4,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { queueServiceBill } from "~/app/(app)/ventas/tabs-store";
+import { ResponsibleSelect } from "~/app/_components/pickers";
 import { cleanTerms, emptyTerms, type Terms, TermsForm } from "~/app/_components/terms-form";
 import { Alert, Badge, Button, Card, Dialog, Field, Input, PageTitle, Select, Table, Textarea } from "~/app/_components/ui";
 import { errorMessage } from "~/lib/errors";
@@ -21,7 +22,6 @@ export default function OrderPage() {
   const me = api.auth.me.useQuery();
   const utils = api.useUtils();
   const order = api.service.get.useQuery({ id: orderId });
-  const staff = api.staff.list.useQuery();
   const refresh = () => void utils.service.invalidate();
   const assign = api.service.assignMechanic.useMutation({ onSuccess: refresh });
   const change = api.service.changeStatus.useMutation({ onSuccess: refresh });
@@ -62,21 +62,22 @@ export default function OrderPage() {
         <Card title="Trabajo">
           <p className="text-sm">{o.requestedWork}</p>
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <Field label="Mecánico">
-              <Select
+            <Field
+              label="Responsable"
+              hint={
+                o.mechanic
+                  ? o.appliedCommissionRate
+                    ? `Cobra ${Math.round(Number(o.appliedCommissionRate.toString()) * 100)} % de la mano de obra`
+                    : "Sin comisión"
+                  : "Mecánico o dueño"
+              }
+            >
+              <ResponsibleSelect
                 disabled={!canManage}
                 value={o.mechanicStaffId ?? 0}
-                onChange={(e) => assign.mutate({ serviceOrderId: o.id, mechanicStaffId: Number(e.target.value) })}
-              >
-                <option value={0}>Sin asignar</option>
-                {staff.data
-                  ?.filter((s) => s.commissionRate)
-                  .map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-              </Select>
+                emptyLabel="Sin asignar"
+                onChange={(id) => id && assign.mutate({ serviceOrderId: o.id, mechanicStaffId: id })}
+              />
             </Field>
             <Field label="Cambiar estado">
               <Select

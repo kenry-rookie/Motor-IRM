@@ -12,6 +12,9 @@
 //   - case-insensitive unique indexes on lower(...) / upper(...) 0_init
 //   - triggers: product.stock from inventory_movement (DEC-039)  1_decisions_api_001_003
 //   - database time zone America/Managua (DEC-038)               1_decisions_api_001_003
+//   - responsible of an order: owner ⇒ no commission (DEC-041)    4_staff_kind_and_balance_views
+//   - balance / commission / margin VIEWS (v_*, DEC-042)          4_staff_kind_and_balance_views
+//     Views are read with $queryRaw from src/server/domain/balances.ts.
 // When you change a column covered by one of those, update the SQL migration too.
 // Dates: every instant is TIMESTAMPTZ (DEC-038); DATE columns are calendar days.
 
@@ -62,12 +65,17 @@ model RolePermission {
   @@map("role_permission")
 }
 
+/// Everyone who works at the shop. `kind` says who they are (DEC-041):
+/// DUENO and MECANICO can be the responsible of a service order; a DUENO never
+/// earns commission. commissionRate NULL = no commission (owners, the "100 %" mechanic).
 model Staff {
   id             Int      @id(map: "pk_staff") @default(autoincrement())
   name           String   @db.VarChar(100)
   phone          String   @db.VarChar(20)
   commissionRate Decimal? @map("commission_rate") @db.Decimal(5, 4)
   active         Boolean  @default(true)
+  kind           String   @default("MECANICO") @db.VarChar(20) // 'DUENO' | 'MECANICO' | 'ENCARGADO'
+  canRepair      Boolean  @default(true) @map("can_repair")
 
   appUser       AppUser?
   payouts       StaffPayout[]
@@ -477,11 +485,11 @@ model CustomerOpeningBalance {
 model ServiceOrder {
   id                    Int      @id(map: "pk_service_order") @default(autoincrement())
   motorcycleId          Int      @map("motorcycle_id")
-  mechanicStaffId       Int?     @map("mechanic_staff_id")
+  mechanicStaffId       Int?     @map("mechanic_staff_id") // the responsible: a mechanic or an owner (DEC-041)
   requestedWork         String   @map("requested_work") @db.VarChar(500)
   diagnosis             String?  @db.VarChar(500)
   cancellationFee       Decimal? @map("cancellation_fee") @db.Decimal(12, 2)
-  appliedCommissionRate Decimal? @map("applied_commission_rate") @db.Decimal(5, 4)
+  appliedCommissionRate Decimal? @map("applied_commission_rate") @db.Decimal(5, 4) // NULL = no commission
   staffPayoutId         Int?     @map("staff_payout_id")
 
   saleInvoice               SaleInvoice?

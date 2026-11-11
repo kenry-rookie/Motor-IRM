@@ -3,83 +3,30 @@ import { z } from "zod";
 import { fail } from "~/server/api/errors";
 import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
 import { Prisma } from "~/server/db";
-import { invoiceBalance, invoiceBalanceInclude } from "~/server/domain/billing";
-import { dayToDate, FINAL_SERVICE_STATUSES, type ServiceOrderStatus, todayInManagua, zDay } from "~/server/domain/constants";
-import { D, sum, toNio } from "~/server/domain/money";
+import { zDay } from "~/server/domain/constants";
 
 /**
- * API-023 — what the owners check every day. The exact content of the cash
- * close depends on Q-004 / Q-007; this version: money received by method,
- * minus withdrawals and advances given that day.
+ * API-023 — what the owners check. ONE report with a period (DEC-043): "today"
+ * is just the preset from = to = today. Besides the charts it returns the money
+ * received by method, withdrawals and advances of the period, and two snapshots
+ * that don't depend on the period: open orders and low stock.
+ * Everything is grouped in Managua time (DEC-038) and in córdobas (DEC-025).
  */
 export const reportsRouter = createTRPCRouter({
-  daySummary: permissionProcedure("reportes.ver")
-    .input(z.object({ day: zDay.optional(), lowStockThreshold: z.number().int().min(0).default(2) }).default({}))
-    .query(async ({ ctx, input }) => {
-      const day = input.day ?? todayInManagua();
-      const start = new Date(`${day}T00:00:00-06:00`);
-      const end = new Date(start.getTime() + 86_400_000);
-
-      const invoices = await ctx.db.saleInvoice.findMany({
-        where: { createdAt: { gte: start, lt: end } },
-        include: invoiceBalanceInclude,
-      });
-      const salesTotal = sum(invoices.map((i) => invoiceBalance(i).total));
-      const creditTotal = sum(invoices.filter((i) => i.paymentTerms === "CREDITO").map((i) => invoiceBalance(i).total));
-
-      const payments = await ctx.db.customerPayment.findMany({
-        where: { paidAt: { gte: start, lt: end } },
-        include: { paymentMethod: true },
-      });
-      const byMethod = new Map<string, ReturnType<typeof D>>();
-      for (const p of payments) {
-        const key = p.paymentMethod.name;
-        byMethod.set(key, (byMethod.get(key) ?? D(0)).plus(toNio(p.amount, p.currency, p.exchangeRate)));
-      }
-      const received = sum([...byMethod.values()]);
-
-      const withdrawals = sum(
-        (await ctx.db.cashWithdrawal.findMany({ where: { withdrawnOn: dayToDate(day) } })).map((w) => w.amount),
-      );
-      const advances = sum(
-        (await ctx.db.staffAdvance.findMany({ where: { givenOn: dayToDate(day) } })).map((a) => a.amount),
-      );
-
-      const orders = await ctx.db.serviceOrder.findMany({
-        include: { statusChanges: { orderBy: [{ changedAt: "desc" }, { id: "desc" }], take: 1 } },
-        take: 1000,
-        orderBy: { id: "desc" },
-      });
-      const openOrders = orders.filter(
-        (o) => !FINAL_SERVICE_STATUSES.includes((o.statusChanges[0]?.status ?? "RECIBIDA") as ServiceOrderStatus),
-      ).length;
-
-      const lowStock = await ctx.db.product.findMany({
-        where: { stock: { lte: input.lowStockThreshold } },
-        orderBy: { stock: "asc" },
-        select: { id: true, name: true, stock: true, barcode: true },
-        take: 50,
-      });
-
-      return {
-        day,
-        sales: { count: invoices.length, total: salesTotal, credit: creditTotal },
-        received: { total: received, byMethod: [...byMethod.entries()].map(([method, amount]) => ({ method, amount })) },
-        withdrawals,
-        advances,
-        cashBalance: received.minus(withdrawals).minus(advances),
-        openOrders,
-        lowStock,
-      };
-    }),
-
   /**
    * Reports by period (day / week / month buckets) for the charts, plus totals
    * compared with the previous period of the same length. Weeks start on Monday.
    * Everything is grouped in Managua time (DEC-038) and in córdobas (DEC-025).
    */
   period: permissionProcedure("reportes.ver")
-    .input(z.object({ from: zDay, to: zDay, granularity: z.enum(["day", "week", "month"]) }))
+    .input(
+      z.object({
+        from: zDay,
+        to: zDay,
+        granularity: z.enum(["day", "week", "month"]).default("day"),
+        lowStockThreshold: z.number().int().min(0).default(2),
+      }),
+    )
     .query(async ({ ctx, input }) => {
       if (input.to < input.from) throw fail("La fecha final es antes de la inicial.");
       const days = (Date.parse(input.to) - Date.parse(input.from)) / 86_400_000 + 1;
@@ -159,6 +106,32 @@ export const reportsRouter = createTRPCRouter({
               AND (changed_at AT TIME ZONE 'America/Managua')::date BETWEEN ${f}::date AND ${t}::date)::int AS delivered`;
         return r!;
       };
+      const byMethod = await ctx.db.$queryRaw<{ method: string; amount: string }[]>`
+        SELECT pm.name AS method,
+               sum(CASE WHEN cp.currency = 'USD' THEN round(cp.amount * cp.exchange_rate, 2) ELSE cp.amount END)::text AS amount
+          FROM customer_payment cp
+          JOIN payment_method pm ON pm.id = cp.payment_method_id
+         WHERE (cp.paid_at AT TIME ZONE 'America/Managua')::date BETWEEN ${from}::date AND ${to}::date
+         GROUP BY pm.name
+         ORDER BY 2 DESC`;
+      // Money in and out of the drawer in the period; for "today" the net is what should be in the cash box.
+      const [cashOut] = await ctx.db.$queryRaw<{ withdrawals: string; advances: string; net: string }[]>`
+        WITH m AS (
+          SELECT (SELECT coalesce(sum(CASE WHEN currency = 'USD' THEN round(amount * exchange_rate, 2) ELSE amount END), 0)
+                    FROM customer_payment WHERE (paid_at AT TIME ZONE 'America/Managua')::date BETWEEN ${from}::date AND ${to}::date) AS received,
+                 (SELECT coalesce(sum(amount), 0) FROM cash_withdrawal WHERE withdrawn_on BETWEEN ${from}::date AND ${to}::date) AS withdrawals,
+                 (SELECT coalesce(sum(amount), 0) FROM staff_advance WHERE given_on BETWEEN ${from}::date AND ${to}::date) AS advances
+        )
+        SELECT withdrawals::text, advances::text, (received - withdrawals - advances)::text AS net FROM m`;
+      const [orders] = await ctx.db.$queryRaw<{ open: number }[]>`
+        SELECT count(*)::int AS open FROM v_service_order_status WHERE status NOT IN ('ENTREGADA', 'CANCELADA')`;
+      const lowStock = await ctx.db.product.findMany({
+        where: { stock: { lte: input.lowStockThreshold } },
+        orderBy: { stock: "asc" },
+        select: { id: true, name: true, stock: true, barcode: true },
+        take: 50,
+      });
+
       const shift = (day: string, n: number) => new Date(Date.parse(day) + n * 86_400_000).toISOString().slice(0, 10);
       const current = await totals(from, to);
       const previous = await totals(shift(from, -days), shift(from, -1));
@@ -179,6 +152,12 @@ export const reportsRouter = createTRPCRouter({
         current: { ...current, invoices: Number(current.invoices), delivered: Number(current.delivered) },
         previous: { ...previous, invoices: Number(previous.invoices), delivered: Number(previous.delivered) },
         previousRange: { from: shift(from, -days), to: shift(from, -1) },
+        receivedByMethod: byMethod,
+        withdrawals: cashOut!.withdrawals,
+        advances: cashOut!.advances,
+        cashNet: cashOut!.net,
+        openOrders: Number(orders!.open),
+        lowStock,
       };
     }),
 });

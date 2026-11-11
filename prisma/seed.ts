@@ -91,8 +91,11 @@ async function base() {
   const password = process.env.SEED_ADMIN_PASSWORD ?? "cambiar-esta-clave";
   const existing = await db.appUser.findFirst({ where: { username: { equals: username, mode: "insensitive" } } });
   if (!existing) {
+    // The first owner is also a person of the shop (DEC-041), so he can be the
+    // responsible of a motorcycle. Rename it from Personal with the real name.
+    const owner = await db.staff.create({ data: { name: "Dueño (cambiar nombre)", phone: "0000-0000", kind: "DUENO" } });
     await db.appUser.create({
-      data: { username, passwordHash: await hashPassword(password), roleId: roles["Dueño"]! },
+      data: { username, passwordHash: await hashPassword(password), roleId: roles["Dueño"]!, staffId: owner.id },
     });
     console.log(`👤 Usuario administrador creado: ${username} (cambie la contraseña al entrar)`);
   }
@@ -136,15 +139,20 @@ async function demo(roles: Record<string, number>) {
     });
   }
 
-  for (const [name, phone, rate] of [
-    ["Freddy Orozco", "8190-6003", "0.6000"],
-    ["Carlos Padel", "5790-2104", "1.0000"],
+  // Fictitious people (no real personal data in seeds, prompt v2 §14).
+  // The "100 %" mechanic keeps all his labor and is not paid by the system: no rate (DEC-041).
+  for (const [name, phone, rate, kind] of [
+    ["Mario Taller", "8000-0001", "0.6000", "MECANICO"],
+    ["Pablo Llave", "8000-0002", null, "MECANICO"],
+    ["Segundo Dueño", "8000-0003", null, "DUENO"],
   ] as const) {
     if (!(await db.staff.findFirst({ where: ci(name) }))) {
-      await db.staff.create({ data: { name, phone, commissionRate: rate } });
+      await db.staff.create({ data: { name, phone, commissionRate: rate, kind } });
     }
   }
-  const encargado = await db.staff.create({ data: { name: "Encargado de mostrador", phone: "8310-5505" } });
+  const encargado = await db.staff.create({
+    data: { name: "Encargado de mostrador", phone: "8000-0004", kind: "ENCARGADO", canRepair: false },
+  });
   await db.appUser.create({
     data: {
       username: "encargado",

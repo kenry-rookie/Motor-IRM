@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { hashPassword, verifyPassword } from "~/server/auth/password";
+import { Prisma } from "~/server/db";
 import { callerAs, db, idOf, productByBarcode } from "./helpers";
 
 const BUJIA = "7501234500011"; // stock 20, price 120
@@ -140,7 +141,7 @@ describe("crédito, abonos y devoluciones (API-013, 014, 016)", () => {
 describe("taller (API-015) y personal (API-018)", () => {
   it("recibir sin factura, falla adicional, cerrar con repuesto, comisión y pago", async () => {
     const moto = await db.motorcycle.findFirstOrThrow({ where: { plate: "M 654-321" } });
-    const freddy = await db.staff.findFirstOrThrow({ where: { name: "Freddy Orozco" } });
+    const freddy = await db.staff.findFirstOrThrow({ where: { name: "Mario Taller" } });
     const order = await encargado.service.receive({ motorcycleId: moto.id, requestedWork: "Engrase completo" });
     expect(await db.saleInvoice.count({ where: { serviceOrderId: order.id } })).toBe(0);
 
@@ -214,36 +215,40 @@ describe("compras (API-017)", () => {
   });
 });
 
-describe("búsqueda tolerante a errores (API-021 v2)", () => {
+describe("búsqueda tolerante a errores: un solo servicio (API-021, DEC-043)", () => {
   it("encuentra el producto aunque esté mal escrito y lo marca como sugerencia", async () => {
-    const r = await encargado.inventory.search({ q: "bugia" });
+    const r = await encargado.search.products({ q: "bugia" });
     expect(r.items[0]?.name).toBe("Bujía NGK C7HSA");
     expect(r.didYouMean).toBe("Bujía NGK C7HSA");
+    expect(r.suggestionsOnly).toBe(true);
   });
   it("sin tildes y por pedazos también encuentra, y eso no es sugerencia", async () => {
-    const r = await encargado.inventory.search({ q: "pastillas freno" });
+    const r = await encargado.search.products({ q: "pastillas freno" });
     expect(r.items[0]?.name).toBe("Pastillas de freno delanteras");
-    const exact = await encargado.inventory.search({ q: "bujia" });
+    const exact = await encargado.search.products({ q: "bujia" });
     expect(exact.didYouMean).toBeNull();
   });
   it("el código de barras va primero", async () => {
-    const r = await encargado.inventory.search({ q: CADENA });
+    const r = await encargado.search.products({ q: CADENA });
     expect(r.items[0]?.barcode).toBe(CADENA);
   });
   it("clientes por nombre mal escrito, por placa sin guion o por teléfono", async () => {
-    expect((await encargado.customer.list({ search: "marai lopes" })).items[0]?.name).toBe("María López");
-    expect((await encargado.customer.list({ search: "654321" })).items[0]?.name).toBe("María López");
-    expect((await encargado.customer.list({ search: "8888-1111" })).items[0]?.name).toBe("Juan Pérez");
+    expect((await encargado.search.customers({ q: "marai lopes" })).items[0]?.name).toBe("María López");
+    expect((await encargado.search.customers({ q: "654321" })).items[0]?.name).toBe("María López");
+    expect((await encargado.search.customers({ q: "8888-1111" })).items[0]?.name).toBe("Juan Pérez");
   });
 });
 
-describe("recepción en un solo paso", () => {
-  it("registra cliente, marca, modelo, moto y orden juntos", async () => {
+describe("recepción en un solo paso, marca y modelo del catálogo (DEC-044)", () => {
+  it("registra cliente, moto y orden juntos con un modelo elegido de la lista", async () => {
+    const xr = await admin.admin.saveMotorcycleModel({
+      motorcycleBrandId: (await admin.admin.createCatalogItem({ kind: "motorcycleBrand", name: "Honda" })).id,
+      name: "XR 150",
+    });
     const order = await encargado.service.receive({
       newMotorcycle: {
         newCustomer: { name: "Pedro Gómez", phone: "8123-4567" },
-        brandName: "honda",
-        modelName: "XR 150",
+        motorcycleModelId: xr.id,
         color: "Blanca",
         plate: "M 777-000",
       },
@@ -251,16 +256,88 @@ describe("recepción en un solo paso", () => {
     });
     const o = await admin.service.get({ id: order.id });
     expect(o.motorcycle.customer.name).toBe("Pedro Gómez");
-    expect(o.motorcycle.model.brand.name).toBe("honda");
+    expect(o.motorcycle.model.brand.name).toBe("Honda");
     expect(o.status).toBe("RECIBIDA");
-    // Second time: the existing brand is reused (case-insensitive) and a repeated plate is rejected.
+    // A repeated plate is rejected; nothing of that reception is left behind.
     await expect(
       encargado.service.receive({
-        newMotorcycle: { customerId: o.motorcycle.customer.id, brandName: "HONDA", modelName: "xr 150", color: "Roja", plate: "m 777-000" },
+        newMotorcycle: { customerId: o.motorcycle.customer.id, motorcycleModelId: xr.id, color: "Roja", plate: "m 777-000" },
         requestedWork: "Revisión",
       }),
     ).rejects.toThrow("Ya existe una moto con esa placa");
-    expect(await db.motorcycleBrand.count({ where: { name: { equals: "honda", mode: "insensitive" } } })).toBe(1);
+  });
+
+  it("no acepta un modelo que no está en el catálogo, y el encargado no puede crear marcas", async () => {
+    const customer = await db.customer.findFirstOrThrow({ where: { name: "Juan Pérez" } });
+    await expect(
+      encargado.service.receive({
+        newMotorcycle: { customerId: customer.id, motorcycleModelId: 999_999, color: "Azul" },
+        requestedWork: "Revisión",
+      }),
+    ).rejects.toThrow("no está en el catálogo");
+    await expect(encargado.admin.createCatalogItem({ kind: "motorcycleBrand", name: "Bajah" })).rejects.toThrow();
+  });
+});
+
+describe("responsable de la orden: mecánico o dueño (DEC-041)", () => {
+  const receiveAndClose = async (staffId: number, labor: string) => {
+    const moto = await db.motorcycle.findFirstOrThrow({ where: { plate: "M 123-456" } });
+    const order = await encargado.service.receive({ motorcycleId: moto.id, requestedWork: "Frenos", mechanicStaffId: staffId });
+    await encargado.service.close({
+      serviceOrderId: order.id,
+      terms: { paymentTerms: "CONTADO", payment: { paymentMethodId: cash, currency: "NIO" } },
+      labor: [{ description: "Frenos", price: labor }],
+    });
+    return db.serviceOrder.findUniqueOrThrow({ where: { id: order.id } });
+  };
+
+  it("un dueño puede reparar; la orden no lleva porcentaje y no genera comisión", async () => {
+    const owner = await db.staff.findFirstOrThrow({ where: { name: "Segundo Dueño" } });
+    const order = await receiveAndClose(owner.id, "300");
+    expect(order.appliedCommissionRate).toBeNull();
+    const rows = await db.$queryRaw<unknown[]>`SELECT * FROM v_mechanic_unpaid_commission WHERE service_order_id = ${order.id}`;
+    expect(rows).toHaveLength(0);
+    await expect(
+      admin.staff.createPayout({ staffId: owner.id, periodStart: "2026-01-01", periodEnd: "2099-12-31" }),
+    ).rejects.toThrow("No hay comisiones");
+  });
+
+  it("el mecánico «al 100 %» atiende la moto pero no se paga por el sistema", async () => {
+    const m = await db.staff.findFirstOrThrow({ where: { name: "Pablo Llave" } });
+    const order = await receiveAndClose(m.id, "250");
+    expect(order.mechanicStaffId).toBe(m.id);
+    expect(order.appliedCommissionRate).toBeNull();
+    expect((await admin.staff.pending({ staffId: m.id })).commission.toString()).toBe("0");
+  });
+
+  it("el encargado no repara motos; la base rechaza porcentaje a un dueño", async () => {
+    const enc = await db.staff.findFirstOrThrow({ where: { kind: "ENCARGADO" } });
+    const moto = await db.motorcycle.findFirstOrThrow({ where: { plate: "M 123-456" } });
+    await expect(
+      encargado.service.receive({ motorcycleId: moto.id, requestedWork: "x", mechanicStaffId: enc.id }),
+    ).rejects.toThrow("no repara motos");
+    const owner = await db.staff.findFirstOrThrow({ where: { name: "Segundo Dueño" } });
+    // Even writing straight to the database (skipping the API) is rejected.
+    await expect(
+      db.serviceOrder.create({
+        data: { motorcycleId: moto.id, requestedWork: "x", mechanicStaffId: owner.id, appliedCommissionRate: "0.6" },
+      }),
+    ).rejects.toThrow("tg_service_order_owner_no_commission");
+    await expect(
+      admin.staff.save({ id: owner.id, name: owner.name, phone: owner.phone, kind: "DUENO", commissionRate: "0.5" }),
+    ).rejects.toThrow("Un dueño no cobra comisión");
+  });
+});
+
+describe("saldos desde vistas SQL (DEC-042)", () => {
+  it("la vista y las cuentas por cobrar dicen lo mismo que la factura", async () => {
+    const r = await admin.sales.receivables();
+    for (const row of r.rows) {
+      const statement = await admin.customer.statement({ customerId: row.customerId });
+      const open = [...statement.invoices, ...statement.openingBalances].filter((x) => x.balance.gt(0));
+      const sum = open.reduce((a, x) => a.plus(x.balance), new Prisma.Decimal(0));
+      expect(sum.toString()).toBe(row.balance.toString());
+    }
   });
 });
 
@@ -271,6 +348,10 @@ describe("reportes por periodo", () => {
     expect(r.series).toHaveLength(1);
     expect(Number(r.current.sales)).toBeGreaterThan(0);
     expect(r.topProducts.length).toBeGreaterThan(0);
+    // "Hoy" is only a preset of the same report (DEC-043): money by method, cash net, workshop, low stock.
+    expect(r.receivedByMethod.length).toBeGreaterThan(0);
+    expect(typeof r.cashNet).toBe("string");
+    expect(r.openOrders).toBeGreaterThanOrEqual(0);
     const m = await admin.reports.period({ from: `${today.slice(0, 5)}01-01`, to: today, granularity: "month" });
     expect(m.series.length).toBe(Number(today.slice(5, 7)));
   });

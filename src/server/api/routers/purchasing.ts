@@ -2,7 +2,8 @@ import { z } from "zod";
 
 import { fail } from "~/server/api/errors";
 import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
-import { type Prisma } from "~/server/db";
+import { type DbClient, type Prisma } from "~/server/db";
+import { type PurchaseBalance, purchaseBalances, supplierBalance } from "~/server/domain/balances";
 import {
   CURRENCIES,
   dayToDate,
@@ -26,53 +27,37 @@ import { D, sum, toNio } from "~/server/domain/money";
 const view = permissionProcedure("compras.ver");
 const manage = permissionProcedure("compras.gestionar");
 
-const purchaseBalanceInclude = {
-  lines: { include: { returnLines: { include: { supplierReturn: true } } } },
-  payments: true,
-} satisfies Prisma.PurchaseInvoiceInclude;
-type PurchaseForBalance = Prisma.PurchaseInvoiceGetPayload<{ include: typeof purchaseBalanceInclude }>;
-
 /**
- * What we owe for a purchase: lines − invoice discount − returns settled with money
- * or discount (REPOSICION returns are replaced with goods, so the debt stays) − payments.
+ * What we owe for each purchase and each supplier comes from the views
+ * v_purchase_invoice_balance and v_supplier_balance (DEC-042): lines − invoice
+ * discount − returns settled with money or discount (REPOSICION returns are
+ * replaced with goods, so the debt stays) − payments.
  */
-function purchaseBalance(p: PurchaseForBalance) {
-  const gross = sum(p.lines.map((l) => D(l.unitCost).times(l.quantity)));
-  const total = gross.minus(p.discountAmount);
-  const returned = sum(
-    p.lines.flatMap((l) =>
-      l.returnLines
-        .filter((r) => r.supplierReturn.resolution !== "REPOSICION")
-        .map((r) => D(l.unitCost).times(r.quantity)),
-    ),
-  );
-  const paid = sum(p.payments.map((x) => toNio(x.amount, x.currency, x.exchangeRate)));
-  return { total, returned, paid, balance: total.minus(returned).minus(paid) };
-}
-
-async function supplierAccount(db: Prisma.TransactionClient, supplierId: number) {
+async function supplierAccount(db: Prisma.TransactionClient | DbClient, supplierId: number) {
   const supplier = await db.supplier.findUniqueOrThrow({ where: { id: supplierId } });
-  const purchases = await db.purchaseInvoice.findMany({
-    where: { supplierId },
-    include: purchaseBalanceInclude,
-    orderBy: { purchaseDate: "desc" },
-  });
-  const openingPaid = sum(
-    (await db.supplierPayment.findMany({ where: { supplierId, purchaseInvoiceId: null } })).map((x) =>
-      toNio(x.amount, x.currency, x.exchangeRate),
-    ),
+  const balance = await supplierBalance(db, supplierId);
+  const numbers = new Map(
+    (await db.purchaseInvoice.findMany({ where: { supplierId }, select: { id: true, invoiceNumber: true } })).map((p) => [
+      p.id,
+      p.invoiceNumber,
+    ]),
   );
-  const openingBalance = D(supplier.openingBalance ?? 0).minus(openingPaid);
-  const rows = purchases.map((p) => ({
-    id: p.id,
-    invoiceNumber: p.invoiceNumber,
+  const rows = (await purchaseBalances(db, { supplierId })).map((p) => ({
+    id: p.purchaseInvoiceId,
+    invoiceNumber: numbers.get(p.purchaseInvoiceId)!,
     purchaseDate: p.purchaseDate,
     paymentTerms: p.paymentTerms,
     dueDate: p.dueDate,
-    ...purchaseBalance(p),
+    total: p.total,
+    returned: p.returned,
+    paid: p.paid,
+    balance: p.balance,
+    daysOverdue: p.daysOverdue,
   }));
-  return { supplier, openingBalance, purchases: rows, totalBalance: openingBalance.plus(sum(rows.map((r) => r.balance))) };
+  return { supplier, openingBalance: balance.openingBalance, purchases: rows, totalBalance: balance.balance, overdue: balance.overdue };
 }
+
+const pick = (b: PurchaseBalance) => ({ total: b.total, returned: b.returned, paid: b.paid, balance: b.balance });
 
 const zSupplier = z.object({
   name: zText(100),
@@ -109,19 +94,23 @@ export const purchasingRouter = createTRPCRouter({
       const items = await ctx.db.purchaseInvoice.findMany({
         where: { supplierId: input.supplierId },
         orderBy: { id: "desc" },
-        include: { ...purchaseBalanceInclude, supplier: true },
+        include: { supplier: true },
         take: limit + 1,
         ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       });
+      const page = items.slice(0, limit);
+      const balances = new Map(
+        (await purchaseBalances(ctx.db, { ids: page.map((p) => p.id) })).map((b) => [b.purchaseInvoiceId, b]),
+      );
       return {
-        items: items.slice(0, limit).map((p) => ({
+        items: page.map((p) => ({
           id: p.id,
           supplier: p.supplier,
           invoiceNumber: p.invoiceNumber,
           purchaseDate: p.purchaseDate,
           paymentTerms: p.paymentTerms,
           dueDate: p.dueDate,
-          ...purchaseBalance(p),
+          ...pick(balances.get(p.id)!),
         })),
         nextCursor: items.length > limit ? items[limit - 1]!.id : null,
       };
@@ -131,13 +120,14 @@ export const purchasingRouter = createTRPCRouter({
     const p = await ctx.db.purchaseInvoice.findUniqueOrThrow({
       where: { id: input.id },
       include: {
-        ...purchaseBalanceInclude,
+        payments: true,
         supplier: true,
         lines: { orderBy: { lineNo: "asc" }, include: { product: true, returnLines: { include: { supplierReturn: true } } } },
         returns: { include: { lines: true, returnReason: true } },
       },
     });
-    return { ...p, ...purchaseBalance(p) };
+    const [b] = await purchaseBalances(ctx.db, { ids: [p.id] });
+    return { ...p, ...pick(b!) };
   }),
 
   /** Purchase invoice + lines + COMPRA entries (stock goes up via the trigger). */

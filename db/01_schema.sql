@@ -1,712 +1,3380 @@
 -- =====================================================================
--- Motor IRM — 01_schema.sql
--- Esquema relacional en PostgreSQL (36 tablas), versión 2 — 2026-11-07
+--  Motor IRM — esquema completo de la base (SOLO LECTURA, generado)
 --
--- Fuente de verdad del esquema (DEC-034). Copia documentada en Obsidian:
--- "S5 - DDL PostgreSQL - MIRM".
+--  NO se edita a mano. Lo genera `npm run db:dump-schema` (pg_dump
+--  --schema-only) a partir de la base que crean las migraciones de
+--  prisma/migrations/. La única fuente del esquema son esas migraciones
+--  (DEC-040, reemplaza a DEC-034). Este archivo existe para leer y
+--  explicar el SQL en la clase de Bases de Datos: tablas, CHECK, FK
+--  compuestas, índices, triggers y vistas en un solo lugar.
 --
--- Cambios de la versión 2 (cierre de S5, 07-nov):
---   DEC-029  FK compuestas (redundancias controladas): supplier_payment,
---            mechanical_service, advance, service_labor, service_part e
---            inventory_movement (+ sus UQ de pareja en las tablas padre).
---   DEC-030  Pago a mecánicos por periodo trabajado: weekly_payout usa
---            period_start / period_end (antes week_start / week_end).
---   DEC-031  purchase.discount (descuento de la factura de compra).
---   DEC-032  Integridad: hora real en status_change y price_history
---            (clock_timestamp), compra al crédito exige vencimiento.
---   DEC-035  Inicio de sesión: staff.username y staff.password_hash.
---
--- Cómo ejecutarlo (en una base vacía, creada con UTF8):
---   createdb -E UTF8 -T template0 motor_irm
---   psql -d motor_irm -v ON_ERROR_STOP=1 -f 01_schema.sql
--- Se crean las 36 tablas o ninguna (BEGIN … COMMIT).
+--  El DDL original del equipo (antes de Prisma) quedó en db/legacy-team-ddl/.
 -- =====================================================================
 
-BEGIN;
+--
+-- PostgreSQL database dump
+--
 
--- Zona horaria del negocio: Nicaragua (UTC-6, sin horario de verano).
--- Queda guardada en la base, así LOCALTIMESTAMP y CURRENT_DATE dan la hora
--- y la fecha de Managua en cualquier conexión (también la de Node.js).
-DO $$
+
+
+
+--
+-- Name: pg_trgm; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
+
+
+--
+-- Name: EXTENSION pg_trgm; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON EXTENSION pg_trgm IS 'text similarity measurement and index searching based on trigrams';
+
+
+--
+-- Name: unaccent; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS unaccent WITH SCHEMA public;
+
+
+--
+-- Name: EXTENSION unaccent; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON EXTENSION unaccent IS 'text search dictionary that removes accents';
+
+
+--
+-- Name: fn_inventory_movement_append_only(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.fn_inventory_movement_append_only() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
 BEGIN
-    EXECUTE format('ALTER DATABASE %I SET timezone = %L', current_database(), 'America/Managua');
+    RAISE EXCEPTION 'inventory_movement es de solo inserción; corrige con un ajuste (AJUSTE_ENTRADA/AJUSTE_SALIDA)'
+        USING ERRCODE = 'restrict_violation', CONSTRAINT = 'tg_inventory_movement_append_only';
 END
 $$;
-SET timezone = 'America/Managua';
 
--- ---------------------------------------------------------------------
--- Nivel 0
--- ---------------------------------------------------------------------
 
-CREATE TABLE product_category (
-    id_product_category  INTEGER     GENERATED ALWAYS AS IDENTITY,
-    name                 VARCHAR(50) NOT NULL,
+--
+-- Name: fn_inventory_movement_apply_stock(); Type: FUNCTION; Schema: public; Owner: -
+--
 
-    CONSTRAINT pk_product_category      PRIMARY KEY (id_product_category),
-    CONSTRAINT ck_product_category_name CHECK (btrim(name) <> '')
-);
-CREATE UNIQUE INDEX uq_product_category_name ON product_category (lower(name));
+CREATE FUNCTION public.fn_inventory_movement_apply_stock() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    PERFORM set_config('motor_irm.stock_from_movement', 'on', true);
+    UPDATE "product"
+       SET "stock" = "stock" + CASE
+             WHEN NEW."movement_type" IN ('COMPRA', 'DEVOLUCION_CLIENTE', 'INVENTARIO_INICIAL', 'AJUSTE_ENTRADA')
+             THEN NEW."quantity" ELSE -NEW."quantity" END
+     WHERE "id" = NEW."product_id";
+    PERFORM set_config('motor_irm.stock_from_movement', 'off', true);
+    RETURN NEW;
+END
+$$;
 
-CREATE TABLE product_brand (
-    id_product_brand  INTEGER     GENERATED ALWAYS AS IDENTITY,
-    name              VARCHAR(50) NOT NULL,
 
-    CONSTRAINT pk_product_brand      PRIMARY KEY (id_product_brand),
-    CONSTRAINT ck_product_brand_name CHECK (btrim(name) <> '')
-);
-CREATE UNIQUE INDEX uq_product_brand_name ON product_brand (lower(name));
+--
+-- Name: fn_product_guard_stock(); Type: FUNCTION; Schema: public; Owner: -
+--
 
-CREATE TABLE motorcycle_brand (
-    id_motorcycle_brand  INTEGER     GENERATED ALWAYS AS IDENTITY,
-    name                 VARCHAR(50) NOT NULL,
+CREATE FUNCTION public.fn_product_guard_stock() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF TG_OP = 'INSERT' AND NEW."stock" <> 0 THEN
+        RAISE EXCEPTION 'Un producto nuevo empieza con stock 0; registra un movimiento INVENTARIO_INICIAL'
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'tg_product_guard_stock';
+    END IF;
+    IF TG_OP = 'UPDATE' AND NEW."stock" IS DISTINCT FROM OLD."stock"
+       AND coalesce(current_setting('motor_irm.stock_from_movement', true), 'off') <> 'on' THEN
+        RAISE EXCEPTION 'product.stock solo cambia con movimientos de inventario'
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'tg_product_guard_stock';
+    END IF;
+    RETURN NEW;
+END
+$$;
 
-    CONSTRAINT pk_motorcycle_brand      PRIMARY KEY (id_motorcycle_brand),
-    CONSTRAINT ck_motorcycle_brand_name CHECK (btrim(name) <> '')
-);
-CREATE UNIQUE INDEX uq_motorcycle_brand_name ON motorcycle_brand (lower(name));
 
-CREATE TABLE service_type (
-    id_service_type  INTEGER       GENERATED ALWAYS AS IDENTITY,
-    name             VARCHAR(50)   NOT NULL,
-    reference_price  NUMERIC(12,2),
-    active           BOOLEAN       NOT NULL DEFAULT TRUE,
+--
+-- Name: fn_service_order_check_responsible(); Type: FUNCTION; Schema: public; Owner: -
+--
 
-    CONSTRAINT pk_service_type                 PRIMARY KEY (id_service_type),
-    CONSTRAINT ck_service_type_name            CHECK (btrim(name) <> ''),
-    CONSTRAINT ck_service_type_reference_price CHECK (reference_price >= 0)
-);
-CREATE UNIQUE INDEX uq_service_type_name ON service_type (lower(name));
+CREATE FUNCTION public.fn_service_order_check_responsible() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    r "staff"%ROWTYPE;
+BEGIN
+    IF NEW."mechanic_staff_id" IS NULL THEN
+        RETURN NEW;
+    END IF;
+    SELECT * INTO r FROM "staff" WHERE "id" = NEW."mechanic_staff_id";
+    IF TG_OP = 'INSERT' OR NEW."mechanic_staff_id" IS DISTINCT FROM OLD."mechanic_staff_id" THEN
+        IF NOT r."active" OR NOT r."can_repair" THEN
+            RAISE EXCEPTION 'El responsable % no está activo o no repara motos', r."name"
+                USING ERRCODE = 'check_violation', CONSTRAINT = 'tg_service_order_responsible_can_repair';
+        END IF;
+    END IF;
+    IF r."kind" = 'DUENO' AND NEW."applied_commission_rate" IS NOT NULL THEN
+        RAISE EXCEPTION 'Un dueño no cobra comisión'
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'tg_service_order_owner_no_commission';
+    END IF;
+    RETURN NEW;
+END
+$$;
 
-CREATE TABLE customer (
-    id_customer  INTEGER      GENERATED ALWAYS AS IDENTITY,
-    name         VARCHAR(100) NOT NULL,
-    phone        VARCHAR(20)  NOT NULL,
-    national_id  VARCHAR(20),
-    address      VARCHAR(200),
 
-    CONSTRAINT pk_customer             PRIMARY KEY (id_customer),
-    CONSTRAINT ck_customer_name        CHECK (btrim(name) <> ''),
-    CONSTRAINT ck_customer_phone       CHECK (btrim(phone) <> ''),
-    CONSTRAINT ck_customer_national_id CHECK (national_id IS NULL OR btrim(national_id) <> ''),
-    CONSTRAINT ck_customer_address     CHECK (address IS NULL OR btrim(address) <> '')
-);
-CREATE UNIQUE INDEX uq_customer_national_id ON customer (upper(national_id));
+--
+-- Name: mirm_norm(text); Type: FUNCTION; Schema: public; Owner: -
+--
 
--- DEC-035: usuario y contraseña (hash) para iniciar sesión.
--- Solo dueños y encargado inician sesión; los mecánicos no.
-CREATE TABLE staff (
-    id_staff       INTEGER      GENERATED ALWAYS AS IDENTITY,
-    name           VARCHAR(100) NOT NULL,
-    phone          VARCHAR(20)  NOT NULL,
-    active         BOOLEAN      NOT NULL DEFAULT TRUE,
-    role           VARCHAR(20)  NOT NULL,
-    username       VARCHAR(30),
-    password_hash  VARCHAR(255),
+CREATE FUNCTION public.mirm_norm(text) RETURNS text
+    LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+    AS $_$ SELECT lower(public.unaccent('public.unaccent'::regdictionary, $1)) $_$;
 
-    CONSTRAINT pk_staff            PRIMARY KEY (id_staff),
-    CONSTRAINT ck_staff_name       CHECK (btrim(name) <> ''),
-    CONSTRAINT ck_staff_phone      CHECK (btrim(phone) <> ''),
-    CONSTRAINT ck_staff_role       CHECK (role IN ('DUENO', 'MECANICO', 'ENCARGADO')),
-    CONSTRAINT ck_staff_username   CHECK (username IS NULL OR btrim(username) <> ''),
-    CONSTRAINT ck_staff_login_pair CHECK ((username IS NULL) = (password_hash IS NULL)),
-    CONSTRAINT ck_staff_login_role CHECK (username IS NULL OR role <> 'MECANICO')
-);
-CREATE UNIQUE INDEX uq_staff_username ON staff (lower(username));
 
-CREATE TABLE supplier (
-    id_supplier      INTEGER       GENERATED ALWAYS AS IDENTITY,
-    name             VARCHAR(100)  NOT NULL,
-    phone            VARCHAR(20),
-    contact_person   VARCHAR(100),
-    gives_warranty   BOOLEAN,
-    opening_balance  NUMERIC(12,2),
-    opening_date     DATE,
 
-    CONSTRAINT pk_supplier                 PRIMARY KEY (id_supplier),
-    CONSTRAINT ck_supplier_name            CHECK (btrim(name) <> ''),
-    CONSTRAINT ck_supplier_opening_balance CHECK (opening_balance >= 0),
-    CONSTRAINT ck_supplier_opening_pair    CHECK ((opening_balance IS NULL) = (opening_date IS NULL))
-);
 
--- ---------------------------------------------------------------------
--- Nivel 1
--- ---------------------------------------------------------------------
+--
+-- Name: additional_fault; Type: TABLE; Schema: public; Owner: -
+--
 
-CREATE TABLE owner (
-    id_owner  INTEGER NOT NULL,
-
-    CONSTRAINT pk_owner          PRIMARY KEY (id_owner),
-    CONSTRAINT fk_owner_id_owner FOREIGN KEY (id_owner) REFERENCES staff (id_staff)
+CREATE TABLE public.additional_fault (
+    id integer NOT NULL,
+    service_order_id integer NOT NULL,
+    fault_no smallint NOT NULL,
+    reported_on date DEFAULT CURRENT_DATE NOT NULL,
+    description character varying(500) NOT NULL,
+    proposed_price numeric(12,2),
+    decision character varying(20) DEFAULT 'PENDIENTE'::character varying NOT NULL,
+    CONSTRAINT ck_additional_fault_decision CHECK (((decision)::text = ANY ((ARRAY['PENDIENTE'::character varying, 'ACEPTADA'::character varying, 'RECHAZADA'::character varying])::text[]))),
+    CONSTRAINT ck_additional_fault_description CHECK ((btrim((description)::text) <> ''::text)),
+    CONSTRAINT ck_additional_fault_fault_no CHECK ((fault_no > 0)),
+    CONSTRAINT ck_additional_fault_proposed_price CHECK ((proposed_price >= (0)::numeric))
 );
 
-CREATE TABLE mechanic (
-    id_mechanic      INTEGER      NOT NULL,
-    commission_rate  NUMERIC(5,4) NOT NULL,
 
-    CONSTRAINT pk_mechanic                 PRIMARY KEY (id_mechanic),
-    CONSTRAINT fk_mechanic_id_mechanic     FOREIGN KEY (id_mechanic) REFERENCES staff (id_staff),
-    CONSTRAINT ck_mechanic_commission_rate CHECK (commission_rate > 0 AND commission_rate <= 1)
+--
+-- Name: additional_fault_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.additional_fault_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: additional_fault_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.additional_fault_id_seq OWNED BY public.additional_fault.id;
+
+
+--
+-- Name: app_session; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.app_session (
+    id integer NOT NULL,
+    app_user_id integer NOT NULL,
+    token_hash character(64) NOT NULL,
+    created_at timestamp(0) with time zone DEFAULT CURRENT_TIMESTAMP(0) NOT NULL,
+    expires_at timestamp(0) with time zone NOT NULL,
+    CONSTRAINT ck_app_session_expires_at CHECK ((expires_at > created_at))
 );
 
-CREATE TABLE motorcycle_model (
-    id_motorcycle_model  INTEGER     GENERATED ALWAYS AS IDENTITY,
-    id_motorcycle_brand  INTEGER     NOT NULL,
-    name                 VARCHAR(50) NOT NULL,
 
-    CONSTRAINT pk_motorcycle_model                     PRIMARY KEY (id_motorcycle_model),
-    CONSTRAINT fk_motorcycle_model_id_motorcycle_brand FOREIGN KEY (id_motorcycle_brand) REFERENCES motorcycle_brand (id_motorcycle_brand),
-    CONSTRAINT ck_motorcycle_model_name                CHECK (btrim(name) <> '')
-);
-CREATE UNIQUE INDEX uq_motorcycle_model_brand_name ON motorcycle_model (id_motorcycle_brand, lower(name));
+--
+-- Name: app_session_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
 
-CREATE TABLE product (
-    id_product           INTEGER       GENERATED ALWAYS AS IDENTITY,
-    id_product_category  INTEGER       NOT NULL,
-    id_product_brand     INTEGER       NOT NULL,
-    name                 VARCHAR(150)  NOT NULL,
-    barcode              VARCHAR(50),
-    tier                 VARCHAR(20)   NOT NULL,
-    sale_price           NUMERIC(12,2) NOT NULL,
-    active               BOOLEAN       NOT NULL DEFAULT TRUE,
+CREATE SEQUENCE public.app_session_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
 
-    CONSTRAINT pk_product                     PRIMARY KEY (id_product),
-    CONSTRAINT fk_product_id_product_category FOREIGN KEY (id_product_category) REFERENCES product_category (id_product_category),
-    CONSTRAINT fk_product_id_product_brand    FOREIGN KEY (id_product_brand)    REFERENCES product_brand (id_product_brand),
-    CONSTRAINT uq_product_barcode             UNIQUE (barcode),
-    CONSTRAINT ck_product_name                CHECK (btrim(name) <> ''),
-    CONSTRAINT ck_product_barcode             CHECK (barcode IS NULL OR btrim(barcode) <> ''),
-    CONSTRAINT ck_product_tier                CHECK (tier IN ('ALTA', 'MEDIA', 'BAJA')),
-    CONSTRAINT ck_product_sale_price          CHECK (sale_price >= 0)
-);
 
--- ---------------------------------------------------------------------
--- Nivel 2
--- ---------------------------------------------------------------------
+--
+-- Name: app_session_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
 
-CREATE TABLE motorcycle (
-    id_motorcycle        INTEGER      GENERATED ALWAYS AS IDENTITY,
-    id_customer          INTEGER      NOT NULL,
-    id_motorcycle_model  INTEGER      NOT NULL,
-    color                VARCHAR(30)  NOT NULL,
-    plate                VARCHAR(15),
-    notes                VARCHAR(200),
+ALTER SEQUENCE public.app_session_id_seq OWNED BY public.app_session.id;
 
-    CONSTRAINT pk_motorcycle                     PRIMARY KEY (id_motorcycle),
-    CONSTRAINT fk_motorcycle_id_customer         FOREIGN KEY (id_customer)         REFERENCES customer (id_customer),
-    CONSTRAINT fk_motorcycle_id_motorcycle_model FOREIGN KEY (id_motorcycle_model) REFERENCES motorcycle_model (id_motorcycle_model),
-    CONSTRAINT ck_motorcycle_color               CHECK (btrim(color) <> ''),
-    CONSTRAINT ck_motorcycle_plate               CHECK (plate IS NULL OR btrim(plate) <> '')
-);
-CREATE UNIQUE INDEX uq_motorcycle_plate ON motorcycle (upper(plate));
 
--- DEC-032: clock_timestamp() da la hora real de cada fila (LOCALTIMESTAMP
--- da la del inicio de la transacción y dos filas chocaban en la UQ).
-CREATE TABLE price_history (
-    id_price_history  INTEGER       GENERATED ALWAYS AS IDENTITY,
-    id_product        INTEGER       NOT NULL,
-    changed_at        TIMESTAMP     NOT NULL DEFAULT clock_timestamp()::timestamp,
-    new_price         NUMERIC(12,2) NOT NULL,
-    id_changed_by     INTEGER,
+--
+-- Name: app_user; Type: TABLE; Schema: public; Owner: -
+--
 
-    CONSTRAINT pk_price_history                     PRIMARY KEY (id_price_history),
-    CONSTRAINT fk_price_history_id_product          FOREIGN KEY (id_product)    REFERENCES product (id_product),
-    CONSTRAINT fk_price_history_id_changed_by       FOREIGN KEY (id_changed_by) REFERENCES owner (id_owner),
-    CONSTRAINT uq_price_history_id_product_changed_at UNIQUE (id_product, changed_at),
-    CONSTRAINT ck_price_history_new_price           CHECK (new_price >= 0)
+CREATE TABLE public.app_user (
+    id integer NOT NULL,
+    role_id integer NOT NULL,
+    staff_id integer,
+    username character varying(30) NOT NULL,
+    password_hash character varying(255) NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    created_at timestamp(0) with time zone DEFAULT CURRENT_TIMESTAMP(0) NOT NULL,
+    last_login_at timestamp(0) with time zone,
+    CONSTRAINT ck_app_user_username CHECK ((btrim((username)::text) <> ''::text))
 );
 
--- DEC-031: discount (descuento de la factura). DEC-032: crédito ⇔ vencimiento.
--- DEC-029: UQ de la pareja (id_purchase, id_supplier) para la FK compuesta de supplier_payment.
-CREATE TABLE purchase (
-    id_purchase     INTEGER       GENERATED ALWAYS AS IDENTITY,
-    id_supplier     INTEGER       NOT NULL,
-    invoice_number  VARCHAR(30)   NOT NULL,
-    purchase_date   DATE          NOT NULL DEFAULT CURRENT_DATE,
-    terms           VARCHAR(20)   NOT NULL,
-    due_date        DATE,
-    discount        NUMERIC(12,2) NOT NULL DEFAULT 0,
-    id_received_by  INTEGER       NOT NULL,
 
-    CONSTRAINT pk_purchase                         PRIMARY KEY (id_purchase),
-    CONSTRAINT fk_purchase_id_supplier             FOREIGN KEY (id_supplier)    REFERENCES supplier (id_supplier),
-    CONSTRAINT fk_purchase_id_received_by          FOREIGN KEY (id_received_by) REFERENCES owner (id_owner),
-    CONSTRAINT uq_purchase_supplier_invoice        UNIQUE (id_supplier, invoice_number),
-    CONSTRAINT uq_purchase_id_purchase_id_supplier UNIQUE (id_purchase, id_supplier),
-    CONSTRAINT ck_purchase_invoice_number          CHECK (btrim(invoice_number) <> ''),
-    CONSTRAINT ck_purchase_terms                   CHECK (terms IN ('CONTADO', 'CREDITO')),
-    CONSTRAINT ck_purchase_due_date                CHECK ((terms = 'CREDITO') = (due_date IS NOT NULL)
-                                                          AND (due_date IS NULL OR due_date >= purchase_date)),
-    CONSTRAINT ck_purchase_discount                CHECK (discount >= 0)
+--
+-- Name: app_user_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.app_user_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: app_user_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.app_user_id_seq OWNED BY public.app_user.id;
+
+
+--
+-- Name: cash_withdrawal; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cash_withdrawal (
+    id integer NOT NULL,
+    withdrawn_by_user_id integer NOT NULL,
+    cash_withdrawal_reason_id integer NOT NULL,
+    withdrawn_on date DEFAULT CURRENT_DATE NOT NULL,
+    amount numeric(12,2) NOT NULL,
+    description character varying(200),
+    CONSTRAINT ck_cash_withdrawal_amount CHECK ((amount > (0)::numeric)),
+    CONSTRAINT ck_cash_withdrawal_description CHECK (((description IS NULL) OR (btrim((description)::text) <> ''::text)))
 );
 
-CREATE TABLE billable_document (
-    id_billable_document       INTEGER       GENERATED ALWAYS AS IDENTITY,
-    kind                       VARCHAR(20)   NOT NULL,
-    id_customer                INTEGER,
-    id_registered_by           INTEGER       NOT NULL,
-    created_at                 TIMESTAMP(0)  NOT NULL DEFAULT LOCALTIMESTAMP(0),
-    receipt_number             VARCHAR(20),
-    terms                      VARCHAR(20)   NOT NULL,
-    discount                   NUMERIC(12,2) NOT NULL DEFAULT 0,
-    id_discount_authorized_by  INTEGER,
 
-    CONSTRAINT pk_billable_document                PRIMARY KEY (id_billable_document),
-    CONSTRAINT fk_billable_document_id_customer
-        FOREIGN KEY (id_customer) REFERENCES customer (id_customer),
-    CONSTRAINT fk_billable_document_id_registered_by
-        FOREIGN KEY (id_registered_by) REFERENCES staff (id_staff),
-    CONSTRAINT fk_billable_document_id_discount_authorized_by
-        FOREIGN KEY (id_discount_authorized_by) REFERENCES owner (id_owner),
-    CONSTRAINT uq_billable_document_receipt_number UNIQUE (receipt_number),
-    CONSTRAINT ck_billable_document_kind
-        CHECK (kind IN ('VENTA', 'SERVICIO', 'SALDO_INICIAL')),
-    CONSTRAINT ck_billable_document_terms
-        CHECK (terms IN ('CONTADO', 'CREDITO')),
-    CONSTRAINT ck_billable_document_receipt_number
-        CHECK (receipt_number IS NULL OR btrim(receipt_number) <> ''),
-    CONSTRAINT ck_billable_document_discount
-        CHECK (discount >= 0),
-    CONSTRAINT ck_billable_document_customer
-        CHECK (id_customer IS NOT NULL OR (kind = 'VENTA' AND terms = 'CONTADO')),
-    CONSTRAINT ck_billable_document_discount_authorized
-        CHECK (discount = 0 OR id_discount_authorized_by IS NOT NULL),
-    CONSTRAINT ck_billable_document_opening_balance
-        CHECK (kind <> 'SALDO_INICIAL' OR (terms = 'CREDITO' AND discount = 0))
+--
+-- Name: cash_withdrawal_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.cash_withdrawal_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: cash_withdrawal_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.cash_withdrawal_id_seq OWNED BY public.cash_withdrawal.id;
+
+
+--
+-- Name: cash_withdrawal_reason; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cash_withdrawal_reason (
+    id integer NOT NULL,
+    name character varying(50) NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    CONSTRAINT ck_cash_withdrawal_reason_name CHECK ((btrim((name)::text) <> ''::text))
 );
 
--- DEC-030: el pago cubre el periodo que el mecánico realmente trabajó
--- (de lunes a sábado casi siempre, pero puede ser más corto).
--- DEC-029: UQ de la pareja (id_weekly_payout, id_mechanic) para las FK compuestas.
-CREATE TABLE weekly_payout (
-    id_weekly_payout  INTEGER GENERATED ALWAYS AS IDENTITY,
-    id_mechanic       INTEGER NOT NULL,
-    period_start      DATE    NOT NULL,
-    period_end        DATE    NOT NULL,
-    paid_on           DATE,
-    id_paid_by        INTEGER,
 
-    CONSTRAINT pk_weekly_payout                          PRIMARY KEY (id_weekly_payout),
-    CONSTRAINT fk_weekly_payout_id_mechanic              FOREIGN KEY (id_mechanic) REFERENCES mechanic (id_mechanic),
-    CONSTRAINT fk_weekly_payout_id_paid_by               FOREIGN KEY (id_paid_by)  REFERENCES owner (id_owner),
-    CONSTRAINT uq_weekly_payout_id_mechanic_period_start UNIQUE (id_mechanic, period_start),
-    CONSTRAINT uq_weekly_payout_id_weekly_payout_id_mechanic UNIQUE (id_weekly_payout, id_mechanic),
-    CONSTRAINT ck_weekly_payout_period                   CHECK (period_end >= period_start),
-    CONSTRAINT ck_weekly_payout_paid_pair                CHECK ((paid_on IS NULL) = (id_paid_by IS NULL)),
-    CONSTRAINT ck_weekly_payout_paid_on                  CHECK (paid_on IS NULL OR paid_on >= period_start)
+--
+-- Name: cash_withdrawal_reason_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.cash_withdrawal_reason_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: cash_withdrawal_reason_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.cash_withdrawal_reason_id_seq OWNED BY public.cash_withdrawal_reason.id;
+
+
+--
+-- Name: customer; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.customer (
+    id integer NOT NULL,
+    name character varying(100) NOT NULL,
+    phone character varying(20) NOT NULL,
+    national_id character varying(20),
+    address character varying(200),
+    CONSTRAINT ck_customer_address CHECK (((address IS NULL) OR (btrim((address)::text) <> ''::text))),
+    CONSTRAINT ck_customer_name CHECK ((btrim((name)::text) <> ''::text)),
+    CONSTRAINT ck_customer_national_id CHECK (((national_id IS NULL) OR (btrim((national_id)::text) <> ''::text))),
+    CONSTRAINT ck_customer_phone CHECK ((btrim((phone)::text) <> ''::text))
 );
 
-CREATE TABLE cash_withdrawal (
-    id_cash_withdrawal  INTEGER       GENERATED ALWAYS AS IDENTITY,
-    id_owner            INTEGER       NOT NULL,
-    withdrawn_on        DATE          NOT NULL DEFAULT CURRENT_DATE,
-    amount              NUMERIC(12,2) NOT NULL,
-    reason              VARCHAR(20)   NOT NULL,
-    description         VARCHAR(200),
 
-    CONSTRAINT pk_cash_withdrawal             PRIMARY KEY (id_cash_withdrawal),
-    CONSTRAINT fk_cash_withdrawal_id_owner    FOREIGN KEY (id_owner) REFERENCES owner (id_owner),
-    CONSTRAINT ck_cash_withdrawal_amount      CHECK (amount > 0),
-    CONSTRAINT ck_cash_withdrawal_reason      CHECK (reason IN ('CONSUMO_INTERNO', 'VIAJE', 'IMPUESTO', 'OTRO')),
-    CONSTRAINT ck_cash_withdrawal_description CHECK (reason <> 'OTRO' OR btrim(coalesce(description, '')) <> '')
+--
+-- Name: customer_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.customer_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: customer_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.customer_id_seq OWNED BY public.customer.id;
+
+
+--
+-- Name: customer_opening_balance; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.customer_opening_balance (
+    id integer NOT NULL,
+    customer_id integer NOT NULL,
+    as_of_date date NOT NULL,
+    amount numeric(12,2) NOT NULL,
+    due_date date NOT NULL,
+    monthly_interest numeric(5,4) DEFAULT 0 NOT NULL,
+    registered_by_user_id integer NOT NULL,
+    notes character varying(200),
+    CONSTRAINT ck_customer_opening_balance_amount CHECK ((amount > (0)::numeric)),
+    CONSTRAINT ck_customer_opening_balance_monthly_interest CHECK (((monthly_interest >= (0)::numeric) AND (monthly_interest < (1)::numeric))),
+    CONSTRAINT ck_customer_opening_balance_notes CHECK (((notes IS NULL) OR (btrim((notes)::text) <> ''::text)))
 );
 
--- ---------------------------------------------------------------------
--- Nivel 3
--- ---------------------------------------------------------------------
 
--- DEC-029: UQ (id_purchase_detail, id_product) para la FK compuesta de inventory_movement.
-CREATE TABLE purchase_detail (
-    id_purchase_detail  INTEGER       GENERATED ALWAYS AS IDENTITY,
-    id_purchase         INTEGER       NOT NULL,
-    line_no             SMALLINT      NOT NULL,
-    id_product          INTEGER       NOT NULL,
-    quantity            INTEGER       NOT NULL,
-    unit_cost           NUMERIC(12,2) NOT NULL,
+--
+-- Name: customer_opening_balance_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
 
-    CONSTRAINT pk_purchase_detail                           PRIMARY KEY (id_purchase_detail),
-    CONSTRAINT fk_purchase_detail_id_purchase               FOREIGN KEY (id_purchase) REFERENCES purchase (id_purchase),
-    CONSTRAINT fk_purchase_detail_id_product                FOREIGN KEY (id_product)  REFERENCES product (id_product),
-    CONSTRAINT uq_purchase_detail_line                      UNIQUE (id_purchase, line_no),
-    CONSTRAINT uq_purchase_detail_id_purchase_detail_id_product UNIQUE (id_purchase_detail, id_product),
-    CONSTRAINT ck_purchase_detail_line_no                   CHECK (line_no > 0),
-    CONSTRAINT ck_purchase_detail_quantity                  CHECK (quantity > 0),
-    CONSTRAINT ck_purchase_detail_unit_cost                 CHECK (unit_cost >= 0)
+CREATE SEQUENCE public.customer_opening_balance_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: customer_opening_balance_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.customer_opening_balance_id_seq OWNED BY public.customer_opening_balance.id;
+
+
+--
+-- Name: customer_payment; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.customer_payment (
+    id integer NOT NULL,
+    paid_at timestamp(0) with time zone DEFAULT CURRENT_TIMESTAMP(0) NOT NULL,
+    amount numeric(12,2) NOT NULL,
+    currency character varying(3) DEFAULT 'NIO'::character varying NOT NULL,
+    exchange_rate numeric(10,4),
+    payment_method_id integer NOT NULL,
+    received_by_user_id integer NOT NULL,
+    CONSTRAINT ck_customer_payment_amount CHECK ((amount > (0)::numeric)),
+    CONSTRAINT ck_customer_payment_currency CHECK (((currency)::text = ANY ((ARRAY['NIO'::character varying, 'USD'::character varying])::text[]))),
+    CONSTRAINT ck_customer_payment_exchange CHECK (((((currency)::text = 'NIO'::text) AND (exchange_rate IS NULL)) OR (((currency)::text = 'USD'::text) AND (exchange_rate IS NOT NULL) AND (exchange_rate > (0)::numeric))))
 );
 
--- DEC-029 (caso 1): si el pago es de una compra, la compra es del mismo proveedor.
--- MATCH SIMPLE: con id_purchase nulo (pago del saldo de apertura) la FK no se revisa.
-CREATE TABLE supplier_payment (
-    id_supplier_payment  INTEGER       GENERATED ALWAYS AS IDENTITY,
-    id_supplier          INTEGER       NOT NULL,
-    id_purchase          INTEGER,
-    paid_on              DATE          NOT NULL DEFAULT CURRENT_DATE,
-    amount               NUMERIC(12,2) NOT NULL,
-    currency             VARCHAR(3)    NOT NULL DEFAULT 'NIO',
-    exchange_rate        NUMERIC(10,4),
 
-    CONSTRAINT pk_supplier_payment                         PRIMARY KEY (id_supplier_payment),
-    CONSTRAINT fk_supplier_payment_id_supplier             FOREIGN KEY (id_supplier) REFERENCES supplier (id_supplier),
-    CONSTRAINT fk_supplier_payment_id_purchase_id_supplier FOREIGN KEY (id_purchase, id_supplier)
-                                                           REFERENCES purchase (id_purchase, id_supplier) MATCH SIMPLE,
-    CONSTRAINT ck_supplier_payment_amount                  CHECK (amount > 0),
-    CONSTRAINT ck_supplier_payment_currency                CHECK (currency IN ('NIO', 'USD')),
-    CONSTRAINT ck_supplier_payment_exchange                CHECK ((currency = 'NIO' AND exchange_rate IS NULL)
-                                                               OR (currency = 'USD' AND exchange_rate IS NOT NULL AND exchange_rate > 0))
+--
+-- Name: customer_payment_allocation; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.customer_payment_allocation (
+    id integer NOT NULL,
+    customer_payment_id integer NOT NULL,
+    sale_invoice_id integer,
+    customer_opening_balance_id integer,
+    amount numeric(12,2) NOT NULL,
+    CONSTRAINT ck_customer_payment_allocation_amount CHECK ((amount > (0)::numeric)),
+    CONSTRAINT ck_customer_payment_allocation_target CHECK ((num_nonnulls(sale_invoice_id, customer_opening_balance_id) = 1))
 );
 
-CREATE TABLE sale (
-    id_sale  INTEGER NOT NULL,
 
-    CONSTRAINT pk_sale         PRIMARY KEY (id_sale),
-    CONSTRAINT fk_sale_id_sale FOREIGN KEY (id_sale) REFERENCES billable_document (id_billable_document)
+--
+-- Name: customer_payment_allocation_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.customer_payment_allocation_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: customer_payment_allocation_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.customer_payment_allocation_id_seq OWNED BY public.customer_payment_allocation.id;
+
+
+--
+-- Name: customer_payment_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.customer_payment_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: customer_payment_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.customer_payment_id_seq OWNED BY public.customer_payment.id;
+
+
+--
+-- Name: customer_return; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.customer_return (
+    id integer NOT NULL,
+    sale_invoice_id integer NOT NULL,
+    returned_at timestamp(0) with time zone DEFAULT CURRENT_TIMESTAMP(0) NOT NULL,
+    credit_note_number character varying(20),
+    return_reason_id integer NOT NULL,
+    registered_by_user_id integer NOT NULL,
+    notes character varying(200),
+    CONSTRAINT ck_customer_return_credit_note_number CHECK (((credit_note_number IS NULL) OR (btrim((credit_note_number)::text) <> ''::text))),
+    CONSTRAINT ck_customer_return_notes CHECK (((notes IS NULL) OR (btrim((notes)::text) <> ''::text)))
 );
 
-CREATE TABLE opening_balance (
-    id_opening_balance  INTEGER       NOT NULL,
-    amount              NUMERIC(12,2) NOT NULL,
-    description         VARCHAR(200),
 
-    CONSTRAINT pk_opening_balance                    PRIMARY KEY (id_opening_balance),
-    CONSTRAINT fk_opening_balance_id_opening_balance FOREIGN KEY (id_opening_balance) REFERENCES billable_document (id_billable_document),
-    CONSTRAINT ck_opening_balance_amount             CHECK (amount > 0)
+--
+-- Name: customer_return_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.customer_return_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: customer_return_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.customer_return_id_seq OWNED BY public.customer_return.id;
+
+
+--
+-- Name: customer_return_line; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.customer_return_line (
+    id integer NOT NULL,
+    customer_return_id integer NOT NULL,
+    sale_invoice_id integer NOT NULL,
+    line_no smallint NOT NULL,
+    sale_invoice_line_id integer NOT NULL,
+    product_id integer NOT NULL,
+    quantity integer NOT NULL,
+    CONSTRAINT ck_customer_return_line_line_no CHECK ((line_no > 0)),
+    CONSTRAINT ck_customer_return_line_quantity CHECK ((quantity > 0))
 );
 
--- DEC-029 (caso 2): el servicio solo se liquida en el pago de SU responsable.
-CREATE TABLE mechanical_service (
-    id_mechanical_service  INTEGER       NOT NULL,
-    id_motorcycle          INTEGER       NOT NULL,
-    id_responsible         INTEGER,
-    requested_work         VARCHAR(500)  NOT NULL,
-    diagnosis              VARCHAR(500),
-    cancellation_amount    NUMERIC(12,2),
-    applied_rate           NUMERIC(5,4),
-    id_weekly_payout       INTEGER,
 
-    CONSTRAINT pk_mechanical_service                       PRIMARY KEY (id_mechanical_service),
-    CONSTRAINT fk_mechanical_service_id_mechanical_service FOREIGN KEY (id_mechanical_service) REFERENCES billable_document (id_billable_document),
-    CONSTRAINT fk_mechanical_service_id_motorcycle         FOREIGN KEY (id_motorcycle)         REFERENCES motorcycle (id_motorcycle),
-    CONSTRAINT fk_mechanical_service_id_responsible        FOREIGN KEY (id_responsible)        REFERENCES staff (id_staff),
-    CONSTRAINT fk_mechanical_service_id_weekly_payout_id_responsible
-        FOREIGN KEY (id_weekly_payout, id_responsible) REFERENCES weekly_payout (id_weekly_payout, id_mechanic) MATCH SIMPLE,
-    CONSTRAINT ck_mechanical_service_requested_work        CHECK (btrim(requested_work) <> ''),
-    CONSTRAINT ck_mechanical_service_cancellation          CHECK (cancellation_amount >= 0),
-    CONSTRAINT ck_mechanical_service_applied_rate          CHECK (applied_rate > 0 AND applied_rate <= 1),
-    CONSTRAINT ck_mechanical_service_payout_rate           CHECK (id_weekly_payout IS NULL
-                                                                  OR (applied_rate IS NOT NULL AND id_responsible IS NOT NULL))
+--
+-- Name: customer_return_line_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.customer_return_line_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: customer_return_line_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.customer_return_line_id_seq OWNED BY public.customer_return_line.id;
+
+
+--
+-- Name: discount; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.discount (
+    id integer NOT NULL,
+    name character varying(80) NOT NULL,
+    discount_type character varying(20) NOT NULL,
+    value numeric(12,4) NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    CONSTRAINT ck_discount_discount_type CHECK (((discount_type)::text = ANY ((ARRAY['PORCENTAJE'::character varying, 'MONTO'::character varying])::text[]))),
+    CONSTRAINT ck_discount_name CHECK ((btrim((name)::text) <> ''::text)),
+    CONSTRAINT ck_discount_value CHECK (((value > (0)::numeric) AND (((discount_type)::text = 'MONTO'::text) OR (value <= (1)::numeric))))
 );
 
-CREATE TABLE credit (
-    id_credit          INTEGER      NOT NULL,
-    id_authorized_by   INTEGER      NOT NULL,
-    granted_on         DATE         NOT NULL DEFAULT CURRENT_DATE,
-    due_date           DATE         NOT NULL,
-    extended_due_date  DATE,
-    monthly_interest   NUMERIC(5,4) NOT NULL DEFAULT 0,
 
-    CONSTRAINT pk_credit                  PRIMARY KEY (id_credit),
-    CONSTRAINT fk_credit_id_credit        FOREIGN KEY (id_credit)        REFERENCES billable_document (id_billable_document),
-    CONSTRAINT fk_credit_id_authorized_by FOREIGN KEY (id_authorized_by) REFERENCES owner (id_owner),
-    CONSTRAINT ck_credit_due_date         CHECK (due_date >= granted_on),
-    CONSTRAINT ck_credit_extended_due     CHECK (extended_due_date IS NULL OR extended_due_date > due_date),
-    CONSTRAINT ck_credit_monthly_interest CHECK (monthly_interest >= 0 AND monthly_interest < 1)
+--
+-- Name: discount_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.discount_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: discount_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.discount_id_seq OWNED BY public.discount.id;
+
+
+--
+-- Name: inventory_movement; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.inventory_movement (
+    id integer NOT NULL,
+    product_id integer NOT NULL,
+    moved_at timestamp(0) with time zone DEFAULT CURRENT_TIMESTAMP(0) NOT NULL,
+    movement_type character varying(25) NOT NULL,
+    quantity integer NOT NULL,
+    unit_cost numeric(12,2) NOT NULL,
+    notes character varying(200),
+    registered_by_user_id integer NOT NULL,
+    sale_invoice_line_id integer,
+    customer_return_line_id integer,
+    purchase_invoice_line_id integer,
+    supplier_return_line_id integer,
+    warranty_claim_id integer,
+    CONSTRAINT ck_inventory_movement_movement_type CHECK (((movement_type)::text = ANY ((ARRAY['COMPRA'::character varying, 'DEVOLUCION_CLIENTE'::character varying, 'INVENTARIO_INICIAL'::character varying, 'AJUSTE_ENTRADA'::character varying, 'VENTA'::character varying, 'USO_SERVICIO'::character varying, 'DEVOLUCION_PROVEEDOR'::character varying, 'GARANTIA'::character varying, 'AJUSTE_SALIDA'::character varying])::text[]))),
+    CONSTRAINT ck_inventory_movement_notes CHECK ((((movement_type)::text <> ALL ((ARRAY['AJUSTE_ENTRADA'::character varying, 'AJUSTE_SALIDA'::character varying])::text[])) OR (btrim((COALESCE(notes, ''::character varying))::text) <> ''::text))),
+    CONSTRAINT ck_inventory_movement_origin CHECK (((num_nonnulls(sale_invoice_line_id, customer_return_line_id, purchase_invoice_line_id, supplier_return_line_id, warranty_claim_id) =
+CASE
+    WHEN ((movement_type)::text = ANY ((ARRAY['INVENTARIO_INICIAL'::character varying, 'AJUSTE_ENTRADA'::character varying, 'AJUSTE_SALIDA'::character varying])::text[])) THEN 0
+    ELSE 1
+END) AND ((sale_invoice_line_id IS NULL) OR ((movement_type)::text = ANY ((ARRAY['VENTA'::character varying, 'USO_SERVICIO'::character varying])::text[]))) AND ((customer_return_line_id IS NULL) OR ((movement_type)::text = 'DEVOLUCION_CLIENTE'::text)) AND ((purchase_invoice_line_id IS NULL) OR ((movement_type)::text = 'COMPRA'::text)) AND ((supplier_return_line_id IS NULL) OR ((movement_type)::text = 'DEVOLUCION_PROVEEDOR'::text)) AND ((warranty_claim_id IS NULL) OR ((movement_type)::text = 'GARANTIA'::text)))),
+    CONSTRAINT ck_inventory_movement_quantity CHECK ((quantity > 0)),
+    CONSTRAINT ck_inventory_movement_unit_cost CHECK ((unit_cost >= (0)::numeric))
 );
 
-CREATE TABLE customer_payment (
-    id_customer_payment  INTEGER       GENERATED ALWAYS AS IDENTITY,
-    paid_at              TIMESTAMP(0)  NOT NULL DEFAULT LOCALTIMESTAMP(0),
-    amount               NUMERIC(12,2) NOT NULL,
-    currency             VARCHAR(3)    NOT NULL DEFAULT 'NIO',
-    exchange_rate        NUMERIC(10,4),
-    method               VARCHAR(20)   NOT NULL,
-    id_received_by       INTEGER       NOT NULL,
 
-    CONSTRAINT pk_customer_payment                PRIMARY KEY (id_customer_payment),
-    CONSTRAINT fk_customer_payment_id_received_by FOREIGN KEY (id_received_by) REFERENCES staff (id_staff),
-    CONSTRAINT ck_customer_payment_amount         CHECK (amount > 0),
-    CONSTRAINT ck_customer_payment_currency       CHECK (currency IN ('NIO', 'USD')),
-    CONSTRAINT ck_customer_payment_exchange       CHECK ((currency = 'NIO' AND exchange_rate IS NULL)
-                                                      OR (currency = 'USD' AND exchange_rate IS NOT NULL AND exchange_rate > 0)),
-    CONSTRAINT ck_customer_payment_method         CHECK (method IN ('EFECTIVO', 'TRANSFERENCIA'))
+--
+-- Name: inventory_movement_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.inventory_movement_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: inventory_movement_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.inventory_movement_id_seq OWNED BY public.inventory_movement.id;
+
+
+--
+-- Name: motorcycle; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.motorcycle (
+    id integer NOT NULL,
+    customer_id integer NOT NULL,
+    motorcycle_model_id integer NOT NULL,
+    color character varying(30) NOT NULL,
+    plate character varying(15),
+    notes character varying(200),
+    CONSTRAINT ck_motorcycle_color CHECK ((btrim((color)::text) <> ''::text)),
+    CONSTRAINT ck_motorcycle_plate CHECK (((plate IS NULL) OR (btrim((plate)::text) <> ''::text)))
 );
 
--- DEC-029 (caso 2): el adelanto solo se descuenta en el pago del mismo mecánico.
-CREATE TABLE advance (
-    id_advance        INTEGER       GENERATED ALWAYS AS IDENTITY,
-    id_mechanic       INTEGER       NOT NULL,
-    given_on          DATE          NOT NULL DEFAULT CURRENT_DATE,
-    amount            NUMERIC(12,2) NOT NULL,
-    id_given_by       INTEGER       NOT NULL,
-    id_weekly_payout  INTEGER,
 
-    CONSTRAINT pk_advance                              PRIMARY KEY (id_advance),
-    CONSTRAINT fk_advance_id_mechanic                  FOREIGN KEY (id_mechanic) REFERENCES mechanic (id_mechanic),
-    CONSTRAINT fk_advance_id_given_by                  FOREIGN KEY (id_given_by) REFERENCES owner (id_owner),
-    CONSTRAINT fk_advance_id_weekly_payout_id_mechanic FOREIGN KEY (id_weekly_payout, id_mechanic)
-                                                       REFERENCES weekly_payout (id_weekly_payout, id_mechanic) MATCH SIMPLE,
-    CONSTRAINT ck_advance_amount                       CHECK (amount > 0)
+--
+-- Name: motorcycle_brand; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.motorcycle_brand (
+    id integer NOT NULL,
+    name character varying(50) NOT NULL,
+    CONSTRAINT ck_motorcycle_brand_name CHECK ((btrim((name)::text) <> ''::text))
 );
 
--- ---------------------------------------------------------------------
--- Nivel 4
--- ---------------------------------------------------------------------
 
-CREATE TABLE supplier_return (
-    id_supplier_return  INTEGER      GENERATED ALWAYS AS IDENTITY,
-    id_purchase_detail  INTEGER      NOT NULL,
-    returned_on         DATE         NOT NULL DEFAULT CURRENT_DATE,
-    quantity            INTEGER      NOT NULL,
-    reason              VARCHAR(200) NOT NULL,
-    resolution          VARCHAR(20),
+--
+-- Name: motorcycle_brand_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
 
-    CONSTRAINT pk_supplier_return                    PRIMARY KEY (id_supplier_return),
-    CONSTRAINT fk_supplier_return_id_purchase_detail FOREIGN KEY (id_purchase_detail) REFERENCES purchase_detail (id_purchase_detail),
-    CONSTRAINT ck_supplier_return_quantity           CHECK (quantity > 0),
-    CONSTRAINT ck_supplier_return_reason             CHECK (btrim(reason) <> ''),
-    CONSTRAINT ck_supplier_return_resolution         CHECK (resolution IN ('REPOSICION', 'DINERO', 'DESCUENTO'))
+CREATE SEQUENCE public.motorcycle_brand_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: motorcycle_brand_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.motorcycle_brand_id_seq OWNED BY public.motorcycle_brand.id;
+
+
+--
+-- Name: motorcycle_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.motorcycle_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: motorcycle_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.motorcycle_id_seq OWNED BY public.motorcycle.id;
+
+
+--
+-- Name: motorcycle_model; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.motorcycle_model (
+    id integer NOT NULL,
+    motorcycle_brand_id integer NOT NULL,
+    name character varying(50) NOT NULL,
+    CONSTRAINT ck_motorcycle_model_name CHECK ((btrim((name)::text) <> ''::text))
 );
 
--- DEC-029: UQ (id_sale_detail, id_product) para la FK compuesta de inventory_movement.
-CREATE TABLE sale_detail (
-    id_sale_detail  INTEGER       GENERATED ALWAYS AS IDENTITY,
-    id_sale         INTEGER       NOT NULL,
-    line_no         SMALLINT      NOT NULL,
-    id_product      INTEGER       NOT NULL,
-    quantity        INTEGER       NOT NULL,
-    unit_price      NUMERIC(12,2) NOT NULL,
 
-    CONSTRAINT pk_sale_detail                        PRIMARY KEY (id_sale_detail),
-    CONSTRAINT fk_sale_detail_id_sale                FOREIGN KEY (id_sale)    REFERENCES sale (id_sale),
-    CONSTRAINT fk_sale_detail_id_product             FOREIGN KEY (id_product) REFERENCES product (id_product),
-    CONSTRAINT uq_sale_detail_line                   UNIQUE (id_sale, line_no),
-    CONSTRAINT uq_sale_detail_id_sale_detail_id_product UNIQUE (id_sale_detail, id_product),
-    CONSTRAINT ck_sale_detail_line_no                CHECK (line_no > 0),
-    CONSTRAINT ck_sale_detail_quantity               CHECK (quantity > 0),
-    CONSTRAINT ck_sale_detail_unit_price             CHECK (unit_price >= 0)
+--
+-- Name: motorcycle_model_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.motorcycle_model_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: motorcycle_model_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.motorcycle_model_id_seq OWNED BY public.motorcycle_model.id;
+
+
+--
+-- Name: payment_method; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.payment_method (
+    id integer NOT NULL,
+    name character varying(50) NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    CONSTRAINT ck_payment_method_name CHECK ((btrim((name)::text) <> ''::text))
 );
 
-CREATE TABLE payment_application (
-    id_payment_application  INTEGER       GENERATED ALWAYS AS IDENTITY,
-    id_customer_payment     INTEGER       NOT NULL,
-    id_billable_document    INTEGER       NOT NULL,
-    applied_amount          NUMERIC(12,2) NOT NULL,
 
-    CONSTRAINT pk_payment_application                      PRIMARY KEY (id_payment_application),
-    CONSTRAINT fk_payment_application_id_customer_payment  FOREIGN KEY (id_customer_payment)  REFERENCES customer_payment (id_customer_payment),
-    CONSTRAINT fk_payment_application_id_billable_document FOREIGN KEY (id_billable_document) REFERENCES billable_document (id_billable_document),
-    CONSTRAINT uq_payment_application_payment_document     UNIQUE (id_customer_payment, id_billable_document),
-    CONSTRAINT ck_payment_application_amount               CHECK (applied_amount > 0)
+--
+-- Name: payment_method_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.payment_method_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: payment_method_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.payment_method_id_seq OWNED BY public.payment_method.id;
+
+
+--
+-- Name: permission; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.permission (
+    id integer NOT NULL,
+    code character varying(60) NOT NULL,
+    description character varying(200),
+    CONSTRAINT ck_permission_code CHECK (((code)::text ~ '^[a-z_]+(\.[a-z_]+)*$'::text))
 );
 
--- DEC-032: clock_timestamp() — dos cambios de estado en la misma transacción
--- ya no chocan en la UQ (servicio, fecha y hora).
-CREATE TABLE status_change (
-    id_status_change       INTEGER      GENERATED ALWAYS AS IDENTITY,
-    id_mechanical_service  INTEGER      NOT NULL,
-    changed_at             TIMESTAMP    NOT NULL DEFAULT clock_timestamp()::timestamp,
-    status                 VARCHAR(20)  NOT NULL,
-    notes                  VARCHAR(200),
-    id_registered_by       INTEGER      NOT NULL,
 
-    CONSTRAINT pk_status_change                       PRIMARY KEY (id_status_change),
-    CONSTRAINT fk_status_change_id_mechanical_service FOREIGN KEY (id_mechanical_service) REFERENCES mechanical_service (id_mechanical_service),
-    CONSTRAINT fk_status_change_id_registered_by      FOREIGN KEY (id_registered_by)      REFERENCES staff (id_staff),
-    CONSTRAINT uq_status_change_service_time          UNIQUE (id_mechanical_service, changed_at),
-    CONSTRAINT ck_status_change_status                CHECK (status IN ('RECIBIDA', 'EN_DIAGNOSTICO', 'EN_PROCESO',
-                                                                         'ESPERA_REPUESTO', 'ESPERA_CLIENTE', 'TERMINADA',
-                                                                         'EN_PRUEBA', 'ENTREGADA', 'CANCELADA'))
+--
+-- Name: permission_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.permission_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: permission_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.permission_id_seq OWNED BY public.permission.id;
+
+
+--
+-- Name: product; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.product (
+    id integer NOT NULL,
+    product_category_id integer NOT NULL,
+    product_brand_id integer NOT NULL,
+    name character varying(150) NOT NULL,
+    barcode character varying(50),
+    quality_tier character varying(20) NOT NULL,
+    list_price numeric(12,2) NOT NULL,
+    stock integer DEFAULT 0 NOT NULL,
+    CONSTRAINT ck_product_barcode CHECK (((barcode IS NULL) OR (btrim((barcode)::text) <> ''::text))),
+    CONSTRAINT ck_product_list_price CHECK ((list_price >= (0)::numeric)),
+    CONSTRAINT ck_product_name CHECK ((btrim((name)::text) <> ''::text)),
+    CONSTRAINT ck_product_quality_tier CHECK (((quality_tier)::text = ANY ((ARRAY['ALTA'::character varying, 'MEDIA'::character varying, 'BAJA'::character varying])::text[]))),
+    CONSTRAINT ck_product_stock CHECK ((stock >= 0))
 );
 
--- DEC-029: UQ (id_additional_fault, id_mechanical_service) para las FK compuestas
--- de service_labor y service_part (la falla es del mismo servicio).
-CREATE TABLE additional_fault (
-    id_additional_fault    INTEGER       GENERATED ALWAYS AS IDENTITY,
-    id_mechanical_service  INTEGER       NOT NULL,
-    fault_no               SMALLINT      NOT NULL,
-    reported_on            DATE          NOT NULL DEFAULT CURRENT_DATE,
-    description            VARCHAR(500)  NOT NULL,
-    proposed_price         NUMERIC(12,2),
-    decision               VARCHAR(20)   NOT NULL DEFAULT 'PENDIENTE',
 
-    CONSTRAINT pk_additional_fault                       PRIMARY KEY (id_additional_fault),
-    CONSTRAINT fk_additional_fault_id_mechanical_service FOREIGN KEY (id_mechanical_service) REFERENCES mechanical_service (id_mechanical_service),
-    CONSTRAINT uq_additional_fault_number                UNIQUE (id_mechanical_service, fault_no),
-    CONSTRAINT uq_additional_fault_id_additional_fault_id_mechanical_service
-                                                         UNIQUE (id_additional_fault, id_mechanical_service),
-    CONSTRAINT ck_additional_fault_fault_no              CHECK (fault_no > 0),
-    CONSTRAINT ck_additional_fault_description           CHECK (btrim(description) <> ''),
-    CONSTRAINT ck_additional_fault_proposed_price        CHECK (proposed_price >= 0),
-    CONSTRAINT ck_additional_fault_decision              CHECK (decision IN ('PENDIENTE', 'ACEPTADA', 'RECHAZADA'))
+--
+-- Name: product_brand; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.product_brand (
+    id integer NOT NULL,
+    name character varying(50) NOT NULL,
+    CONSTRAINT ck_product_brand_name CHECK ((btrim((name)::text) <> ''::text))
 );
 
-CREATE TABLE external_charge (
-    id_external_charge     INTEGER       GENERATED ALWAYS AS IDENTITY,
-    id_mechanical_service  INTEGER       NOT NULL,
-    line_no                SMALLINT      NOT NULL,
-    description            VARCHAR(200)  NOT NULL,
-    amount                 NUMERIC(12,2) NOT NULL,
 
-    CONSTRAINT pk_external_charge                       PRIMARY KEY (id_external_charge),
-    CONSTRAINT fk_external_charge_id_mechanical_service FOREIGN KEY (id_mechanical_service) REFERENCES mechanical_service (id_mechanical_service),
-    CONSTRAINT uq_external_charge_line                  UNIQUE (id_mechanical_service, line_no),
-    CONSTRAINT ck_external_charge_line_no               CHECK (line_no > 0),
-    CONSTRAINT ck_external_charge_description           CHECK (btrim(description) <> ''),
-    CONSTRAINT ck_external_charge_amount                CHECK (amount >= 0)
+--
+-- Name: product_brand_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.product_brand_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: product_brand_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.product_brand_id_seq OWNED BY public.product_brand.id;
+
+
+--
+-- Name: product_category; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.product_category (
+    id integer NOT NULL,
+    name character varying(50) NOT NULL,
+    CONSTRAINT ck_product_category_name CHECK ((btrim((name)::text) <> ''::text))
 );
 
-CREATE TABLE warranty_claim (
-    id_warranty_claim    INTEGER       GENERATED ALWAYS AS IDENTITY,
-    id_original_service  INTEGER       NOT NULL,
-    claimed_on           DATE          NOT NULL DEFAULT CURRENT_DATE,
-    description          VARCHAR(500)  NOT NULL,
-    outcome              VARCHAR(20)   NOT NULL,
-    part_paid_by         VARCHAR(20),
-    refund_amount        NUMERIC(12,2),
-    id_attended_by       INTEGER       NOT NULL,
-    id_new_service       INTEGER,
-    id_sale              INTEGER,
 
-    CONSTRAINT pk_warranty_claim                     PRIMARY KEY (id_warranty_claim),
-    CONSTRAINT fk_warranty_claim_id_original_service FOREIGN KEY (id_original_service) REFERENCES mechanical_service (id_mechanical_service),
-    CONSTRAINT fk_warranty_claim_id_attended_by      FOREIGN KEY (id_attended_by)      REFERENCES owner (id_owner),
-    CONSTRAINT fk_warranty_claim_id_new_service      FOREIGN KEY (id_new_service)      REFERENCES mechanical_service (id_mechanical_service),
-    CONSTRAINT fk_warranty_claim_id_sale             FOREIGN KEY (id_sale)             REFERENCES sale (id_sale),
-    CONSTRAINT uq_warranty_claim_id_new_service      UNIQUE (id_new_service),
-    CONSTRAINT uq_warranty_claim_id_sale             UNIQUE (id_sale),
-    CONSTRAINT ck_warranty_claim_description         CHECK (btrim(description) <> ''),
-    CONSTRAINT ck_warranty_claim_outcome             CHECK (outcome IN ('CUBIERTO', 'FALLA_DISTINTA', 'FUERA_DE_PLAZO', 'REEMBOLSO')),
-    CONSTRAINT ck_warranty_claim_part_paid_by        CHECK (part_paid_by IN ('TIENDA', 'CLIENTE')),
-    CONSTRAINT ck_warranty_claim_refund              CHECK ((outcome = 'REEMBOLSO') = (refund_amount IS NOT NULL)),
-    CONSTRAINT ck_warranty_claim_refund_amount       CHECK (refund_amount > 0),
-    CONSTRAINT ck_warranty_claim_new_service         CHECK (id_new_service IS NULL OR (outcome = 'FALLA_DISTINTA'
-                                                                                    AND id_new_service <> id_original_service)),
-    CONSTRAINT ck_warranty_claim_sale                CHECK (id_sale IS NULL OR coalesce(part_paid_by, '') = 'CLIENTE')
+--
+-- Name: product_category_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.product_category_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: product_category_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.product_category_id_seq OWNED BY public.product_category.id;
+
+
+--
+-- Name: product_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.product_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: product_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.product_id_seq OWNED BY public.product.id;
+
+
+--
+-- Name: product_price_history; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.product_price_history (
+    id integer NOT NULL,
+    product_id integer NOT NULL,
+    changed_at timestamp(6) with time zone DEFAULT clock_timestamp() NOT NULL,
+    new_price numeric(12,2) NOT NULL,
+    changed_by_user_id integer,
+    CONSTRAINT ck_product_price_history_new_price CHECK ((new_price >= (0)::numeric))
 );
 
--- ---------------------------------------------------------------------
--- Nivel 5
--- ---------------------------------------------------------------------
 
--- DEC-029 (caso 2): si la línea viene de una falla adicional, es una falla de ESTE servicio.
-CREATE TABLE service_labor (
-    id_service_labor       INTEGER       GENERATED ALWAYS AS IDENTITY,
-    id_mechanical_service  INTEGER       NOT NULL,
-    line_no                SMALLINT      NOT NULL,
-    description            VARCHAR(200)  NOT NULL,
-    amount                 NUMERIC(12,2) NOT NULL,
-    id_service_type        INTEGER,
-    id_additional_fault    INTEGER,
+--
+-- Name: product_price_history_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
 
-    CONSTRAINT pk_service_labor                       PRIMARY KEY (id_service_labor),
-    CONSTRAINT fk_service_labor_id_mechanical_service FOREIGN KEY (id_mechanical_service) REFERENCES mechanical_service (id_mechanical_service),
-    CONSTRAINT fk_service_labor_id_service_type       FOREIGN KEY (id_service_type)       REFERENCES service_type (id_service_type),
-    CONSTRAINT fk_service_labor_id_additional_fault_id_mechanical_service
-        FOREIGN KEY (id_additional_fault, id_mechanical_service)
-        REFERENCES additional_fault (id_additional_fault, id_mechanical_service) MATCH SIMPLE,
-    CONSTRAINT uq_service_labor_line                  UNIQUE (id_mechanical_service, line_no),
-    CONSTRAINT ck_service_labor_line_no               CHECK (line_no > 0),
-    CONSTRAINT ck_service_labor_description           CHECK (btrim(description) <> ''),
-    CONSTRAINT ck_service_labor_amount                CHECK (amount >= 0)
+CREATE SEQUENCE public.product_price_history_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: product_price_history_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.product_price_history_id_seq OWNED BY public.product_price_history.id;
+
+
+--
+-- Name: purchase_invoice; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.purchase_invoice (
+    id integer NOT NULL,
+    supplier_id integer NOT NULL,
+    invoice_number character varying(30) NOT NULL,
+    purchase_date date DEFAULT CURRENT_DATE NOT NULL,
+    payment_terms character varying(20) NOT NULL,
+    due_date date,
+    discount_amount numeric(12,2) DEFAULT 0 NOT NULL,
+    received_by_user_id integer NOT NULL,
+    CONSTRAINT ck_purchase_invoice_discount_amount CHECK ((discount_amount >= (0)::numeric)),
+    CONSTRAINT ck_purchase_invoice_due_date CHECK (((((payment_terms)::text = 'CREDITO'::text) = (due_date IS NOT NULL)) AND ((due_date IS NULL) OR (due_date >= purchase_date)))),
+    CONSTRAINT ck_purchase_invoice_invoice_number CHECK ((btrim((invoice_number)::text) <> ''::text)),
+    CONSTRAINT ck_purchase_invoice_payment_terms CHECK (((payment_terms)::text = ANY ((ARRAY['CONTADO'::character varying, 'CREDITO'::character varying])::text[])))
 );
 
--- DEC-029: la falla es del mismo servicio (caso 2) y UQ (id_service_part, id_product)
--- para la FK compuesta de inventory_movement (caso 3).
-CREATE TABLE service_part (
-    id_service_part        INTEGER       GENERATED ALWAYS AS IDENTITY,
-    id_mechanical_service  INTEGER       NOT NULL,
-    line_no                SMALLINT      NOT NULL,
-    id_product             INTEGER       NOT NULL,
-    quantity               INTEGER       NOT NULL,
-    unit_price             NUMERIC(12,2) NOT NULL,
-    id_additional_fault    INTEGER,
 
-    CONSTRAINT pk_service_part                       PRIMARY KEY (id_service_part),
-    CONSTRAINT fk_service_part_id_mechanical_service FOREIGN KEY (id_mechanical_service) REFERENCES mechanical_service (id_mechanical_service),
-    CONSTRAINT fk_service_part_id_product            FOREIGN KEY (id_product)            REFERENCES product (id_product),
-    CONSTRAINT fk_service_part_id_additional_fault_id_mechanical_service
-        FOREIGN KEY (id_additional_fault, id_mechanical_service)
-        REFERENCES additional_fault (id_additional_fault, id_mechanical_service) MATCH SIMPLE,
-    CONSTRAINT uq_service_part_line                  UNIQUE (id_mechanical_service, line_no),
-    CONSTRAINT uq_service_part_id_service_part_id_product UNIQUE (id_service_part, id_product),
-    CONSTRAINT ck_service_part_line_no               CHECK (line_no > 0),
-    CONSTRAINT ck_service_part_quantity              CHECK (quantity > 0),
-    CONSTRAINT ck_service_part_unit_price            CHECK (unit_price >= 0)
+--
+-- Name: purchase_invoice_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.purchase_invoice_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: purchase_invoice_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.purchase_invoice_id_seq OWNED BY public.purchase_invoice.id;
+
+
+--
+-- Name: purchase_invoice_line; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.purchase_invoice_line (
+    id integer NOT NULL,
+    purchase_invoice_id integer NOT NULL,
+    line_no smallint NOT NULL,
+    product_id integer NOT NULL,
+    quantity integer NOT NULL,
+    unit_cost numeric(12,2) NOT NULL,
+    CONSTRAINT ck_purchase_invoice_line_line_no CHECK ((line_no > 0)),
+    CONSTRAINT ck_purchase_invoice_line_quantity CHECK ((quantity > 0)),
+    CONSTRAINT ck_purchase_invoice_line_unit_cost CHECK ((unit_cost >= (0)::numeric))
 );
 
-CREATE TABLE customer_return (
-    id_customer_return   INTEGER       GENERATED ALWAYS AS IDENTITY,
-    id_sale_detail       INTEGER       NOT NULL,
-    returned_on          DATE          NOT NULL DEFAULT CURRENT_DATE,
-    quantity             INTEGER       NOT NULL,
-    outcome              VARCHAR(20)   NOT NULL,
-    id_exchange_product  INTEGER,
-    refund_amount        NUMERIC(12,2),
 
-    CONSTRAINT pk_customer_return                     PRIMARY KEY (id_customer_return),
-    CONSTRAINT fk_customer_return_id_sale_detail      FOREIGN KEY (id_sale_detail)      REFERENCES sale_detail (id_sale_detail),
-    CONSTRAINT fk_customer_return_id_exchange_product FOREIGN KEY (id_exchange_product) REFERENCES product (id_product),
-    CONSTRAINT ck_customer_return_quantity            CHECK (quantity > 0),
-    CONSTRAINT ck_customer_return_refund_amount       CHECK (refund_amount > 0),
-    CONSTRAINT ck_customer_return_outcome             CHECK (
-           (outcome = 'CAMBIO'    AND id_exchange_product IS NOT NULL AND refund_amount IS NULL)
-        OR (outcome = 'REEMBOLSO' AND refund_amount IS NOT NULL AND id_exchange_product IS NULL))
+--
+-- Name: purchase_invoice_line_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.purchase_invoice_line_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: purchase_invoice_line_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.purchase_invoice_line_id_seq OWNED BY public.purchase_invoice_line.id;
+
+
+--
+-- Name: return_reason; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.return_reason (
+    id integer NOT NULL,
+    name character varying(80) NOT NULL,
+    active boolean DEFAULT true NOT NULL,
+    CONSTRAINT ck_return_reason_name CHECK ((btrim((name)::text) <> ''::text))
 );
 
--- ---------------------------------------------------------------------
--- Nivel 6
--- ---------------------------------------------------------------------
 
--- DEC-029 (caso 3): cuando el origen es una línea de compra, de venta o de
--- servicio, el producto del movimiento es el mismo de esa línea.
-CREATE TABLE inventory_movement (
-    id_inventory_movement  INTEGER       GENERATED ALWAYS AS IDENTITY,
-    id_product             INTEGER       NOT NULL,
-    moved_at               TIMESTAMP(0)  NOT NULL DEFAULT LOCALTIMESTAMP(0),
-    reason                 VARCHAR(25)   NOT NULL,
-    quantity               INTEGER       NOT NULL,
-    unit_cost              NUMERIC(12,2) NOT NULL,
-    notes                  VARCHAR(200),
-    id_registered_by       INTEGER       NOT NULL,
-    id_purchase_detail     INTEGER,
-    id_sale_detail         INTEGER,
-    id_service_part        INTEGER,
-    id_customer_return     INTEGER,
-    id_supplier_return     INTEGER,
-    id_warranty_claim      INTEGER,
+--
+-- Name: return_reason_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
 
-    CONSTRAINT pk_inventory_movement                    PRIMARY KEY (id_inventory_movement),
-    CONSTRAINT fk_inventory_movement_id_product         FOREIGN KEY (id_product)         REFERENCES product (id_product),
-    CONSTRAINT fk_inventory_movement_id_registered_by   FOREIGN KEY (id_registered_by)   REFERENCES staff (id_staff),
-    CONSTRAINT fk_inventory_movement_id_purchase_detail_id_product
-        FOREIGN KEY (id_purchase_detail, id_product) REFERENCES purchase_detail (id_purchase_detail, id_product) MATCH SIMPLE,
-    CONSTRAINT fk_inventory_movement_id_sale_detail_id_product
-        FOREIGN KEY (id_sale_detail, id_product)     REFERENCES sale_detail (id_sale_detail, id_product)         MATCH SIMPLE,
-    CONSTRAINT fk_inventory_movement_id_service_part_id_product
-        FOREIGN KEY (id_service_part, id_product)    REFERENCES service_part (id_service_part, id_product)       MATCH SIMPLE,
-    CONSTRAINT fk_inventory_movement_id_customer_return FOREIGN KEY (id_customer_return) REFERENCES customer_return (id_customer_return),
-    CONSTRAINT fk_inventory_movement_id_supplier_return FOREIGN KEY (id_supplier_return) REFERENCES supplier_return (id_supplier_return),
-    CONSTRAINT fk_inventory_movement_id_warranty_claim  FOREIGN KEY (id_warranty_claim)  REFERENCES warranty_claim (id_warranty_claim),
-    CONSTRAINT uq_inventory_movement_id_purchase_detail UNIQUE (id_purchase_detail),
-    CONSTRAINT uq_inventory_movement_id_sale_detail     UNIQUE (id_sale_detail),
-    CONSTRAINT uq_inventory_movement_id_service_part    UNIQUE (id_service_part),
-    CONSTRAINT uq_inventory_movement_id_supplier_return UNIQUE (id_supplier_return),
-    CONSTRAINT uq_inventory_movement_customer_return    UNIQUE (id_customer_return, reason),
-    CONSTRAINT ck_inventory_movement_quantity           CHECK (quantity > 0),
-    CONSTRAINT ck_inventory_movement_unit_cost          CHECK (unit_cost >= 0),
-    CONSTRAINT ck_inventory_movement_reason             CHECK (reason IN (
-        'COMPRA', 'DEVOLUCION_CLIENTE', 'INVENTARIO_INICIAL', 'AJUSTE_ENTRADA',
-        'VENTA', 'USO_SERVICIO', 'CAMBIO_CLIENTE', 'DEVOLUCION_PROVEEDOR', 'GARANTIA', 'AJUSTE_SALIDA')),
-    CONSTRAINT ck_inventory_movement_notes              CHECK (
-        reason NOT IN ('AJUSTE_ENTRADA', 'AJUSTE_SALIDA') OR btrim(coalesce(notes, '')) <> ''),
-    CONSTRAINT ck_inventory_movement_origin             CHECK (
-        num_nonnulls(id_purchase_detail, id_sale_detail, id_service_part,
-                     id_customer_return, id_supplier_return, id_warranty_claim)
-            = CASE WHEN reason IN ('INVENTARIO_INICIAL', 'AJUSTE_ENTRADA', 'AJUSTE_SALIDA') THEN 0 ELSE 1 END
-        AND (id_purchase_detail IS NULL OR reason = 'COMPRA')
-        AND (id_sale_detail     IS NULL OR reason = 'VENTA')
-        AND (id_service_part    IS NULL OR reason = 'USO_SERVICIO')
-        AND (id_customer_return IS NULL OR reason IN ('DEVOLUCION_CLIENTE', 'CAMBIO_CLIENTE'))
-        AND (id_supplier_return IS NULL OR reason = 'DEVOLUCION_PROVEEDOR')
-        AND (id_warranty_claim  IS NULL OR reason = 'GARANTIA'))
+CREATE SEQUENCE public.return_reason_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: return_reason_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.return_reason_id_seq OWNED BY public.return_reason.id;
+
+
+--
+-- Name: role; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.role (
+    id integer NOT NULL,
+    name character varying(50) NOT NULL,
+    description character varying(200),
+    active boolean DEFAULT true NOT NULL,
+    CONSTRAINT ck_role_name CHECK ((btrim((name)::text) <> ''::text))
 );
 
-COMMIT;
+
+--
+-- Name: role_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.role_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: role_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.role_id_seq OWNED BY public.role.id;
+
+
+--
+-- Name: role_permission; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.role_permission (
+    role_id integer NOT NULL,
+    permission_id integer NOT NULL
+);
+
+
+--
+-- Name: sale_invoice; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sale_invoice (
+    id integer NOT NULL,
+    customer_id integer,
+    created_by_user_id integer NOT NULL,
+    created_at timestamp(0) with time zone DEFAULT CURRENT_TIMESTAMP(0) NOT NULL,
+    invoice_number character varying(20),
+    payment_terms character varying(20) NOT NULL,
+    due_date date,
+    extended_due_date date,
+    monthly_interest numeric(5,4) DEFAULT 0 NOT NULL,
+    credit_authorized_by_user_id integer,
+    notes character varying(200),
+    service_order_id integer,
+    CONSTRAINT ck_sale_invoice_credit CHECK (((((payment_terms)::text = 'CREDITO'::text) = (due_date IS NOT NULL)) AND (((payment_terms)::text = 'CREDITO'::text) = (credit_authorized_by_user_id IS NOT NULL)) AND (((payment_terms)::text = 'CREDITO'::text) OR ((extended_due_date IS NULL) AND (monthly_interest = (0)::numeric))))),
+    CONSTRAINT ck_sale_invoice_customer CHECK (((customer_id IS NOT NULL) OR ((payment_terms)::text = 'CONTADO'::text))),
+    CONSTRAINT ck_sale_invoice_due_date CHECK ((due_date >= ((created_at AT TIME ZONE 'America/Managua'::text))::date)),
+    CONSTRAINT ck_sale_invoice_extended_due CHECK ((extended_due_date > due_date)),
+    CONSTRAINT ck_sale_invoice_invoice_number CHECK (((invoice_number IS NULL) OR (btrim((invoice_number)::text) <> ''::text))),
+    CONSTRAINT ck_sale_invoice_monthly_interest CHECK (((monthly_interest >= (0)::numeric) AND (monthly_interest < (1)::numeric))),
+    CONSTRAINT ck_sale_invoice_notes CHECK (((notes IS NULL) OR (btrim((notes)::text) <> ''::text))),
+    CONSTRAINT ck_sale_invoice_payment_terms CHECK (((payment_terms)::text = ANY ((ARRAY['CONTADO'::character varying, 'CREDITO'::character varying])::text[])))
+);
+
+
+--
+-- Name: sale_invoice_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sale_invoice_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: sale_invoice_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.sale_invoice_id_seq OWNED BY public.sale_invoice.id;
+
+
+--
+-- Name: sale_invoice_line; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sale_invoice_line (
+    id integer NOT NULL,
+    sale_invoice_id integer NOT NULL,
+    line_no smallint NOT NULL,
+    line_type character varying(20) NOT NULL,
+    product_id integer,
+    service_type_id integer,
+    description character varying(200),
+    quantity integer DEFAULT 1 NOT NULL,
+    unit_price numeric(12,2) NOT NULL,
+    discount_id integer,
+    discount_amount numeric(12,2) DEFAULT 0 NOT NULL,
+    discount_authorized_by_user_id integer,
+    additional_fault_id integer,
+    service_order_id integer,
+    CONSTRAINT ck_sale_invoice_line_additional_fault CHECK (((additional_fault_id IS NULL) OR (service_order_id IS NOT NULL))),
+    CONSTRAINT ck_sale_invoice_line_by_type CHECK (((((line_type)::text = 'PRODUCTO'::text) AND (product_id IS NOT NULL) AND (service_type_id IS NULL)) OR (((line_type)::text = 'MANO_OBRA'::text) AND (product_id IS NULL) AND (description IS NOT NULL)) OR (((line_type)::text = 'CARGO_EXTERNO'::text) AND (product_id IS NULL) AND (service_type_id IS NULL) AND (description IS NOT NULL) AND (quantity = 1)))),
+    CONSTRAINT ck_sale_invoice_line_description CHECK (((description IS NULL) OR (btrim((description)::text) <> ''::text))),
+    CONSTRAINT ck_sale_invoice_line_discount CHECK (((discount_amount >= (0)::numeric) AND (discount_amount <= ((quantity)::numeric * unit_price)) AND ((discount_id IS NULL) OR (discount_amount > (0)::numeric)) AND ((discount_amount = (0)::numeric) OR (discount_id IS NOT NULL) OR (discount_authorized_by_user_id IS NOT NULL)))),
+    CONSTRAINT ck_sale_invoice_line_line_no CHECK ((line_no > 0)),
+    CONSTRAINT ck_sale_invoice_line_line_type CHECK (((line_type)::text = ANY ((ARRAY['PRODUCTO'::character varying, 'MANO_OBRA'::character varying, 'CARGO_EXTERNO'::character varying])::text[]))),
+    CONSTRAINT ck_sale_invoice_line_quantity CHECK ((quantity > 0)),
+    CONSTRAINT ck_sale_invoice_line_unit_price CHECK ((unit_price >= (0)::numeric))
+);
+
+
+--
+-- Name: sale_invoice_line_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sale_invoice_line_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: sale_invoice_line_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.sale_invoice_line_id_seq OWNED BY public.sale_invoice_line.id;
+
+
+--
+-- Name: service_order; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.service_order (
+    id integer NOT NULL,
+    motorcycle_id integer NOT NULL,
+    mechanic_staff_id integer,
+    requested_work character varying(500) NOT NULL,
+    diagnosis character varying(500),
+    cancellation_fee numeric(12,2),
+    applied_commission_rate numeric(5,4),
+    staff_payout_id integer,
+    CONSTRAINT ck_service_order_applied_commission_rate CHECK (((applied_commission_rate > (0)::numeric) AND (applied_commission_rate <= (1)::numeric))),
+    CONSTRAINT ck_service_order_cancellation_fee CHECK ((cancellation_fee >= (0)::numeric)),
+    CONSTRAINT ck_service_order_payout_rate CHECK (((staff_payout_id IS NULL) OR ((applied_commission_rate IS NOT NULL) AND (mechanic_staff_id IS NOT NULL)))),
+    CONSTRAINT ck_service_order_rate_needs_responsible CHECK (((applied_commission_rate IS NULL) OR (mechanic_staff_id IS NOT NULL))),
+    CONSTRAINT ck_service_order_requested_work CHECK ((btrim((requested_work)::text) <> ''::text))
+);
+
+
+--
+-- Name: service_order_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.service_order_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: service_order_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.service_order_id_seq OWNED BY public.service_order.id;
+
+
+--
+-- Name: service_order_status_change; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.service_order_status_change (
+    id integer NOT NULL,
+    service_order_id integer NOT NULL,
+    changed_at timestamp(6) with time zone DEFAULT clock_timestamp() NOT NULL,
+    status character varying(20) NOT NULL,
+    notes character varying(200),
+    registered_by_user_id integer NOT NULL,
+    CONSTRAINT ck_service_order_status_change_status CHECK (((status)::text = ANY ((ARRAY['RECIBIDA'::character varying, 'EN_DIAGNOSTICO'::character varying, 'EN_PROCESO'::character varying, 'ESPERA_REPUESTO'::character varying, 'ESPERA_CLIENTE'::character varying, 'TERMINADA'::character varying, 'EN_PRUEBA'::character varying, 'ENTREGADA'::character varying, 'CANCELADA'::character varying])::text[])))
+);
+
+
+--
+-- Name: service_order_status_change_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.service_order_status_change_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: service_order_status_change_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.service_order_status_change_id_seq OWNED BY public.service_order_status_change.id;
+
+
+--
+-- Name: service_type; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.service_type (
+    id integer NOT NULL,
+    name character varying(50) NOT NULL,
+    reference_price numeric(12,2),
+    active boolean DEFAULT true NOT NULL,
+    CONSTRAINT ck_service_type_name CHECK ((btrim((name)::text) <> ''::text)),
+    CONSTRAINT ck_service_type_reference_price CHECK ((reference_price >= (0)::numeric))
+);
+
+
+--
+-- Name: service_type_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.service_type_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: service_type_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.service_type_id_seq OWNED BY public.service_type.id;
+
+
+--
+-- Name: staff; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.staff (
+    id integer NOT NULL,
+    name character varying(100) NOT NULL,
+    phone character varying(20) NOT NULL,
+    commission_rate numeric(5,4),
+    active boolean DEFAULT true NOT NULL,
+    kind character varying(20) DEFAULT 'MECANICO'::character varying NOT NULL,
+    can_repair boolean DEFAULT true NOT NULL,
+    CONSTRAINT ck_staff_commission_rate CHECK (((commission_rate > (0)::numeric) AND (commission_rate <= (1)::numeric))),
+    CONSTRAINT ck_staff_kind CHECK (((kind)::text = ANY ((ARRAY['DUENO'::character varying, 'MECANICO'::character varying, 'ENCARGADO'::character varying])::text[]))),
+    CONSTRAINT ck_staff_name CHECK ((btrim((name)::text) <> ''::text)),
+    CONSTRAINT ck_staff_owner_no_commission CHECK ((((kind)::text <> 'DUENO'::text) OR (commission_rate IS NULL))),
+    CONSTRAINT ck_staff_phone CHECK ((btrim((phone)::text) <> ''::text))
+);
+
+
+--
+-- Name: staff_advance; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.staff_advance (
+    id integer NOT NULL,
+    staff_id integer NOT NULL,
+    given_on date DEFAULT CURRENT_DATE NOT NULL,
+    amount numeric(12,2) NOT NULL,
+    given_by_user_id integer NOT NULL,
+    staff_payout_id integer,
+    CONSTRAINT ck_staff_advance_amount CHECK ((amount > (0)::numeric))
+);
+
+
+--
+-- Name: staff_advance_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.staff_advance_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: staff_advance_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.staff_advance_id_seq OWNED BY public.staff_advance.id;
+
+
+--
+-- Name: staff_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.staff_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: staff_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.staff_id_seq OWNED BY public.staff.id;
+
+
+--
+-- Name: staff_payout; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.staff_payout (
+    id integer NOT NULL,
+    staff_id integer NOT NULL,
+    period_start date NOT NULL,
+    period_end date NOT NULL,
+    paid_on date,
+    paid_by_user_id integer,
+    CONSTRAINT ck_staff_payout_paid_on CHECK (((paid_on IS NULL) OR (paid_on >= period_start))),
+    CONSTRAINT ck_staff_payout_paid_pair CHECK (((paid_on IS NULL) = (paid_by_user_id IS NULL))),
+    CONSTRAINT ck_staff_payout_period CHECK ((period_end >= period_start))
+);
+
+
+--
+-- Name: staff_payout_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.staff_payout_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: staff_payout_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.staff_payout_id_seq OWNED BY public.staff_payout.id;
+
+
+--
+-- Name: supplier; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.supplier (
+    id integer NOT NULL,
+    name character varying(100) NOT NULL,
+    phone character varying(20),
+    contact_person character varying(100),
+    gives_warranty boolean,
+    opening_balance numeric(12,2),
+    opening_date date,
+    CONSTRAINT ck_supplier_name CHECK ((btrim((name)::text) <> ''::text)),
+    CONSTRAINT ck_supplier_opening_balance CHECK ((opening_balance >= (0)::numeric)),
+    CONSTRAINT ck_supplier_opening_pair CHECK (((opening_balance IS NULL) = (opening_date IS NULL)))
+);
+
+
+--
+-- Name: supplier_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.supplier_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: supplier_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.supplier_id_seq OWNED BY public.supplier.id;
+
+
+--
+-- Name: supplier_payment; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.supplier_payment (
+    id integer NOT NULL,
+    supplier_id integer NOT NULL,
+    purchase_invoice_id integer,
+    paid_on date DEFAULT CURRENT_DATE NOT NULL,
+    amount numeric(12,2) NOT NULL,
+    currency character varying(3) DEFAULT 'NIO'::character varying NOT NULL,
+    exchange_rate numeric(10,4),
+    CONSTRAINT ck_supplier_payment_amount CHECK ((amount > (0)::numeric)),
+    CONSTRAINT ck_supplier_payment_currency CHECK (((currency)::text = ANY ((ARRAY['NIO'::character varying, 'USD'::character varying])::text[]))),
+    CONSTRAINT ck_supplier_payment_exchange CHECK (((((currency)::text = 'NIO'::text) AND (exchange_rate IS NULL)) OR (((currency)::text = 'USD'::text) AND (exchange_rate IS NOT NULL) AND (exchange_rate > (0)::numeric))))
+);
+
+
+--
+-- Name: supplier_payment_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.supplier_payment_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: supplier_payment_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.supplier_payment_id_seq OWNED BY public.supplier_payment.id;
+
+
+--
+-- Name: supplier_return; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.supplier_return (
+    id integer NOT NULL,
+    purchase_invoice_id integer NOT NULL,
+    returned_on date DEFAULT CURRENT_DATE NOT NULL,
+    return_reason_id integer NOT NULL,
+    resolution character varying(20) NOT NULL,
+    registered_by_user_id integer NOT NULL,
+    CONSTRAINT ck_supplier_return_resolution CHECK (((resolution)::text = ANY ((ARRAY['REPOSICION'::character varying, 'DINERO'::character varying, 'DESCUENTO'::character varying])::text[])))
+);
+
+
+--
+-- Name: supplier_return_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.supplier_return_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: supplier_return_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.supplier_return_id_seq OWNED BY public.supplier_return.id;
+
+
+--
+-- Name: supplier_return_line; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.supplier_return_line (
+    id integer NOT NULL,
+    supplier_return_id integer NOT NULL,
+    purchase_invoice_id integer NOT NULL,
+    line_no smallint NOT NULL,
+    purchase_invoice_line_id integer NOT NULL,
+    product_id integer NOT NULL,
+    quantity integer NOT NULL,
+    CONSTRAINT ck_supplier_return_line_line_no CHECK ((line_no > 0)),
+    CONSTRAINT ck_supplier_return_line_quantity CHECK ((quantity > 0))
+);
+
+
+--
+-- Name: supplier_return_line_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.supplier_return_line_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: supplier_return_line_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.supplier_return_line_id_seq OWNED BY public.supplier_return_line.id;
+
+
+--
+-- Name: v_invoice_balance; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_invoice_balance AS
+ SELECT si.id AS sale_invoice_id,
+    si.customer_id,
+    si.payment_terms,
+    si.created_at,
+    COALESCE(si.extended_due_date, si.due_date) AS due_date,
+    t.total,
+    r.returned,
+    p.paid,
+    ((t.total - r.returned) - p.paid) AS balance,
+        CASE
+            WHEN ((((t.total - r.returned) - p.paid) > (0)::numeric) AND (COALESCE(si.extended_due_date, si.due_date) < CURRENT_DATE)) THEN (CURRENT_DATE - COALESCE(si.extended_due_date, si.due_date))
+            ELSE NULL::integer
+        END AS days_overdue
+   FROM (((public.sale_invoice si
+     CROSS JOIN LATERAL ( SELECT COALESCE(sum((((l.quantity)::numeric * l.unit_price) - l.discount_amount)), (0)::numeric) AS total
+           FROM public.sale_invoice_line l
+          WHERE (l.sale_invoice_id = si.id)) t)
+     CROSS JOIN LATERAL ( SELECT COALESCE(sum(round((((((l.quantity)::numeric * l.unit_price) - l.discount_amount) / (l.quantity)::numeric) * (rl.quantity)::numeric), 2)), (0)::numeric) AS returned
+           FROM (public.customer_return_line rl
+             JOIN public.sale_invoice_line l ON ((l.id = rl.sale_invoice_line_id)))
+          WHERE (rl.sale_invoice_id = si.id)) r)
+     CROSS JOIN LATERAL ( SELECT COALESCE(sum(a.amount), (0)::numeric) AS paid
+           FROM public.customer_payment_allocation a
+          WHERE (a.sale_invoice_id = si.id)) p);
+
+
+--
+-- Name: v_opening_balance_remaining; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_opening_balance_remaining AS
+ SELECT ob.id AS customer_opening_balance_id,
+    ob.customer_id,
+    ob.as_of_date,
+    ob.due_date,
+    ob.amount,
+    p.paid,
+    (ob.amount - p.paid) AS balance,
+        CASE
+            WHEN (((ob.amount - p.paid) > (0)::numeric) AND (ob.due_date < CURRENT_DATE)) THEN (CURRENT_DATE - ob.due_date)
+            ELSE NULL::integer
+        END AS days_overdue
+   FROM (public.customer_opening_balance ob
+     CROSS JOIN LATERAL ( SELECT COALESCE(sum(a.amount), (0)::numeric) AS paid
+           FROM public.customer_payment_allocation a
+          WHERE (a.customer_opening_balance_id = ob.id)) p);
+
+
+--
+-- Name: v_customer_balance; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_customer_balance AS
+ WITH debts AS (
+         SELECT v_invoice_balance.customer_id,
+            v_invoice_balance.balance,
+            v_invoice_balance.due_date,
+            v_invoice_balance.days_overdue
+           FROM public.v_invoice_balance
+          WHERE ((v_invoice_balance.customer_id IS NOT NULL) AND (v_invoice_balance.balance > (0)::numeric))
+        UNION ALL
+         SELECT v_opening_balance_remaining.customer_id,
+            v_opening_balance_remaining.balance,
+            v_opening_balance_remaining.due_date,
+            v_opening_balance_remaining.days_overdue
+           FROM public.v_opening_balance_remaining
+          WHERE (v_opening_balance_remaining.balance > (0)::numeric)
+        )
+ SELECT customer_id,
+    sum(balance) AS balance,
+    COALESCE(sum(balance) FILTER (WHERE (days_overdue > 0)), (0)::numeric) AS overdue,
+    min(due_date) AS oldest_due_date,
+    max(days_overdue) AS max_days_overdue,
+    (count(*))::integer AS open_items
+   FROM debts
+  GROUP BY customer_id;
+
+
+--
+-- Name: v_mechanic_unpaid_commission; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_mechanic_unpaid_commission AS
+ SELECT so.id AS service_order_id,
+    so.mechanic_staff_id AS staff_id,
+    d.delivered_at,
+    so.applied_commission_rate AS rate,
+    lab.labor,
+    round((lab.labor * so.applied_commission_rate), 2) AS commission
+   FROM ((public.service_order so
+     CROSS JOIN LATERAL ( SELECT min(sc.changed_at) AS delivered_at
+           FROM public.service_order_status_change sc
+          WHERE ((sc.service_order_id = so.id) AND ((sc.status)::text = 'ENTREGADA'::text))) d)
+     CROSS JOIN LATERAL ( SELECT COALESCE(sum((((l.quantity)::numeric * l.unit_price) - l.discount_amount)), (0)::numeric) AS labor
+           FROM (public.sale_invoice si
+             JOIN public.sale_invoice_line l ON ((l.sale_invoice_id = si.id)))
+          WHERE ((si.service_order_id = so.id) AND ((l.line_type)::text = 'MANO_OBRA'::text))) lab)
+  WHERE ((so.staff_payout_id IS NULL) AND (so.applied_commission_rate IS NOT NULL) AND (so.mechanic_staff_id IS NOT NULL) AND (d.delivered_at IS NOT NULL));
+
+
+--
+-- Name: v_product_margin; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_product_margin AS
+ SELECT p.id AS product_id,
+    p.list_price,
+    lc.unit_cost AS last_cost,
+    (p.list_price - lc.unit_cost) AS margin,
+        CASE
+            WHEN ((p.list_price > (0)::numeric) AND (lc.unit_cost IS NOT NULL)) THEN round((((p.list_price - lc.unit_cost) / p.list_price) * (100)::numeric), 1)
+            ELSE NULL::numeric
+        END AS margin_pct
+   FROM (public.product p
+     LEFT JOIN LATERAL ( SELECT m.unit_cost
+           FROM public.inventory_movement m
+          WHERE ((m.product_id = p.id) AND ((m.movement_type)::text = ANY ((ARRAY['COMPRA'::character varying, 'DEVOLUCION_CLIENTE'::character varying, 'INVENTARIO_INICIAL'::character varying, 'AJUSTE_ENTRADA'::character varying])::text[])))
+          ORDER BY m.moved_at DESC, m.id DESC
+         LIMIT 1) lc ON (true));
+
+
+--
+-- Name: v_product_stock_mismatch; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_product_stock_mismatch AS
+ SELECT p.id AS product_id,
+    p.stock,
+    (COALESCE(sum(
+        CASE
+            WHEN ((m.movement_type)::text = ANY ((ARRAY['COMPRA'::character varying, 'DEVOLUCION_CLIENTE'::character varying, 'INVENTARIO_INICIAL'::character varying, 'AJUSTE_ENTRADA'::character varying])::text[])) THEN m.quantity
+            ELSE (- m.quantity)
+        END), (0)::bigint))::integer AS ledger_stock
+   FROM (public.product p
+     LEFT JOIN public.inventory_movement m ON ((m.product_id = p.id)))
+  GROUP BY p.id, p.stock
+ HAVING (p.stock <> COALESCE(sum(
+        CASE
+            WHEN ((m.movement_type)::text = ANY ((ARRAY['COMPRA'::character varying, 'DEVOLUCION_CLIENTE'::character varying, 'INVENTARIO_INICIAL'::character varying, 'AJUSTE_ENTRADA'::character varying])::text[])) THEN m.quantity
+            ELSE (- m.quantity)
+        END), (0)::bigint));
+
+
+--
+-- Name: v_purchase_invoice_balance; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_purchase_invoice_balance AS
+ SELECT pi.id AS purchase_invoice_id,
+    pi.supplier_id,
+    pi.purchase_date,
+    pi.payment_terms,
+    pi.due_date,
+    (g.gross - pi.discount_amount) AS total,
+    r.returned,
+    p.paid,
+    (((g.gross - pi.discount_amount) - r.returned) - p.paid) AS balance,
+        CASE
+            WHEN (((((g.gross - pi.discount_amount) - r.returned) - p.paid) > (0)::numeric) AND (pi.due_date < CURRENT_DATE)) THEN (CURRENT_DATE - pi.due_date)
+            ELSE NULL::integer
+        END AS days_overdue
+   FROM (((public.purchase_invoice pi
+     CROSS JOIN LATERAL ( SELECT COALESCE(sum(((l.quantity)::numeric * l.unit_cost)), (0)::numeric) AS gross
+           FROM public.purchase_invoice_line l
+          WHERE (l.purchase_invoice_id = pi.id)) g)
+     CROSS JOIN LATERAL ( SELECT COALESCE(sum((l.unit_cost * (rl.quantity)::numeric)), (0)::numeric) AS returned
+           FROM ((public.supplier_return_line rl
+             JOIN public.supplier_return sr ON ((sr.id = rl.supplier_return_id)))
+             JOIN public.purchase_invoice_line l ON ((l.id = rl.purchase_invoice_line_id)))
+          WHERE ((rl.purchase_invoice_id = pi.id) AND ((sr.resolution)::text <> 'REPOSICION'::text))) r)
+     CROSS JOIN LATERAL ( SELECT COALESCE(sum(
+                CASE
+                    WHEN ((sp.currency)::text = 'USD'::text) THEN round((sp.amount * sp.exchange_rate), 2)
+                    ELSE sp.amount
+                END), (0)::numeric) AS paid
+           FROM public.supplier_payment sp
+          WHERE (sp.purchase_invoice_id = pi.id)) p);
+
+
+--
+-- Name: v_service_order_status; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_service_order_status AS
+ SELECT DISTINCT ON (service_order_id) service_order_id,
+    status,
+    changed_at AS status_since
+   FROM public.service_order_status_change sc
+  ORDER BY service_order_id, changed_at DESC, id DESC;
+
+
+--
+-- Name: v_supplier_balance; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_supplier_balance AS
+ SELECT s.id AS supplier_id,
+    (COALESCE(s.opening_balance, (0)::numeric) - op.paid) AS opening_balance,
+    pu.balance AS purchases_balance,
+    ((COALESCE(s.opening_balance, (0)::numeric) - op.paid) + pu.balance) AS balance,
+    pu.overdue
+   FROM ((public.supplier s
+     CROSS JOIN LATERAL ( SELECT COALESCE(sum(
+                CASE
+                    WHEN ((sp.currency)::text = 'USD'::text) THEN round((sp.amount * sp.exchange_rate), 2)
+                    ELSE sp.amount
+                END), (0)::numeric) AS paid
+           FROM public.supplier_payment sp
+          WHERE ((sp.supplier_id = s.id) AND (sp.purchase_invoice_id IS NULL))) op)
+     CROSS JOIN LATERAL ( SELECT COALESCE(sum(b.balance), (0)::numeric) AS balance,
+            COALESCE(sum(b.balance) FILTER (WHERE (b.days_overdue > 0)), (0)::numeric) AS overdue
+           FROM public.v_purchase_invoice_balance b
+          WHERE (b.supplier_id = s.id)) pu);
+
+
+--
+-- Name: warranty_claim; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.warranty_claim (
+    id integer NOT NULL,
+    original_service_order_id integer NOT NULL,
+    claimed_on date DEFAULT CURRENT_DATE NOT NULL,
+    description character varying(500) NOT NULL,
+    outcome character varying(20) NOT NULL,
+    part_paid_by character varying(20),
+    refund_amount numeric(12,2),
+    attended_by_user_id integer NOT NULL,
+    new_service_order_id integer,
+    part_sale_invoice_id integer,
+    CONSTRAINT ck_warranty_claim_description CHECK ((btrim((description)::text) <> ''::text)),
+    CONSTRAINT ck_warranty_claim_new_service_order CHECK (((new_service_order_id IS NULL) OR (((outcome)::text = 'FALLA_DISTINTA'::text) AND (new_service_order_id <> original_service_order_id)))),
+    CONSTRAINT ck_warranty_claim_outcome CHECK (((outcome)::text = ANY ((ARRAY['CUBIERTO'::character varying, 'FALLA_DISTINTA'::character varying, 'FUERA_DE_PLAZO'::character varying, 'REEMBOLSO'::character varying])::text[]))),
+    CONSTRAINT ck_warranty_claim_part_paid_by CHECK (((part_paid_by)::text = ANY ((ARRAY['TIENDA'::character varying, 'CLIENTE'::character varying])::text[]))),
+    CONSTRAINT ck_warranty_claim_part_sale_invoice CHECK (((part_sale_invoice_id IS NULL) OR ((COALESCE(part_paid_by, ''::character varying))::text = 'CLIENTE'::text))),
+    CONSTRAINT ck_warranty_claim_refund CHECK ((((outcome)::text = 'REEMBOLSO'::text) = (refund_amount IS NOT NULL))),
+    CONSTRAINT ck_warranty_claim_refund_amount CHECK ((refund_amount > (0)::numeric))
+);
+
+
+--
+-- Name: warranty_claim_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.warranty_claim_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: warranty_claim_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.warranty_claim_id_seq OWNED BY public.warranty_claim.id;
+
+
+--
+-- Name: additional_fault id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.additional_fault ALTER COLUMN id SET DEFAULT nextval('public.additional_fault_id_seq'::regclass);
+
+
+--
+-- Name: app_session id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.app_session ALTER COLUMN id SET DEFAULT nextval('public.app_session_id_seq'::regclass);
+
+
+--
+-- Name: app_user id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.app_user ALTER COLUMN id SET DEFAULT nextval('public.app_user_id_seq'::regclass);
+
+
+--
+-- Name: cash_withdrawal id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_withdrawal ALTER COLUMN id SET DEFAULT nextval('public.cash_withdrawal_id_seq'::regclass);
+
+
+--
+-- Name: cash_withdrawal_reason id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_withdrawal_reason ALTER COLUMN id SET DEFAULT nextval('public.cash_withdrawal_reason_id_seq'::regclass);
+
+
+--
+-- Name: customer id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer ALTER COLUMN id SET DEFAULT nextval('public.customer_id_seq'::regclass);
+
+
+--
+-- Name: customer_opening_balance id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_opening_balance ALTER COLUMN id SET DEFAULT nextval('public.customer_opening_balance_id_seq'::regclass);
+
+
+--
+-- Name: customer_payment id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_payment ALTER COLUMN id SET DEFAULT nextval('public.customer_payment_id_seq'::regclass);
+
+
+--
+-- Name: customer_payment_allocation id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_payment_allocation ALTER COLUMN id SET DEFAULT nextval('public.customer_payment_allocation_id_seq'::regclass);
+
+
+--
+-- Name: customer_return id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_return ALTER COLUMN id SET DEFAULT nextval('public.customer_return_id_seq'::regclass);
+
+
+--
+-- Name: customer_return_line id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_return_line ALTER COLUMN id SET DEFAULT nextval('public.customer_return_line_id_seq'::regclass);
+
+
+--
+-- Name: discount id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.discount ALTER COLUMN id SET DEFAULT nextval('public.discount_id_seq'::regclass);
+
+
+--
+-- Name: inventory_movement id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventory_movement ALTER COLUMN id SET DEFAULT nextval('public.inventory_movement_id_seq'::regclass);
+
+
+--
+-- Name: motorcycle id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.motorcycle ALTER COLUMN id SET DEFAULT nextval('public.motorcycle_id_seq'::regclass);
+
+
+--
+-- Name: motorcycle_brand id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.motorcycle_brand ALTER COLUMN id SET DEFAULT nextval('public.motorcycle_brand_id_seq'::regclass);
+
+
+--
+-- Name: motorcycle_model id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.motorcycle_model ALTER COLUMN id SET DEFAULT nextval('public.motorcycle_model_id_seq'::regclass);
+
+
+--
+-- Name: payment_method id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.payment_method ALTER COLUMN id SET DEFAULT nextval('public.payment_method_id_seq'::regclass);
+
+
+--
+-- Name: permission id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.permission ALTER COLUMN id SET DEFAULT nextval('public.permission_id_seq'::regclass);
+
+
+--
+-- Name: product id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product ALTER COLUMN id SET DEFAULT nextval('public.product_id_seq'::regclass);
+
+
+--
+-- Name: product_brand id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product_brand ALTER COLUMN id SET DEFAULT nextval('public.product_brand_id_seq'::regclass);
+
+
+--
+-- Name: product_category id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product_category ALTER COLUMN id SET DEFAULT nextval('public.product_category_id_seq'::regclass);
+
+
+--
+-- Name: product_price_history id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product_price_history ALTER COLUMN id SET DEFAULT nextval('public.product_price_history_id_seq'::regclass);
+
+
+--
+-- Name: purchase_invoice id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_invoice ALTER COLUMN id SET DEFAULT nextval('public.purchase_invoice_id_seq'::regclass);
+
+
+--
+-- Name: purchase_invoice_line id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_invoice_line ALTER COLUMN id SET DEFAULT nextval('public.purchase_invoice_line_id_seq'::regclass);
+
+
+--
+-- Name: return_reason id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.return_reason ALTER COLUMN id SET DEFAULT nextval('public.return_reason_id_seq'::regclass);
+
+
+--
+-- Name: role id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.role ALTER COLUMN id SET DEFAULT nextval('public.role_id_seq'::regclass);
+
+
+--
+-- Name: sale_invoice id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice ALTER COLUMN id SET DEFAULT nextval('public.sale_invoice_id_seq'::regclass);
+
+
+--
+-- Name: sale_invoice_line id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice_line ALTER COLUMN id SET DEFAULT nextval('public.sale_invoice_line_id_seq'::regclass);
+
+
+--
+-- Name: service_order id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_order ALTER COLUMN id SET DEFAULT nextval('public.service_order_id_seq'::regclass);
+
+
+--
+-- Name: service_order_status_change id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_order_status_change ALTER COLUMN id SET DEFAULT nextval('public.service_order_status_change_id_seq'::regclass);
+
+
+--
+-- Name: service_type id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_type ALTER COLUMN id SET DEFAULT nextval('public.service_type_id_seq'::regclass);
+
+
+--
+-- Name: staff id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staff ALTER COLUMN id SET DEFAULT nextval('public.staff_id_seq'::regclass);
+
+
+--
+-- Name: staff_advance id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staff_advance ALTER COLUMN id SET DEFAULT nextval('public.staff_advance_id_seq'::regclass);
+
+
+--
+-- Name: staff_payout id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staff_payout ALTER COLUMN id SET DEFAULT nextval('public.staff_payout_id_seq'::regclass);
+
+
+--
+-- Name: supplier id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier ALTER COLUMN id SET DEFAULT nextval('public.supplier_id_seq'::regclass);
+
+
+--
+-- Name: supplier_payment id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_payment ALTER COLUMN id SET DEFAULT nextval('public.supplier_payment_id_seq'::regclass);
+
+
+--
+-- Name: supplier_return id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_return ALTER COLUMN id SET DEFAULT nextval('public.supplier_return_id_seq'::regclass);
+
+
+--
+-- Name: supplier_return_line id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_return_line ALTER COLUMN id SET DEFAULT nextval('public.supplier_return_line_id_seq'::regclass);
+
+
+--
+-- Name: warranty_claim id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.warranty_claim ALTER COLUMN id SET DEFAULT nextval('public.warranty_claim_id_seq'::regclass);
+
+
+--
+-- Name: additional_fault pk_additional_fault; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.additional_fault
+    ADD CONSTRAINT pk_additional_fault PRIMARY KEY (id);
+
+
+--
+-- Name: app_session pk_app_session; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.app_session
+    ADD CONSTRAINT pk_app_session PRIMARY KEY (id);
+
+
+--
+-- Name: app_user pk_app_user; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.app_user
+    ADD CONSTRAINT pk_app_user PRIMARY KEY (id);
+
+
+--
+-- Name: cash_withdrawal pk_cash_withdrawal; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_withdrawal
+    ADD CONSTRAINT pk_cash_withdrawal PRIMARY KEY (id);
+
+
+--
+-- Name: cash_withdrawal_reason pk_cash_withdrawal_reason; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_withdrawal_reason
+    ADD CONSTRAINT pk_cash_withdrawal_reason PRIMARY KEY (id);
+
+
+--
+-- Name: customer pk_customer; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer
+    ADD CONSTRAINT pk_customer PRIMARY KEY (id);
+
+
+--
+-- Name: customer_opening_balance pk_customer_opening_balance; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_opening_balance
+    ADD CONSTRAINT pk_customer_opening_balance PRIMARY KEY (id);
+
+
+--
+-- Name: customer_payment pk_customer_payment; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_payment
+    ADD CONSTRAINT pk_customer_payment PRIMARY KEY (id);
+
+
+--
+-- Name: customer_payment_allocation pk_customer_payment_allocation; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_payment_allocation
+    ADD CONSTRAINT pk_customer_payment_allocation PRIMARY KEY (id);
+
+
+--
+-- Name: customer_return pk_customer_return; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_return
+    ADD CONSTRAINT pk_customer_return PRIMARY KEY (id);
+
+
+--
+-- Name: customer_return_line pk_customer_return_line; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_return_line
+    ADD CONSTRAINT pk_customer_return_line PRIMARY KEY (id);
+
+
+--
+-- Name: discount pk_discount; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.discount
+    ADD CONSTRAINT pk_discount PRIMARY KEY (id);
+
+
+--
+-- Name: inventory_movement pk_inventory_movement; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventory_movement
+    ADD CONSTRAINT pk_inventory_movement PRIMARY KEY (id);
+
+
+--
+-- Name: motorcycle pk_motorcycle; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.motorcycle
+    ADD CONSTRAINT pk_motorcycle PRIMARY KEY (id);
+
+
+--
+-- Name: motorcycle_brand pk_motorcycle_brand; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.motorcycle_brand
+    ADD CONSTRAINT pk_motorcycle_brand PRIMARY KEY (id);
+
+
+--
+-- Name: motorcycle_model pk_motorcycle_model; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.motorcycle_model
+    ADD CONSTRAINT pk_motorcycle_model PRIMARY KEY (id);
+
+
+--
+-- Name: payment_method pk_payment_method; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.payment_method
+    ADD CONSTRAINT pk_payment_method PRIMARY KEY (id);
+
+
+--
+-- Name: permission pk_permission; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.permission
+    ADD CONSTRAINT pk_permission PRIMARY KEY (id);
+
+
+--
+-- Name: product pk_product; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product
+    ADD CONSTRAINT pk_product PRIMARY KEY (id);
+
+
+--
+-- Name: product_brand pk_product_brand; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product_brand
+    ADD CONSTRAINT pk_product_brand PRIMARY KEY (id);
+
+
+--
+-- Name: product_category pk_product_category; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product_category
+    ADD CONSTRAINT pk_product_category PRIMARY KEY (id);
+
+
+--
+-- Name: product_price_history pk_product_price_history; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product_price_history
+    ADD CONSTRAINT pk_product_price_history PRIMARY KEY (id);
+
+
+--
+-- Name: purchase_invoice pk_purchase_invoice; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_invoice
+    ADD CONSTRAINT pk_purchase_invoice PRIMARY KEY (id);
+
+
+--
+-- Name: purchase_invoice_line pk_purchase_invoice_line; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_invoice_line
+    ADD CONSTRAINT pk_purchase_invoice_line PRIMARY KEY (id);
+
+
+--
+-- Name: return_reason pk_return_reason; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.return_reason
+    ADD CONSTRAINT pk_return_reason PRIMARY KEY (id);
+
+
+--
+-- Name: role pk_role; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.role
+    ADD CONSTRAINT pk_role PRIMARY KEY (id);
+
+
+--
+-- Name: role_permission pk_role_permission; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.role_permission
+    ADD CONSTRAINT pk_role_permission PRIMARY KEY (role_id, permission_id);
+
+
+--
+-- Name: sale_invoice pk_sale_invoice; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice
+    ADD CONSTRAINT pk_sale_invoice PRIMARY KEY (id);
+
+
+--
+-- Name: sale_invoice_line pk_sale_invoice_line; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice_line
+    ADD CONSTRAINT pk_sale_invoice_line PRIMARY KEY (id);
+
+
+--
+-- Name: service_order pk_service_order; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_order
+    ADD CONSTRAINT pk_service_order PRIMARY KEY (id);
+
+
+--
+-- Name: service_order_status_change pk_service_order_status_change; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_order_status_change
+    ADD CONSTRAINT pk_service_order_status_change PRIMARY KEY (id);
+
+
+--
+-- Name: service_type pk_service_type; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_type
+    ADD CONSTRAINT pk_service_type PRIMARY KEY (id);
+
+
+--
+-- Name: staff pk_staff; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staff
+    ADD CONSTRAINT pk_staff PRIMARY KEY (id);
+
+
+--
+-- Name: staff_advance pk_staff_advance; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staff_advance
+    ADD CONSTRAINT pk_staff_advance PRIMARY KEY (id);
+
+
+--
+-- Name: staff_payout pk_staff_payout; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staff_payout
+    ADD CONSTRAINT pk_staff_payout PRIMARY KEY (id);
+
+
+--
+-- Name: supplier pk_supplier; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier
+    ADD CONSTRAINT pk_supplier PRIMARY KEY (id);
+
+
+--
+-- Name: supplier_payment pk_supplier_payment; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_payment
+    ADD CONSTRAINT pk_supplier_payment PRIMARY KEY (id);
+
+
+--
+-- Name: supplier_return pk_supplier_return; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_return
+    ADD CONSTRAINT pk_supplier_return PRIMARY KEY (id);
+
+
+--
+-- Name: supplier_return_line pk_supplier_return_line; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_return_line
+    ADD CONSTRAINT pk_supplier_return_line PRIMARY KEY (id);
+
+
+--
+-- Name: warranty_claim pk_warranty_claim; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.warranty_claim
+    ADD CONSTRAINT pk_warranty_claim PRIMARY KEY (id);
+
+
+--
+-- Name: ix_app_session_app_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_app_session_app_user_id ON public.app_session USING btree (app_user_id);
+
+
+--
+-- Name: ix_customer_name_trgm; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_customer_name_trgm ON public.customer USING gin (public.mirm_norm((name)::text) public.gin_trgm_ops);
+
+
+--
+-- Name: ix_product_name_trgm; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_product_name_trgm ON public.product USING gin (public.mirm_norm((name)::text) public.gin_trgm_ops);
+
+
+--
+-- Name: uq_additional_fault_id_service_order_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_additional_fault_id_service_order_id ON public.additional_fault USING btree (id, service_order_id);
+
+
+--
+-- Name: uq_additional_fault_service_order_id_fault_no; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_additional_fault_service_order_id_fault_no ON public.additional_fault USING btree (service_order_id, fault_no);
+
+
+--
+-- Name: uq_app_session_token_hash; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_app_session_token_hash ON public.app_session USING btree (token_hash);
+
+
+--
+-- Name: uq_app_user_staff_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_app_user_staff_id ON public.app_user USING btree (staff_id);
+
+
+--
+-- Name: uq_app_user_username; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_app_user_username ON public.app_user USING btree (lower((username)::text));
+
+
+--
+-- Name: uq_cash_withdrawal_reason_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_cash_withdrawal_reason_name ON public.cash_withdrawal_reason USING btree (lower((name)::text));
+
+
+--
+-- Name: uq_customer_national_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_customer_national_id ON public.customer USING btree (upper((national_id)::text));
+
+
+--
+-- Name: uq_customer_payment_allocation_payment_invoice; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_customer_payment_allocation_payment_invoice ON public.customer_payment_allocation USING btree (customer_payment_id, sale_invoice_id);
+
+
+--
+-- Name: uq_customer_payment_allocation_payment_opening_balance; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_customer_payment_allocation_payment_opening_balance ON public.customer_payment_allocation USING btree (customer_payment_id, customer_opening_balance_id);
+
+
+--
+-- Name: uq_customer_return_credit_note_number; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_customer_return_credit_note_number ON public.customer_return USING btree (credit_note_number);
+
+
+--
+-- Name: uq_customer_return_id_sale_invoice_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_customer_return_id_sale_invoice_id ON public.customer_return USING btree (id, sale_invoice_id);
+
+
+--
+-- Name: uq_customer_return_line_customer_return_id_line_no; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_customer_return_line_customer_return_id_line_no ON public.customer_return_line USING btree (customer_return_id, line_no);
+
+
+--
+-- Name: uq_customer_return_line_id_product_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_customer_return_line_id_product_id ON public.customer_return_line USING btree (id, product_id);
+
+
+--
+-- Name: uq_customer_return_line_return_id_invoice_line_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_customer_return_line_return_id_invoice_line_id ON public.customer_return_line USING btree (customer_return_id, sale_invoice_line_id);
+
+
+--
+-- Name: uq_discount_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_discount_name ON public.discount USING btree (lower((name)::text));
+
+
+--
+-- Name: uq_inventory_movement_customer_return_line_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_inventory_movement_customer_return_line_id ON public.inventory_movement USING btree (customer_return_line_id);
+
+
+--
+-- Name: uq_inventory_movement_purchase_invoice_line_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_inventory_movement_purchase_invoice_line_id ON public.inventory_movement USING btree (purchase_invoice_line_id);
+
+
+--
+-- Name: uq_inventory_movement_sale_invoice_line_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_inventory_movement_sale_invoice_line_id ON public.inventory_movement USING btree (sale_invoice_line_id);
+
+
+--
+-- Name: uq_inventory_movement_supplier_return_line_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_inventory_movement_supplier_return_line_id ON public.inventory_movement USING btree (supplier_return_line_id);
+
+
+--
+-- Name: uq_motorcycle_brand_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_motorcycle_brand_name ON public.motorcycle_brand USING btree (lower((name)::text));
+
+
+--
+-- Name: uq_motorcycle_model_motorcycle_brand_id_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_motorcycle_model_motorcycle_brand_id_name ON public.motorcycle_model USING btree (motorcycle_brand_id, lower((name)::text));
+
+
+--
+-- Name: uq_motorcycle_plate; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_motorcycle_plate ON public.motorcycle USING btree (upper((plate)::text));
+
+
+--
+-- Name: uq_payment_method_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_payment_method_name ON public.payment_method USING btree (lower((name)::text));
+
+
+--
+-- Name: uq_permission_code; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_permission_code ON public.permission USING btree (code);
+
+
+--
+-- Name: uq_product_barcode; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_product_barcode ON public.product USING btree (barcode);
+
+
+--
+-- Name: uq_product_brand_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_product_brand_name ON public.product_brand USING btree (lower((name)::text));
+
+
+--
+-- Name: uq_product_category_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_product_category_name ON public.product_category USING btree (lower((name)::text));
+
+
+--
+-- Name: uq_product_price_history_product_id_changed_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_product_price_history_product_id_changed_at ON public.product_price_history USING btree (product_id, changed_at);
+
+
+--
+-- Name: uq_purchase_invoice_id_supplier_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_purchase_invoice_id_supplier_id ON public.purchase_invoice USING btree (id, supplier_id);
+
+
+--
+-- Name: uq_purchase_invoice_line_id_invoice_id_product_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_purchase_invoice_line_id_invoice_id_product_id ON public.purchase_invoice_line USING btree (id, purchase_invoice_id, product_id);
+
+
+--
+-- Name: uq_purchase_invoice_line_id_product_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_purchase_invoice_line_id_product_id ON public.purchase_invoice_line USING btree (id, product_id);
+
+
+--
+-- Name: uq_purchase_invoice_line_purchase_invoice_id_line_no; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_purchase_invoice_line_purchase_invoice_id_line_no ON public.purchase_invoice_line USING btree (purchase_invoice_id, line_no);
+
+
+--
+-- Name: uq_purchase_invoice_supplier_id_invoice_number; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_purchase_invoice_supplier_id_invoice_number ON public.purchase_invoice USING btree (supplier_id, invoice_number);
+
+
+--
+-- Name: uq_return_reason_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_return_reason_name ON public.return_reason USING btree (lower((name)::text));
+
+
+--
+-- Name: uq_role_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_role_name ON public.role USING btree (lower((name)::text));
+
+
+--
+-- Name: uq_sale_invoice_id_service_order_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_sale_invoice_id_service_order_id ON public.sale_invoice USING btree (id, service_order_id);
+
+
+--
+-- Name: uq_sale_invoice_invoice_number; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_sale_invoice_invoice_number ON public.sale_invoice USING btree (invoice_number);
+
+
+--
+-- Name: uq_sale_invoice_line_id_product_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_sale_invoice_line_id_product_id ON public.sale_invoice_line USING btree (id, product_id);
+
+
+--
+-- Name: uq_sale_invoice_line_id_sale_invoice_id_product_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_sale_invoice_line_id_sale_invoice_id_product_id ON public.sale_invoice_line USING btree (id, sale_invoice_id, product_id);
+
+
+--
+-- Name: uq_sale_invoice_line_sale_invoice_id_line_no; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_sale_invoice_line_sale_invoice_id_line_no ON public.sale_invoice_line USING btree (sale_invoice_id, line_no);
+
+
+--
+-- Name: uq_sale_invoice_service_order_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_sale_invoice_service_order_id ON public.sale_invoice USING btree (service_order_id);
+
+
+--
+-- Name: uq_service_order_status_change_service_order_id_changed_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_service_order_status_change_service_order_id_changed_at ON public.service_order_status_change USING btree (service_order_id, changed_at);
+
+
+--
+-- Name: uq_service_type_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_service_type_name ON public.service_type USING btree (lower((name)::text));
+
+
+--
+-- Name: uq_staff_payout_id_staff_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_staff_payout_id_staff_id ON public.staff_payout USING btree (id, staff_id);
+
+
+--
+-- Name: uq_staff_payout_staff_id_period_start; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_staff_payout_staff_id_period_start ON public.staff_payout USING btree (staff_id, period_start);
+
+
+--
+-- Name: uq_supplier_return_id_purchase_invoice_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_supplier_return_id_purchase_invoice_id ON public.supplier_return USING btree (id, purchase_invoice_id);
+
+
+--
+-- Name: uq_supplier_return_line_id_product_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_supplier_return_line_id_product_id ON public.supplier_return_line USING btree (id, product_id);
+
+
+--
+-- Name: uq_supplier_return_line_return_id_invoice_line_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_supplier_return_line_return_id_invoice_line_id ON public.supplier_return_line USING btree (supplier_return_id, purchase_invoice_line_id);
+
+
+--
+-- Name: uq_supplier_return_line_supplier_return_id_line_no; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_supplier_return_line_supplier_return_id_line_no ON public.supplier_return_line USING btree (supplier_return_id, line_no);
+
+
+--
+-- Name: uq_warranty_claim_new_service_order_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_warranty_claim_new_service_order_id ON public.warranty_claim USING btree (new_service_order_id);
+
+
+--
+-- Name: uq_warranty_claim_part_sale_invoice_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_warranty_claim_part_sale_invoice_id ON public.warranty_claim USING btree (part_sale_invoice_id);
+
+
+--
+-- Name: inventory_movement tg_inventory_movement_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tg_inventory_movement_append_only BEFORE DELETE OR UPDATE ON public.inventory_movement FOR EACH ROW EXECUTE FUNCTION public.fn_inventory_movement_append_only();
+
+
+--
+-- Name: inventory_movement tg_inventory_movement_apply_stock; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tg_inventory_movement_apply_stock AFTER INSERT ON public.inventory_movement FOR EACH ROW EXECUTE FUNCTION public.fn_inventory_movement_apply_stock();
+
+
+--
+-- Name: product tg_product_guard_stock; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tg_product_guard_stock BEFORE INSERT OR UPDATE ON public.product FOR EACH ROW EXECUTE FUNCTION public.fn_product_guard_stock();
+
+
+--
+-- Name: service_order tg_service_order_check_responsible; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tg_service_order_check_responsible BEFORE INSERT OR UPDATE OF mechanic_staff_id, applied_commission_rate ON public.service_order FOR EACH ROW EXECUTE FUNCTION public.fn_service_order_check_responsible();
+
+
+--
+-- Name: additional_fault fk_additional_fault_service_order_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.additional_fault
+    ADD CONSTRAINT fk_additional_fault_service_order_id FOREIGN KEY (service_order_id) REFERENCES public.service_order(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: app_session fk_app_session_app_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.app_session
+    ADD CONSTRAINT fk_app_session_app_user_id FOREIGN KEY (app_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: app_user fk_app_user_role_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.app_user
+    ADD CONSTRAINT fk_app_user_role_id FOREIGN KEY (role_id) REFERENCES public.role(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: app_user fk_app_user_staff_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.app_user
+    ADD CONSTRAINT fk_app_user_staff_id FOREIGN KEY (staff_id) REFERENCES public.staff(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: cash_withdrawal fk_cash_withdrawal_cash_withdrawal_reason_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_withdrawal
+    ADD CONSTRAINT fk_cash_withdrawal_cash_withdrawal_reason_id FOREIGN KEY (cash_withdrawal_reason_id) REFERENCES public.cash_withdrawal_reason(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: cash_withdrawal fk_cash_withdrawal_withdrawn_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_withdrawal
+    ADD CONSTRAINT fk_cash_withdrawal_withdrawn_by_user_id FOREIGN KEY (withdrawn_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: customer_opening_balance fk_customer_opening_balance_customer_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_opening_balance
+    ADD CONSTRAINT fk_customer_opening_balance_customer_id FOREIGN KEY (customer_id) REFERENCES public.customer(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: customer_opening_balance fk_customer_opening_balance_registered_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_opening_balance
+    ADD CONSTRAINT fk_customer_opening_balance_registered_by_user_id FOREIGN KEY (registered_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: customer_payment_allocation fk_customer_payment_allocation_customer_opening_balance_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_payment_allocation
+    ADD CONSTRAINT fk_customer_payment_allocation_customer_opening_balance_id FOREIGN KEY (customer_opening_balance_id) REFERENCES public.customer_opening_balance(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: customer_payment_allocation fk_customer_payment_allocation_customer_payment_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_payment_allocation
+    ADD CONSTRAINT fk_customer_payment_allocation_customer_payment_id FOREIGN KEY (customer_payment_id) REFERENCES public.customer_payment(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: customer_payment_allocation fk_customer_payment_allocation_sale_invoice_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_payment_allocation
+    ADD CONSTRAINT fk_customer_payment_allocation_sale_invoice_id FOREIGN KEY (sale_invoice_id) REFERENCES public.sale_invoice(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: customer_payment fk_customer_payment_payment_method_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_payment
+    ADD CONSTRAINT fk_customer_payment_payment_method_id FOREIGN KEY (payment_method_id) REFERENCES public.payment_method(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: customer_payment fk_customer_payment_received_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_payment
+    ADD CONSTRAINT fk_customer_payment_received_by_user_id FOREIGN KEY (received_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: customer_return_line fk_customer_return_line_customer_return; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_return_line
+    ADD CONSTRAINT fk_customer_return_line_customer_return FOREIGN KEY (customer_return_id, sale_invoice_id) REFERENCES public.customer_return(id, sale_invoice_id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: customer_return_line fk_customer_return_line_sale_invoice_line; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_return_line
+    ADD CONSTRAINT fk_customer_return_line_sale_invoice_line FOREIGN KEY (sale_invoice_line_id, sale_invoice_id, product_id) REFERENCES public.sale_invoice_line(id, sale_invoice_id, product_id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: customer_return fk_customer_return_registered_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_return
+    ADD CONSTRAINT fk_customer_return_registered_by_user_id FOREIGN KEY (registered_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: customer_return fk_customer_return_return_reason_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_return
+    ADD CONSTRAINT fk_customer_return_return_reason_id FOREIGN KEY (return_reason_id) REFERENCES public.return_reason(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: customer_return fk_customer_return_sale_invoice_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.customer_return
+    ADD CONSTRAINT fk_customer_return_sale_invoice_id FOREIGN KEY (sale_invoice_id) REFERENCES public.sale_invoice(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: inventory_movement fk_inventory_movement_customer_return_line; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventory_movement
+    ADD CONSTRAINT fk_inventory_movement_customer_return_line FOREIGN KEY (customer_return_line_id, product_id) REFERENCES public.customer_return_line(id, product_id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: inventory_movement fk_inventory_movement_product_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventory_movement
+    ADD CONSTRAINT fk_inventory_movement_product_id FOREIGN KEY (product_id) REFERENCES public.product(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: inventory_movement fk_inventory_movement_purchase_invoice_line; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventory_movement
+    ADD CONSTRAINT fk_inventory_movement_purchase_invoice_line FOREIGN KEY (purchase_invoice_line_id, product_id) REFERENCES public.purchase_invoice_line(id, product_id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: inventory_movement fk_inventory_movement_registered_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventory_movement
+    ADD CONSTRAINT fk_inventory_movement_registered_by_user_id FOREIGN KEY (registered_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: inventory_movement fk_inventory_movement_sale_invoice_line; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventory_movement
+    ADD CONSTRAINT fk_inventory_movement_sale_invoice_line FOREIGN KEY (sale_invoice_line_id, product_id) REFERENCES public.sale_invoice_line(id, product_id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: inventory_movement fk_inventory_movement_supplier_return_line; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventory_movement
+    ADD CONSTRAINT fk_inventory_movement_supplier_return_line FOREIGN KEY (supplier_return_line_id, product_id) REFERENCES public.supplier_return_line(id, product_id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: inventory_movement fk_inventory_movement_warranty_claim_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.inventory_movement
+    ADD CONSTRAINT fk_inventory_movement_warranty_claim_id FOREIGN KEY (warranty_claim_id) REFERENCES public.warranty_claim(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: motorcycle fk_motorcycle_customer_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.motorcycle
+    ADD CONSTRAINT fk_motorcycle_customer_id FOREIGN KEY (customer_id) REFERENCES public.customer(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: motorcycle_model fk_motorcycle_model_motorcycle_brand_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.motorcycle_model
+    ADD CONSTRAINT fk_motorcycle_model_motorcycle_brand_id FOREIGN KEY (motorcycle_brand_id) REFERENCES public.motorcycle_brand(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: motorcycle fk_motorcycle_motorcycle_model_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.motorcycle
+    ADD CONSTRAINT fk_motorcycle_motorcycle_model_id FOREIGN KEY (motorcycle_model_id) REFERENCES public.motorcycle_model(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: product_price_history fk_product_price_history_changed_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product_price_history
+    ADD CONSTRAINT fk_product_price_history_changed_by_user_id FOREIGN KEY (changed_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: product_price_history fk_product_price_history_product_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product_price_history
+    ADD CONSTRAINT fk_product_price_history_product_id FOREIGN KEY (product_id) REFERENCES public.product(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: product fk_product_product_brand_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product
+    ADD CONSTRAINT fk_product_product_brand_id FOREIGN KEY (product_brand_id) REFERENCES public.product_brand(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: product fk_product_product_category_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product
+    ADD CONSTRAINT fk_product_product_category_id FOREIGN KEY (product_category_id) REFERENCES public.product_category(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: purchase_invoice_line fk_purchase_invoice_line_product_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_invoice_line
+    ADD CONSTRAINT fk_purchase_invoice_line_product_id FOREIGN KEY (product_id) REFERENCES public.product(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: purchase_invoice_line fk_purchase_invoice_line_purchase_invoice_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_invoice_line
+    ADD CONSTRAINT fk_purchase_invoice_line_purchase_invoice_id FOREIGN KEY (purchase_invoice_id) REFERENCES public.purchase_invoice(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: purchase_invoice fk_purchase_invoice_received_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_invoice
+    ADD CONSTRAINT fk_purchase_invoice_received_by_user_id FOREIGN KEY (received_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: purchase_invoice fk_purchase_invoice_supplier_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_invoice
+    ADD CONSTRAINT fk_purchase_invoice_supplier_id FOREIGN KEY (supplier_id) REFERENCES public.supplier(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: role_permission fk_role_permission_permission_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.role_permission
+    ADD CONSTRAINT fk_role_permission_permission_id FOREIGN KEY (permission_id) REFERENCES public.permission(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: role_permission fk_role_permission_role_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.role_permission
+    ADD CONSTRAINT fk_role_permission_role_id FOREIGN KEY (role_id) REFERENCES public.role(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: sale_invoice fk_sale_invoice_created_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice
+    ADD CONSTRAINT fk_sale_invoice_created_by_user_id FOREIGN KEY (created_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: sale_invoice fk_sale_invoice_credit_authorized_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice
+    ADD CONSTRAINT fk_sale_invoice_credit_authorized_by_user_id FOREIGN KEY (credit_authorized_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: sale_invoice fk_sale_invoice_customer_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice
+    ADD CONSTRAINT fk_sale_invoice_customer_id FOREIGN KEY (customer_id) REFERENCES public.customer(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: sale_invoice_line fk_sale_invoice_line_additional_fault_id_service_order_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice_line
+    ADD CONSTRAINT fk_sale_invoice_line_additional_fault_id_service_order_id FOREIGN KEY (additional_fault_id, service_order_id) REFERENCES public.additional_fault(id, service_order_id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: sale_invoice_line fk_sale_invoice_line_discount_authorized_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice_line
+    ADD CONSTRAINT fk_sale_invoice_line_discount_authorized_by_user_id FOREIGN KEY (discount_authorized_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: sale_invoice_line fk_sale_invoice_line_discount_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice_line
+    ADD CONSTRAINT fk_sale_invoice_line_discount_id FOREIGN KEY (discount_id) REFERENCES public.discount(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: sale_invoice_line fk_sale_invoice_line_product_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice_line
+    ADD CONSTRAINT fk_sale_invoice_line_product_id FOREIGN KEY (product_id) REFERENCES public.product(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: sale_invoice_line fk_sale_invoice_line_sale_invoice_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice_line
+    ADD CONSTRAINT fk_sale_invoice_line_sale_invoice_id FOREIGN KEY (sale_invoice_id) REFERENCES public.sale_invoice(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: sale_invoice_line fk_sale_invoice_line_sale_invoice_id_service_order_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice_line
+    ADD CONSTRAINT fk_sale_invoice_line_sale_invoice_id_service_order_id FOREIGN KEY (sale_invoice_id, service_order_id) REFERENCES public.sale_invoice(id, service_order_id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: sale_invoice_line fk_sale_invoice_line_service_type_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice_line
+    ADD CONSTRAINT fk_sale_invoice_line_service_type_id FOREIGN KEY (service_type_id) REFERENCES public.service_type(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: sale_invoice fk_sale_invoice_service_order_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice
+    ADD CONSTRAINT fk_sale_invoice_service_order_id FOREIGN KEY (service_order_id) REFERENCES public.service_order(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: service_order fk_service_order_mechanic_staff_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_order
+    ADD CONSTRAINT fk_service_order_mechanic_staff_id FOREIGN KEY (mechanic_staff_id) REFERENCES public.staff(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: service_order fk_service_order_motorcycle_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_order
+    ADD CONSTRAINT fk_service_order_motorcycle_id FOREIGN KEY (motorcycle_id) REFERENCES public.motorcycle(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: service_order fk_service_order_staff_payout_id_mechanic_staff_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_order
+    ADD CONSTRAINT fk_service_order_staff_payout_id_mechanic_staff_id FOREIGN KEY (staff_payout_id, mechanic_staff_id) REFERENCES public.staff_payout(id, staff_id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: service_order_status_change fk_service_order_status_change_registered_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_order_status_change
+    ADD CONSTRAINT fk_service_order_status_change_registered_by_user_id FOREIGN KEY (registered_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: service_order_status_change fk_service_order_status_change_service_order_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_order_status_change
+    ADD CONSTRAINT fk_service_order_status_change_service_order_id FOREIGN KEY (service_order_id) REFERENCES public.service_order(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: staff_advance fk_staff_advance_given_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staff_advance
+    ADD CONSTRAINT fk_staff_advance_given_by_user_id FOREIGN KEY (given_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: staff_advance fk_staff_advance_staff_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staff_advance
+    ADD CONSTRAINT fk_staff_advance_staff_id FOREIGN KEY (staff_id) REFERENCES public.staff(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: staff_advance fk_staff_advance_staff_payout_id_staff_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staff_advance
+    ADD CONSTRAINT fk_staff_advance_staff_payout_id_staff_id FOREIGN KEY (staff_payout_id, staff_id) REFERENCES public.staff_payout(id, staff_id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: staff_payout fk_staff_payout_paid_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staff_payout
+    ADD CONSTRAINT fk_staff_payout_paid_by_user_id FOREIGN KEY (paid_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: staff_payout fk_staff_payout_staff_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staff_payout
+    ADD CONSTRAINT fk_staff_payout_staff_id FOREIGN KEY (staff_id) REFERENCES public.staff(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: supplier_payment fk_supplier_payment_purchase_invoice_id_supplier_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_payment
+    ADD CONSTRAINT fk_supplier_payment_purchase_invoice_id_supplier_id FOREIGN KEY (purchase_invoice_id, supplier_id) REFERENCES public.purchase_invoice(id, supplier_id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: supplier_payment fk_supplier_payment_supplier_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_payment
+    ADD CONSTRAINT fk_supplier_payment_supplier_id FOREIGN KEY (supplier_id) REFERENCES public.supplier(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: supplier_return_line fk_supplier_return_line_purchase_invoice_line; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_return_line
+    ADD CONSTRAINT fk_supplier_return_line_purchase_invoice_line FOREIGN KEY (purchase_invoice_line_id, purchase_invoice_id, product_id) REFERENCES public.purchase_invoice_line(id, purchase_invoice_id, product_id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: supplier_return_line fk_supplier_return_line_supplier_return; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_return_line
+    ADD CONSTRAINT fk_supplier_return_line_supplier_return FOREIGN KEY (supplier_return_id, purchase_invoice_id) REFERENCES public.supplier_return(id, purchase_invoice_id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: supplier_return fk_supplier_return_purchase_invoice_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_return
+    ADD CONSTRAINT fk_supplier_return_purchase_invoice_id FOREIGN KEY (purchase_invoice_id) REFERENCES public.purchase_invoice(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: supplier_return fk_supplier_return_registered_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_return
+    ADD CONSTRAINT fk_supplier_return_registered_by_user_id FOREIGN KEY (registered_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: supplier_return fk_supplier_return_return_reason_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_return
+    ADD CONSTRAINT fk_supplier_return_return_reason_id FOREIGN KEY (return_reason_id) REFERENCES public.return_reason(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: warranty_claim fk_warranty_claim_attended_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.warranty_claim
+    ADD CONSTRAINT fk_warranty_claim_attended_by_user_id FOREIGN KEY (attended_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: warranty_claim fk_warranty_claim_new_service_order_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.warranty_claim
+    ADD CONSTRAINT fk_warranty_claim_new_service_order_id FOREIGN KEY (new_service_order_id) REFERENCES public.service_order(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: warranty_claim fk_warranty_claim_original_service_order_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.warranty_claim
+    ADD CONSTRAINT fk_warranty_claim_original_service_order_id FOREIGN KEY (original_service_order_id) REFERENCES public.service_order(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: warranty_claim fk_warranty_claim_part_sale_invoice_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.warranty_claim
+    ADD CONSTRAINT fk_warranty_claim_part_sale_invoice_id FOREIGN KEY (part_sale_invoice_id) REFERENCES public.sale_invoice(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- PostgreSQL database dump complete
+--
+
+

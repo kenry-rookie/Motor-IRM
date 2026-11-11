@@ -366,8 +366,9 @@ export function Dialog({
           {title}
         </h2>
         <button
+          type="button"
           onClick={onClose}
-          className="grid h-8 w-8 place-items-center rounded-md text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100"
+          className="grid h-10 w-10 place-items-center rounded-md text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100"
           aria-label="Cerrar"
         >
           <svg
