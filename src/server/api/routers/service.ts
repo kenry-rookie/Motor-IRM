@@ -8,6 +8,7 @@ import { buildProductLines, createInvoice, type LineDraft, zProductLine, zTerms 
 import {
   FAULT_DECISIONS,
   FINAL_SERVICE_STATUSES,
+  FINISHED_SERVICE_STATUSES,
   PART_PAID_BY,
   SERVICE_ORDER_STATUSES,
   type ServiceOrderStatus,
@@ -470,7 +471,10 @@ export const serviceRouter = createTRPCRouter({
     )
     .mutation(({ ctx, input }) =>
       ctx.db.$transaction(async (tx) => {
-        await assertOpen(tx, input.serviceOrderId);
+        const status = await assertOpen(tx, input.serviceOrderId);
+        if (FINISHED_SERVICE_STATUSES.includes(status)) {
+          throw fail("Una orden terminada no se puede cancelar: el trabajo ya se hizo. Cóbrela en caja.");
+        }
         const order = await tx.serviceOrder.update({
           where: { id: input.serviceOrderId },
           data: { cancellationFee: input.cancellationFee ?? null },

@@ -151,7 +151,7 @@ export function ReceiveForm({ onDone }: { onDone: (orderId: number) => void }) {
             <Field label="Nombre" error={errs.name}>
               <Input autoFocus value={d.newCustomer.name} onChange={(e) => set({ newCustomer: { ...d.newCustomer!, name: e.target.value } })} />
             </Field>
-            <Field label="Teléfono" error={errs.phone} hint="8 dígitos; extranjero con +">
+            <Field label="Teléfono" error={errs.phone}>
               <PhoneInput value={d.newCustomer.phone} onValue={(v) => set({ newCustomer: { ...d.newCustomer!, phone: v } })} />
             </Field>
             <Button type="button" variant="ghost" className="self-start sm:mt-6" onClick={() => set({ newCustomer: null })}>
@@ -183,11 +183,11 @@ export function ReceiveForm({ onDone }: { onDone: (orderId: number) => void }) {
           <MotorcyclePicker motorcycles={d.customer?.motorcycles ?? []} value={d.moto} onChange={(moto) => set({ moto })} errors={errs} />
           <div className="grid gap-3 sm:grid-cols-2">
             {d.moto.kind === "new" && (
-              <Field label="Número de chasis (opcional)" error={errs.chassisNumber} hint="Viene en el chasis o en la circulación">
+              <Field label="Número de chasis (opcional)" error={errs.chassisNumber}>
                 <Input value={d.chassis} onChange={(e) => set({ chassis: e.target.value.toUpperCase() })} />
               </Field>
             )}
-            <Field label="Kilometraje (opcional)" error={errs.odometerKm} hint="Las motos nuevas sin circular no tienen">
+            <Field label="Kilometraje (opcional)" error={errs.odometerKm}>
               <Input inputMode="numeric" value={d.km} onChange={(e) => set({ km: e.target.value.replace(/\D/g, "").slice(0, 7) })} />
             </Field>
           </div>
@@ -217,12 +217,12 @@ export function ReceiveForm({ onDone }: { onDone: (orderId: number) => void }) {
         )}
         {errs.items && <p className="text-bad-fg text-xs">{errs.items}</p>}
         <ServiceCatalogPicker selected={d.items.map((i) => i.id)} onToggle={toggle} />
-        <Field label="Nota del cliente (opcional)" hint="Lo que dice el cliente, por ejemplo «suena al frenar». No reemplaza al trabajo.">
+        <Field label="Nota del cliente (opcional)">
           <Textarea value={d.note} onChange={(e) => set({ note: e.target.value })} />
         </Field>
       </section>
 
-      <Field label="4. Responsable" hint="Mecánico o dueño. Si lo repara un dueño, no hay comisión.">
+      <Field label="4. Responsable">
         <ResponsibleSelect value={d.responsible} onChange={(responsible) => set({ responsible })} />
       </Field>
 

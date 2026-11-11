@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { confirmDialog } from "~/app/_components/confirm";
 import { Alert, Button, Card, cx, Dialog, Field, Input, PageTitle } from "~/app/_components/ui";
 import { errorMessage } from "~/lib/errors";
 import { api } from "~/trpc/react";
@@ -66,8 +67,8 @@ export default function PermissionsPage() {
             type="button"
             role="tab"
             aria-selected={role?.id === r.id}
-            onClick={() => {
-              if (dirty && !window.confirm("Hay cambios sin guardar en este perfil. ¿Descartarlos?")) return;
+            onClick={async () => {
+              if (dirty && !(await confirmDialog("Hay cambios sin guardar en este perfil. ¿Descartarlos?", { title: "Cambios sin guardar", confirmLabel: "Sí, descartar", danger: true }))) return;
               setRoleId(r.id);
               setSaved(false);
             }}

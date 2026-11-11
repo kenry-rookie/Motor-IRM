@@ -98,7 +98,7 @@ function PersonForm({ person, onDone }: { person: Person | null; onDone: () => v
       </Field>
       <Field
         label="Comisión (% de la mano de obra)"
-        hint={isOwner ? "Un dueño no cobra comisión." : "Vacío = no se le paga por el sistema (por ejemplo, el mecánico al 100 %)."}
+        hint={isOwner ? "Un dueño no cobra comisión." : "Vacío o 100 = no se le paga por el sistema (como el mecánico al 100 %, igual que un dueño)."}
       >
         <Input
           inputMode="decimal"
@@ -128,7 +128,7 @@ function PersonForm({ person, onDone }: { person: Person | null; onDone: () => v
             phone: f.phone,
             kind: f.kind,
             canRepair: f.canRepair,
-            commissionRate: !isOwner && f.percent ? (Number(f.percent) / 100).toFixed(4) : null,
+            commissionRate: !isOwner && f.percent && Number(f.percent) < 100 ? (Number(f.percent) / 100).toFixed(4) : null,
             active: f.active,
           })
         }

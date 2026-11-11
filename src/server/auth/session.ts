@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { DbClient } from "~/server/db";
 
 export const SESSION_COOKIE = "mirm_session";
-/** A work day plus margin: the counter PC stays logged in during the shift. */
+/** Longest a session lives on the server, even if the window is never closed. */
 export const SESSION_TTL_HOURS = 14;
 
 export const hashToken = (token: string) =>
@@ -19,9 +19,18 @@ export function readSessionToken(headers: Headers): string | null {
   return null;
 }
 
-export function sessionCookie(token: string, expires: Date): string {
-  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires.toUTCString()}${secure}`;
+/**
+ * A browser-SESSION cookie (no Expires/Max-Age): the browser forgets it when the
+ * app is closed (Cmd+Q), so the next person has to log in. The 14 h limit
+ * still applies on the server side (app_session.expires_at), for a window left
+ * open all day. `expires` is kept in the signature for that reason only.
+ */
+export function sessionCookie(token: string, _expires?: Date): string {
+  // The system runs on http://localhost (no HTTPS), where a "Secure" cookie is
+  // rejected by some browsers (Safari) and the login would silently fail in
+  // production mode. Turn it on only when the app is served over HTTPS.
+  const secure = process.env.COOKIE_SECURE === "true" ? "; Secure" : "";
+  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax${secure}`;
 }
 
 export const clearedSessionCookie = () =>

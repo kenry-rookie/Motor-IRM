@@ -18,7 +18,7 @@ import {
   zRate,
 
 } from "~/server/domain/constants";
-import { recordMovement } from "~/server/domain/inventory";
+import { lastCost, recordMovement } from "~/server/domain/inventory";
 import { D, type Dec, round2, sum, ZERO } from "~/server/domain/money";
 
 type Tx = Prisma.TransactionClient;
@@ -28,14 +28,24 @@ type Tx = Prisma.TransactionClient;
 //  (service.close).
 // ---------------------------------------------------------------------------
 
-export const zProductLine = z.object({
-  productId: zId,
-  quantity: zQty,
-  /** A discount from the catalog (no extra authorization needed)… */
-  discountId: zId.optional(),
-  /** …or a manual amount in córdobas (needs ventas.autorizar_descuento). */
-  discountAmount: zMoney.optional(),
-});
+export const zProductLine = z
+  .object({
+    productId: zId,
+    quantity: zQty,
+    /**
+     * Caja (DEC-052): the price per unit agreed with the customer, when it is LOWER
+     * than the list price. Never higher, never below the last cost; lowering it
+     * needs ventas.autorizar_descuento (or an authorizer's key).
+     */
+    unitPrice: zMoney.optional(),
+    /** A discount from the catalog (no extra authorization needed)… */
+    discountId: zId.optional(),
+    /** …or a manual amount in córdobas (needs ventas.autorizar_descuento). */
+    discountAmount: zMoney.optional(),
+  })
+  .refine((l) => [l.unitPrice, l.discountId, l.discountAmount].filter((x) => x !== undefined).length <= 1, {
+    message: "Una línea lleva un precio rebajado o un descuento, no ambos.",
+  });
 
 export const zTerms = z
   .object({
@@ -102,7 +112,15 @@ export async function buildProductLines(
     const gross = unitPrice.times(line.quantity);
     let discountAmount = ZERO;
     let discountAuthorizedByUserId: number | undefined;
-    if (line.discountId) {
+    if (line.unitPrice !== undefined) {
+      const agreed = D(line.unitPrice);
+      if (agreed.gt(unitPrice)) throw fail(`El precio de «${product.name}» no puede ser mayor que su precio de venta.`);
+      if (agreed.lt(unitPrice)) {
+        discountAuthorizer ??= await resolveAuthorizer(tx, user, "ventas.autorizar_descuento", authorizer);
+        discountAmount = unitPrice.minus(agreed).times(line.quantity);
+        discountAuthorizedByUserId = discountAuthorizer;
+      }
+    } else if (line.discountId) {
       const discount = await tx.discount.findUnique({ where: { id: line.discountId } });
       if (!discount?.active) throw fail("El descuento no existe o está inactivo.");
       discountAmount =
@@ -113,6 +131,10 @@ export async function buildProductLines(
       discountAuthorizedByUserId = discountAuthorizer;
     }
     if (discountAmount.gt(gross)) throw fail(`El descuento de «${product.name}» es mayor que el total de la línea.`);
+    // Same rule as trigger tg_sale_invoice_line_min_price, checked first for a message with the name.
+    if (discountAmount.gt(0) && gross.minus(discountAmount).lt((await lastCost(tx, product.id)).times(line.quantity))) {
+      throw fail(`«${product.name}» no se puede rebajar por debajo de su costo.`);
+    }
     drafts.push({
       lineType: "PRODUCTO",
       productId: product.id,

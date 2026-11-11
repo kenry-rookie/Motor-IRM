@@ -34,7 +34,6 @@ export default function InventoryPage() {
     <>
       <PageTitle
         title="Inventario"
-        subtitle="Existencias calculadas del kardex (no se editan a mano)"
         actions={canManage && <Button onClick={() => setCreating(true)}>+ Nuevo producto</Button>}
       />
       <Card>

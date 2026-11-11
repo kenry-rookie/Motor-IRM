@@ -141,3 +141,25 @@ src/
 tests/                          # pruebas de integración (Vitest + PostgreSQL real)
 Documentation/                  # análisis y diseño
 ```
+
+---
+## App de escritorio (Mac)
+
+Para usar el sistema sin `npm run dev` ni escribir direcciones en el navegador.
+
+**Una sola vez** (con Docker Desktop abierto):
+
+```bash
+npm run app:install      # compila la versión de producción y crea el ícono "Motor IRM" en el Escritorio
+```
+
+Después: **doble clic en "Motor IRM"**. El lanzador (`scripts/desktop/motor-irm.sh`) abre Docker si hace falta, levanta la base, aplica migraciones pendientes (`migrate deploy`, nunca borra datos), recompila si el código cambió y abre el sistema en su propia ventana (Chrome/Edge/Brave en modo app; si no hay, el navegador por defecto).
+
+| Comando | Qué hace |
+| --- | --- |
+| `npm run app:stop` | Detiene el servidor (la base sigue encendida) |
+| `npm run app:build` | Recompila a mano la versión de producción (`.next-prod/`) |
+
+- Corre en `http://localhost:3100`; el puerto 3000 queda para `npm run dev`. Las dos versiones usan carpetas distintas (`.next` y `.next-prod`) y no se pisan.
+- Registro de errores: `~/Library/Logs/MotorIRM/servidor.log`.
+- Si `schema.prisma` cambia (nuevo `git pull`, otra rama): `npm run db:migrate && npx prisma generate`. Sin eso aparecen errores como *Unknown field* o *relation … does not exist*.

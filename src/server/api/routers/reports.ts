@@ -50,13 +50,21 @@ export const reportsRouter = createTRPCRouter({
                  count(DISTINCT si.id)::int AS invoices
             FROM sale_invoice si JOIN sale_invoice_line l ON l.sale_invoice_id = si.id
            WHERE (si.created_at AT TIME ZONE 'America/Managua')::date BETWEEN ${from}::date AND ${to}::date
+             AND NOT EXISTS (SELECT 1 FROM sale_invoice_void v WHERE v.sale_invoice_id = si.id)
            GROUP BY 1
         ),
         pay AS (
-          SELECT date_trunc(${g}::text, (cp.paid_at AT TIME ZONE 'America/Managua'))::date AS bucket,
-                 sum(CASE WHEN cp.currency = 'USD' THEN round(cp.amount * cp.exchange_rate, 2) ELSE cp.amount END) AS received
-            FROM customer_payment cp
-           WHERE (cp.paid_at AT TIME ZONE 'America/Managua')::date BETWEEN ${from}::date AND ${to}::date
+          -- Money in, minus the cash given back when an invoice was voided (DEC-055).
+          SELECT bucket, sum(amount) AS received FROM (
+            SELECT date_trunc(${g}::text, (cp.paid_at AT TIME ZONE 'America/Managua'))::date AS bucket,
+                   CASE WHEN cp.currency = 'USD' THEN round(cp.amount * cp.exchange_rate, 2) ELSE cp.amount END AS amount
+              FROM customer_payment cp
+             WHERE (cp.paid_at AT TIME ZONE 'America/Managua')::date BETWEEN ${from}::date AND ${to}::date
+            UNION ALL
+            SELECT date_trunc(${g}::text, (v.voided_at AT TIME ZONE 'America/Managua'))::date, -v.refund_amount
+              FROM sale_invoice_void v
+             WHERE (v.voided_at AT TIME ZONE 'America/Managua')::date BETWEEN ${from}::date AND ${to}::date
+          ) x
            GROUP BY 1
         ),
         delivered AS (
@@ -84,6 +92,7 @@ export const reportsRouter = createTRPCRouter({
           JOIN product p ON p.id = l.product_id
          WHERE l.line_type = 'PRODUCTO'
            AND (si.created_at AT TIME ZONE 'America/Managua')::date BETWEEN ${from}::date AND ${to}::date
+           AND NOT EXISTS (SELECT 1 FROM sale_invoice_void v WHERE v.sale_invoice_id = si.id)
          GROUP BY p.id, p.name
          ORDER BY sum(l.quantity * l.unit_price - l.discount_amount) DESC
          LIMIT 8`;
@@ -95,13 +104,18 @@ export const reportsRouter = createTRPCRouter({
         >`
           SELECT
             (SELECT coalesce(sum(l.quantity * l.unit_price - l.discount_amount), 0) FROM sale_invoice si JOIN sale_invoice_line l ON l.sale_invoice_id = si.id
-              WHERE (si.created_at AT TIME ZONE 'America/Managua')::date BETWEEN ${f}::date AND ${t}::date)::text AS sales,
+              WHERE (si.created_at AT TIME ZONE 'America/Managua')::date BETWEEN ${f}::date AND ${t}::date
+                AND NOT EXISTS (SELECT 1 FROM sale_invoice_void v WHERE v.sale_invoice_id = si.id))::text AS sales,
             (SELECT count(*) FROM sale_invoice si
-              WHERE (si.created_at AT TIME ZONE 'America/Managua')::date BETWEEN ${f}::date AND ${t}::date)::int AS invoices,
+              WHERE (si.created_at AT TIME ZONE 'America/Managua')::date BETWEEN ${f}::date AND ${t}::date
+                AND NOT EXISTS (SELECT 1 FROM sale_invoice_void v WHERE v.sale_invoice_id = si.id))::int AS invoices,
             (SELECT coalesce(sum(l.quantity * l.unit_price - l.discount_amount), 0) FROM sale_invoice si JOIN sale_invoice_line l ON l.sale_invoice_id = si.id
-              WHERE l.line_type = 'MANO_OBRA' AND (si.created_at AT TIME ZONE 'America/Managua')::date BETWEEN ${f}::date AND ${t}::date)::text AS labor,
-            (SELECT coalesce(sum(CASE WHEN currency = 'USD' THEN round(amount * exchange_rate, 2) ELSE amount END), 0) FROM customer_payment
-              WHERE (paid_at AT TIME ZONE 'America/Managua')::date BETWEEN ${f}::date AND ${t}::date)::text AS received,
+              WHERE l.line_type = 'MANO_OBRA' AND (si.created_at AT TIME ZONE 'America/Managua')::date BETWEEN ${f}::date AND ${t}::date
+                AND NOT EXISTS (SELECT 1 FROM sale_invoice_void v WHERE v.sale_invoice_id = si.id))::text AS labor,
+            ((SELECT coalesce(sum(CASE WHEN currency = 'USD' THEN round(amount * exchange_rate, 2) ELSE amount END), 0) FROM customer_payment
+              WHERE (paid_at AT TIME ZONE 'America/Managua')::date BETWEEN ${f}::date AND ${t}::date)
+             - (SELECT coalesce(sum(refund_amount), 0) FROM sale_invoice_void
+              WHERE (voided_at AT TIME ZONE 'America/Managua')::date BETWEEN ${f}::date AND ${t}::date))::text AS received,
             (SELECT coalesce(sum(amount), 0) FROM cash_withdrawal WHERE withdrawn_on BETWEEN ${f}::date AND ${t}::date)::text AS withdrawals,
             (SELECT count(*) FROM service_order_status_change WHERE status = 'ENTREGADA'
               AND (changed_at AT TIME ZONE 'America/Managua')::date BETWEEN ${f}::date AND ${t}::date)::int AS delivered`;
@@ -121,9 +135,11 @@ export const reportsRouter = createTRPCRouter({
           SELECT (SELECT coalesce(sum(CASE WHEN currency = 'USD' THEN round(amount * exchange_rate, 2) ELSE amount END), 0)
                     FROM customer_payment WHERE (paid_at AT TIME ZONE 'America/Managua')::date BETWEEN ${from}::date AND ${to}::date) AS received,
                  (SELECT coalesce(sum(amount), 0) FROM cash_withdrawal WHERE withdrawn_on BETWEEN ${from}::date AND ${to}::date) AS withdrawals,
-                 (SELECT coalesce(sum(amount), 0) FROM staff_advance WHERE given_on BETWEEN ${from}::date AND ${to}::date) AS advances
+                 (SELECT coalesce(sum(amount), 0) FROM staff_advance WHERE given_on BETWEEN ${from}::date AND ${to}::date) AS advances,
+                 (SELECT coalesce(sum(refund_amount), 0) FROM sale_invoice_void
+                   WHERE (voided_at AT TIME ZONE 'America/Managua')::date BETWEEN ${from}::date AND ${to}::date) AS refunds
         )
-        SELECT withdrawals::text, advances::text, (received - withdrawals - advances)::text AS net FROM m`;
+        SELECT withdrawals::text, advances::text, (received - withdrawals - advances - refunds)::text AS net FROM m`;
       const [orders] = await ctx.db.$queryRaw<{ open: number }[]>`
         SELECT count(*)::int AS open FROM v_service_order_status WHERE status NOT IN ('ENTREGADA', 'CANCELADA')`;
       const lowStock = await ctx.db.product.findMany({

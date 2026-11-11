@@ -4,7 +4,8 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
-import { ADMIN_PERMISSIONS } from "~/app/(app)/admin/options";
+import { ADMIN_OPTIONS, ADMIN_PERMISSIONS } from "~/app/(app)/admin/options";
+import { ConfirmHost } from "~/app/_components/confirm";
 import { ThemeToggle } from "~/app/_components/theme-toggle";
 import { BrandMark, cx } from "~/app/_components/ui";
 import { api } from "~/trpc/react";
@@ -46,6 +47,10 @@ const AREAS: {
   /** One code, or several (the area shows if the user has any of them). */
   permission: string | readonly string[];
   icon: ReactNode;
+  /** Extra paths that belong to this area (e.g. an invoice's detail under /ventas/…). */
+  also?: RegExp;
+  /** Sub-options shown under the area in the menu (Administración). */
+  children?: readonly { href: string; label: string; perms: readonly string[] }[];
 }[] = [
   {
     href: "/",
@@ -66,6 +71,19 @@ const AREAS: {
       <Icon>
         <path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z" />
         <path d="M8 8h8M8 12h8M8 16h5" />
+      </Icon>
+    ),
+  },
+  {
+    href: "/facturas",
+    label: "Facturas",
+    permission: "ventas.ver",
+    also: /^\/ventas\/\d+/,
+    icon: (
+      <Icon>
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <path d="M14 2v6h6" />
+        <path d="M8 13h8M8 17h5" />
       </Icon>
     ),
   },
@@ -130,9 +148,28 @@ const AREAS: {
     ),
   },
   {
+    href: "/pagos",
+    label: "Pago a mecánicos",
+    permission: "personal.ver",
+    children: [
+      { href: "/pagos/adelanto", label: "Dar adelanto", perms: ["personal.pagos"] },
+      { href: "/pagos/periodo", label: "Pagar periodo trabajado", perms: ["personal.pagos"] },
+    ],
+    icon: (
+      <Icon>
+        <path d="M11 15h2a2 2 0 1 0 0-4h-3c-.6 0-1.1.2-1.4.6L3 17" />
+        <path d="m7 21 1.6-1.4c.3-.4.8-.6 1.4-.6h4c1.1 0 2.1-.4 2.8-1.2l4.6-4.4a2 2 0 0 0-2.75-2.91l-4.2 3.9" />
+        <path d="m2 16 6 6" />
+        <circle cx="16" cy="9" r="2.9" />
+        <circle cx="6" cy="5" r="3" />
+      </Icon>
+    ),
+  },
+  {
     href: "/admin",
     label: "Administración",
     permission: ADMIN_PERMISSIONS,
+    children: ADMIN_OPTIONS,
     icon: (
       <Icon>
         <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3" />
@@ -182,9 +219,10 @@ export function Shell({
   const allowed = AREAS.filter((a) =>
     typeof a.permission === "string" ? me.permissions.includes(a.permission) : a.permission.some((p) => me.permissions.includes(p)),
   );
+  const inArea = (a: (typeof AREAS)[number]) => (a.also?.test(pathname) ?? false) || isActive(a.href);
   const isActive = (href: string) =>
-    href === "/" ? pathname === "/" : pathname.startsWith(href);
-  const current = allowed.find((a) => isActive(a.href));
+    href === "/" ? pathname === "/" : href === "/ventas" ? pathname === "/ventas" : pathname.startsWith(href);
+  const current = allowed.find(inArea);
   const displayName = me.staffName ?? me.username;
 
   const togglePinned = () => {
@@ -301,47 +339,77 @@ export function Shell({
           className="flex-1 overflow-x-hidden overflow-y-auto py-2"
         >
           {allowed.map((a) => {
-            const active = isActive(a.href);
+            const active = inArea(a);
+            const subs = a.children?.filter((c) => c.perms.some((p) => me.permissions.includes(p))) ?? [];
             return (
-              <Link
-                key={a.href}
-                href={a.href}
-                onClick={() => setDrawer(false)}
-                title={pinned ? undefined : a.label}
-                aria-current={active ? "page" : undefined}
-                className={cx(
-                  "group relative flex h-11 items-center gap-3 px-5 transition-colors duration-150",
-                  active
-                    ? "bg-brand-600/10 text-neutral-50"
-                    : "text-neutral-400 hover:bg-neutral-800/70 hover:text-neutral-100",
-                )}
-              >
-                <span
-                  aria-hidden="true"
+              <div key={a.href}>
+                <Link
+                  href={a.href}
+                  onClick={() => setDrawer(false)}
+                  title={pinned ? undefined : a.label}
+                  aria-current={active && pathname === a.href ? "page" : undefined}
                   className={cx(
-                    "bg-brand-500 absolute inset-y-1.5 left-0 w-0.75 origin-center rounded-r transition-transform duration-200 motion-reduce:transition-none",
-                    active ? "scale-y-100" : "scale-y-0",
-                  )}
-                />
-                <span
-                  className={cx(
-                    "shrink-0 transition-colors duration-150",
+                    "group relative flex h-11 items-center gap-3 px-5 transition-colors duration-150",
                     active
-                      ? "text-brand-600"
-                      : "text-neutral-500 group-hover:text-neutral-200",
+                      ? "bg-brand-600/10 text-neutral-50"
+                      : "text-neutral-400 hover:bg-neutral-800/70 hover:text-neutral-100",
                   )}
                 >
-                  {a.icon}
-                </span>
-                <span
-                  className={cx(
-                    "font-display text-base font-medium tracking-wide whitespace-nowrap transition-opacity duration-200 motion-reduce:transition-none",
-                    labelCls,
-                  )}
-                >
-                  {a.label}
-                </span>
-              </Link>
+                  <span
+                    aria-hidden="true"
+                    className={cx(
+                      "bg-brand-500 absolute inset-y-1.5 left-0 w-0.75 origin-center rounded-r transition-transform duration-200 motion-reduce:transition-none",
+                      active ? "scale-y-100" : "scale-y-0",
+                    )}
+                  />
+                  <span
+                    className={cx(
+                      "shrink-0 transition-colors duration-150",
+                      active
+                        ? "text-brand-600"
+                        : "text-neutral-500 group-hover:text-neutral-200",
+                    )}
+                  >
+                    {a.icon}
+                  </span>
+                  <span
+                    className={cx(
+                      "font-display text-base font-medium tracking-wide whitespace-nowrap transition-opacity duration-200 motion-reduce:transition-none",
+                      labelCls,
+                    )}
+                  >
+                    {a.label}
+                  </span>
+                </Link>
+                {/* Sub-options (Administración): open while inside the area; hidden when the menu is only icons. */}
+                {active && subs.length > 0 && (
+                  <ul
+                    aria-label={`Opciones de ${a.label}`}
+                    className={cx("border-l border-neutral-800 py-1 pl-0 ml-8", pinned ? "" : "md:hidden md:group-hover/nav:block")}
+                  >
+                    {subs.map((c) => {
+                      const on = pathname.startsWith(c.href);
+                      return (
+                        <li key={c.href}>
+                          <Link
+                            href={c.href}
+                            onClick={() => setDrawer(false)}
+                            aria-current={on ? "page" : undefined}
+                            className={cx(
+                              "flex min-h-9 items-center rounded-r-md py-1.5 pr-3 pl-4 text-sm whitespace-nowrap transition-colors",
+                              on
+                                ? "border-brand-500 -ml-px border-l-2 font-medium text-brand-600"
+                                : "text-neutral-400 hover:bg-neutral-800/70 hover:text-neutral-100",
+                            )}
+                          >
+                            {c.label}
+                          </Link>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
             );
           })}
         </nav>
@@ -464,6 +532,7 @@ export function Shell({
         <main id="contenido" className="min-w-0 px-4 py-6 md:px-8">
           {children}
         </main>
+        <ConfirmHost />
       </div>
     </div>
   );

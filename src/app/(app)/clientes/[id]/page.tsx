@@ -4,7 +4,10 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useState } from "react";
 
+import { PrintLink } from "~/app/_components/print-link";
+import { PrintPrompt } from "~/app/_components/print-prompt";
 import { Alert, BackBar, Badge, Button, Card, Dialog, Field, Input, PageTitle, Select, Table } from "~/app/_components/ui";
+import { docNumber } from "~/lib/business";
 import { errorMessage } from "~/lib/errors";
 import { dec, formatDateTime, formatDay, money } from "~/lib/format";
 import { api } from "~/trpc/react";
@@ -16,6 +19,7 @@ export default function CustomerPage() {
   const me = api.auth.me.useQuery();
   const st = api.customer.statement.useQuery({ customerId });
   const [paying, setPaying] = useState(false);
+  const [paid, setPaid] = useState<{ id: number; amount: string; currency: string } | null>(null);
   if (st.error) return <Alert>{errorMessage(st.error)}</Alert>;
   const d = st.data;
   if (!d) return <p className="text-neutral-400">Cargando…</p>;
@@ -79,14 +83,53 @@ export default function CustomerPage() {
           </Table>
         </Card>
       )}
+      {d.payments.length > 0 && (
+        <Card title="Abonos recibidos" className="mt-4">
+          <Table head={["Recibo", "Fecha", "Forma de pago", "Monto", ""]}>
+            {d.payments.map((p) => (
+              <tr key={p.id}>
+                <td>N.º {docNumber(p.id)}</td>
+                <td>{formatDateTime(p.paidAt)}</td>
+                <td>{p.method}</td>
+                <td>{money(p.amount, p.currency === "USD" ? "USD" : "NIO")}</td>
+                <td className="text-right">
+                  <PrintLink className="text-brand-600 hover:underline" href={`/imprimir/abono/${p.id}?imprimir=1`}>
+                    Imprimir recibo
+                  </PrintLink>
+                </td>
+              </tr>
+            ))}
+          </Table>
+        </Card>
+      )}
       <Dialog open={paying} onClose={() => setPaying(false)} title={`Abono de ${d.customer.name}`}>
-        <PaymentForm customerId={customerId} onDone={() => setPaying(false)} />
+        <PaymentForm
+          customerId={customerId}
+          onDone={(p) => {
+            setPaying(false);
+            setPaid(p);
+          }}
+        />
       </Dialog>
+      <PrintPrompt
+        open={!!paid}
+        title="Abono registrado"
+        message={paid ? `Se registró el abono de ${money(paid.amount, paid.currency === "USD" ? "USD" : "NIO")}. ¿Imprimir el recibo para el cliente?` : ""}
+        printLabel="Imprimir recibo"
+        href={paid ? `/imprimir/abono/${paid.id}?imprimir=1` : ""}
+        onClose={() => setPaid(null)}
+      />
     </>
   );
 }
 
-function PaymentForm({ customerId, onDone }: { customerId: number; onDone: () => void }) {
+function PaymentForm({
+  customerId,
+  onDone,
+}: {
+  customerId: number;
+  onDone: (payment: { id: number; amount: string; currency: string }) => void;
+}) {
   const utils = api.useUtils();
   const pending = api.sales.pendingForCustomer.useQuery({ customerId });
   const methods = api.admin.catalog.useQuery({ kind: "paymentMethod" });
@@ -96,10 +139,10 @@ function PaymentForm({ customerId, onDone }: { customerId: number; onDone: () =>
   const [methodId, setMethodId] = useState(0);
   const [alloc, setAlloc] = useState<Record<string, string>>({});
   const pay = api.sales.registerPayment.useMutation({
-    onSuccess: () => {
+    onSuccess: (p) => {
       void utils.customer.invalidate();
       void utils.sales.invalidate();
-      onDone();
+      onDone({ id: p.id, amount: p.amount.toString(), currency: p.currency });
     },
   });
   const nio = currency === "USD" ? dec(amount || 0).times(dec(rate || 0)) : dec(amount || 0);

@@ -252,3 +252,14 @@ dialog[open]::backdrop {
     display: none !important;
   }
 }
+
+/* Factura y recibos (DEC-053): hoja carta, sin fondos del tema. */
+@media print {
+  @page {
+    size: letter;
+    margin: 12mm;
+  }
+  body:has(.print-page) {
+    background: #fff !important;
+  }
+}

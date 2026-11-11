@@ -431,3 +431,156 @@ describe("reportes por periodo", () => {
     expect(m.series.length).toBe(Number(today.slice(5, 7)));
   });
 });
+
+describe("orden terminada no se cancela (DEC-051)", () => {
+  it("la API y la base rechazan cancelar una orden TERMINADA", async () => {
+    const moto = await db.motorcycle.findFirstOrThrow({ where: { plate: "M 123-456" } });
+    const order = await encargado.service.receive({ motorcycleId: moto.id, items: [{ serviceTypeId: engrase }] });
+    await encargado.service.changeStatus({ serviceOrderId: order.id, status: "TERMINADA" });
+    await expect(encargado.service.cancel({ serviceOrderId: order.id, notes: "Ya no la quiere" })).rejects.toThrow(
+      "no se puede cancelar",
+    );
+    // Aunque alguien se salte la API, el trigger lo impide.
+    const user = await db.appUser.findFirstOrThrow({ where: { username: "admin" } });
+    await expect(
+      db.serviceOrderStatusChange.create({ data: { serviceOrderId: order.id, status: "CANCELADA", registeredByUserId: user.id } }),
+    ).rejects.toThrow();
+    expect((await admin.service.get({ id: order.id })).status).toBe("TERMINADA");
+  });
+});
+
+describe("precio rebajado en caja (DEC-052)", () => {
+  const terms = { paymentTerms: "CONTADO" as const, payment: { paymentMethodId: 0, currency: "NIO" as const } };
+
+  it("rebajar 2 % pide permiso; con permiso queda guardado como descuento sobre el precio normal", async () => {
+    const p = await productByBarcode(ACEITE);
+    const t = { ...terms, payment: { ...terms.payment, paymentMethodId: cash } };
+    await expect(encargado.sales.create({ terms: t, lines: [{ productId: p.id, quantity: 1, unitPrice: "215.60" }] })).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+    const sale = await admin.sales.create({ terms: t, lines: [{ productId: p.id, quantity: 2, unitPrice: "215.60" }] });
+    expect(sale.total.toString()).toBe("431.2");
+    const inv = await admin.sales.getInvoice({ id: sale.id });
+    expect(inv.lines[0]!.unitPrice.toString()).toBe("220");
+    expect(inv.lines[0]!.discountAmount.toString()).toBe("8.8");
+  });
+
+  it("no se puede subir el precio ni bajarlo por debajo del costo", async () => {
+    const p = await productByBarcode(ACEITE);
+    const t = { ...terms, payment: { ...terms.payment, paymentMethodId: cash } };
+    const rows = await db.$queryRaw<{ last_cost: Prisma.Decimal }[]>`SELECT last_cost FROM v_product_margin WHERE product_id = ${p.id}`;
+    const last_cost = rows[0]!.last_cost;
+    await expect(admin.sales.create({ terms: t, lines: [{ productId: p.id, quantity: 1, unitPrice: "230" }] })).rejects.toThrow("mayor");
+    const below = new Prisma.Decimal(last_cost).minus("0.01").toFixed(2);
+    await expect(admin.sales.create({ terms: t, lines: [{ productId: p.id, quantity: 1, unitPrice: below }] })).rejects.toThrow("costo");
+    // Exactamente el costo sí se permite.
+    const ok = await admin.sales.create({ terms: t, lines: [{ productId: p.id, quantity: 1, unitPrice: new Prisma.Decimal(last_cost).toFixed(2) }] });
+    // Y la base lo exige aunque se salte la API.
+    await expect(
+      db.saleInvoiceLine.create({
+        data: { saleInvoiceId: ok.id, lineNo: 9, lineType: "PRODUCTO", productId: p.id, quantity: 1, unitPrice: "220", discountAmount: "219" },
+      }),
+    ).rejects.toThrow();
+  });
+});
+
+describe("comprobante de abono (DEC-053)", () => {
+  it("dice quién pagó, cuánto, a qué factura y cuánto queda", async () => {
+    const customer = await db.customer.findFirstOrThrow({ where: { name: "Juan Pérez" } });
+    const p = await productByBarcode(BUJIA);
+    const due = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
+    const sale = await admin.sales.create({
+      terms: { paymentTerms: "CREDITO", customerId: customer.id, dueDate: due },
+      lines: [{ productId: p.id, quantity: 2 }],
+    });
+    const pay = await encargado.sales.registerPayment({
+      customerId: customer.id,
+      amount: "100",
+      paymentMethodId: cash,
+      allocations: [{ saleInvoiceId: sale.id, amount: "100" }],
+    });
+    const r = await admin.sales.getPayment({ id: pay.id });
+    expect(r.customer?.name).toBe("Juan Pérez");
+    expect(r.amountNio.toString()).toBe("100");
+    expect(r.allocations[0]!.saleInvoiceId).toBe(sale.id);
+    expect(r.allocations[0]!.balanceNow?.toString()).toBe("140");
+    const st = await admin.customer.statement({ customerId: customer.id });
+    expect(st.payments.some((x) => x.id === pay.id)).toBe(true);
+  });
+});
+
+describe("registro de facturas (DEC-054)", () => {
+  it("lista lo cobrado con filtros hechos por la base y totales de todo lo que coincide", async () => {
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Managua" }).format(new Date());
+    const all = await admin.sales.searchInvoices({ from: today, to: today });
+    expect(all.count).toBeGreaterThan(0);
+    expect(all.items.every((i) => i.id > 0)).toBe(true);
+
+    const credit = await admin.sales.searchInvoices({ from: today, to: today, paymentTerms: "CREDITO", state: "PENDIENTES" });
+    expect(credit.items.every((i) => i.paymentTerms === "CREDITO" && Number(i.balance) > 0)).toBe(true);
+    expect(credit.sumBalance.toString()).toBe(
+      credit.items.reduce((a, i) => a.plus(i.balance), new Prisma.Decimal(0)).toString(),
+    );
+
+    const byName = await admin.sales.searchInvoices({ text: "juan perez" }); // sin tilde
+    expect(byName.items.length).toBeGreaterThan(0);
+    expect(byName.items.every((i) => (i.customer?.name ?? "").includes("Juan Pérez"))).toBe(true);
+
+    const one = all.items[0]!;
+    const byNumber = await admin.sales.searchInvoices({ text: String(one.id).padStart(6, "0") });
+    expect(byNumber.items.some((i) => i.id === one.id)).toBe(true);
+
+    const workshop = await admin.sales.searchInvoices({ origin: "TALLER" });
+    expect(workshop.items.every((i) => i.serviceOrderId !== null)).toBe(true);
+  });
+});
+
+describe("anulación de facturas (DEC-055)", () => {
+  it("un dueño anula: los productos regresan, el saldo queda en 0 y se registra el efectivo devuelto", async () => {
+    const p = await productByBarcode(BUJIA);
+    const sale = await admin.sales.create({
+      terms: { paymentTerms: "CONTADO", payment: { paymentMethodId: cash, currency: "NIO" } },
+      lines: [{ productId: p.id, quantity: 2 }],
+    });
+    // El encargado no tiene el permiso.
+    await expect(encargado.sales.voidInvoice({ saleInvoiceId: sale.id, reason: "Se cobró mal" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(admin.sales.voidInvoice({ saleInvoiceId: sale.id, reason: "x" })).rejects.toThrow();
+
+    const v = await admin.sales.voidInvoice({ saleInvoiceId: sale.id, reason: "Se cobró el producto equivocado" });
+    expect(v.refundAmount.toString()).toBe("240");
+    expect((await productByBarcode(BUJIA)).stock).toBe(p.stock);
+    const inv = await admin.sales.getInvoice({ id: sale.id });
+    expect(inv.void?.reason).toBe("Se cobró el producto equivocado");
+    expect(inv.balance.toString()).toBe("0");
+    await expect(admin.sales.voidInvoice({ saleInvoiceId: sale.id, reason: "Otra vez" })).rejects.toThrow("ya está anulada");
+
+    const list = await admin.sales.searchInvoices({ state: "ANULADAS" });
+    expect(list.items.some((i) => i.id === sale.id && i.voided)).toBe(true);
+  });
+
+  it("al crédito: no recibe abonos después; y no se anula pasados 3 días", async () => {
+    const customer = await db.customer.findFirstOrThrow({ where: { name: "Juan Pérez" } });
+    const p = await productByBarcode(BUJIA);
+    const due = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
+    const sale = await admin.sales.create({
+      terms: { paymentTerms: "CREDITO", customerId: customer.id, dueDate: due },
+      lines: [{ productId: p.id, quantity: 1 }],
+    });
+    await admin.sales.voidInvoice({ saleInvoiceId: sale.id, reason: "El cliente no se llevó nada" });
+    await expect(
+      encargado.sales.registerPayment({
+        customerId: customer.id,
+        amount: "10",
+        paymentMethodId: cash,
+        allocations: [{ saleInvoiceId: sale.id, amount: "10" }],
+      }),
+    ).rejects.toThrow();
+
+    const old = await admin.sales.create({
+      terms: { paymentTerms: "CONTADO", payment: { paymentMethodId: cash, currency: "NIO" } },
+      lines: [{ productId: p.id, quantity: 1 }],
+    });
+    await db.$executeRaw`UPDATE sale_invoice SET created_at = now() - interval '4 days' WHERE id = ${old.id}`;
+    await expect(admin.sales.voidInvoice({ saleInvoiceId: old.id, reason: "Demasiado tarde" })).rejects.toThrow("3 días");
+  });
+});

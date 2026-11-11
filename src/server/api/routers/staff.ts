@@ -55,7 +55,8 @@ export const staffRouter = createTRPCRouter({
       }),
     )
     .mutation(({ ctx, input }) => {
-      const hasRate = !!input.commissionRate && D(input.commissionRate).gt(0);
+      // 100 % = like an owner: not paid by the system, so no rate at all (migration 8).
+      const hasRate = !!input.commissionRate && D(input.commissionRate).gt(0) && D(input.commissionRate).lt(1);
       if (input.kind === "DUENO" && hasRate) throw fail("Un dueño no cobra comisión.");
       const data = {
         name: input.name,

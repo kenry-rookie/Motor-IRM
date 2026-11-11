@@ -5,6 +5,10 @@
 import "./src/env.js";
 
 /** @type {import("next").NextConfig} */
-const config = {};
+const config = {
+  // The desktop app (scripts/desktop) builds into its own folder, so `npm run dev`
+  // and the installed app never overwrite each other's files.
+  distDir: process.env.NEXT_DIST_DIR ?? ".next",
+};
 
 export default config;

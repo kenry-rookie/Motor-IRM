@@ -26,8 +26,10 @@ export type ProductLine = {
   listPrice: string;
   stock: number;
   quantity: number;
-  discountId?: number;
-  discountAmount?: string;
+  /** Price per unit agreed with the customer, only when lower than listPrice (DEC-052). */
+  unitPrice?: string;
+  /** Last cost when the line was added: the floor for unitPrice (the server checks it again). */
+  lastCost?: string | null;
 };
 
 /** Labor is always a job of the catalog (DEC-048); serviceTypeId may be missing only in tabs saved before. */
@@ -48,9 +50,21 @@ export type ServiceTab = Base & {
 };
 export type Tab = SaleTab | ServiceTab;
 
-type State = { tabs: Tab[]; activeId: string | null; nextNumber: number };
+type State = { tabs: Tab[]; activeId: string | null };
 
-const EMPTY: State = { tabs: [], activeId: null, nextNumber: 1 };
+const EMPTY: State = { tabs: [], activeId: null };
+
+/**
+ * «Venta 1», «Venta 2»…: the smallest number not used by an open tab. It is only a
+ * name for the tab, not an invoice number, so closing tabs never "uses up" numbers
+ * (the invoice gets its own number when it is charged).
+ */
+const freeNumber = (tabs: Tab[]) => {
+  const used = new Set(tabs.flatMap((t) => (t.kind === "sale" ? [t.number] : [])));
+  let n = 1;
+  while (used.has(n)) n++;
+  return n;
+};
 let state: State = EMPTY;
 let storageKey = "";
 const listeners = new Set<() => void>();
@@ -63,7 +77,8 @@ function load(key: string) {
   storageKey = key;
   try {
     const raw = localStorage.getItem(key);
-    state = raw ? ({ ...EMPTY, ...(JSON.parse(raw) as State) }) : EMPTY;
+    const saved = raw ? (JSON.parse(raw) as State) : EMPTY;
+    state = { tabs: saved.tabs ?? [], activeId: saved.activeId ?? null };
   } catch {
     state = EMPTY;
   }
@@ -97,13 +112,13 @@ export function useTabs(username: string) {
       const tab: SaleTab = {
         kind: "sale",
         id: newKey(),
-        number: state.nextNumber,
+        number: freeNumber(state.tabs),
         createdAt: Date.now(),
         terms: defaultTerms(),
         customer: null,
         lines: [],
       };
-      set({ tabs: [...state.tabs, tab], activeId: tab.id, nextNumber: state.nextNumber + 1 });
+      set({ ...state, tabs: [...state.tabs, tab], activeId: tab.id });
       return tab.id;
     },
     /** Opens (or focuses) the bill of a workshop order. */

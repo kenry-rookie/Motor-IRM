@@ -4,8 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "app:build": "prisma generate && NEXT_DIST_DIR=.next-prod next build",
+    "app:install": "bash scripts/desktop/instalar-mac.sh",
+    "app:start": "bash scripts/desktop/motor-irm.sh",
+    "app:stop": "bash scripts/desktop/detener.sh",
     "build": "next build",
     "check": "next lint && tsc --noEmit",
+    "db:demo-extra": "tsx prisma/demo-extra.ts",
     "db:down": "docker compose down",
     "db:dump-schema": "node scripts/dump-schema.mjs",
     "db:logs": "docker compose logs -f db",

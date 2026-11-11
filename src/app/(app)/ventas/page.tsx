@@ -12,18 +12,20 @@ import {
   type SaleTab,
   type ServiceTab,
   type Tab,
+  type TermsDraft,
   useTabs,
 } from "~/app/(app)/ventas/tabs-store";
+import { confirmDialog } from "~/app/_components/confirm";
 import { CustomerPicker, type Product, ProductPicker, type ProductPickerHandle } from "~/app/_components/pickers";
+import { PrintPrompt } from "~/app/_components/print-prompt";
 import { ServiceCatalogPicker } from "~/app/_components/service-catalog";
 import { cleanTerms, TermsForm } from "~/app/_components/terms-form";
-import { Alert, Badge, Button, Card, cx, EmptyState, Input, Kbd, PageTitle, Select } from "~/app/_components/ui";
+import { Alert, Badge, Button, Card, cx, Dialog, EmptyState, Input, Kbd, PageTitle } from "~/app/_components/ui";
 import { errorMessage } from "~/lib/errors";
-import { dec, money } from "~/lib/format";
+import { docNumber } from "~/lib/business";
+import { dec, formatDay, money } from "~/lib/format";
 import { LABELS, type ServiceOrderStatus } from "~/server/domain/constants";
-import { api, type RouterOutputs } from "~/trpc/react";
-
-type Discount = RouterOutputs["admin"]["discounts"][number];
+import { api } from "~/trpc/react";
 
 /**
  * CLI-006 — Caja. Several bills in progress at once (one tab each): counter sales
@@ -43,23 +45,18 @@ const toLine = (p: Product): ProductLine => ({
   listPrice: p.listPrice.toString(),
   stock: p.stock,
   quantity: 1,
+  lastCost: p.lastCost?.toString() ?? null,
 });
 
-function lineDiscount(l: ProductLine, discounts: Discount[] | undefined) {
-  const gross = dec(l.listPrice).times(l.quantity);
-  if (l.discountId) {
-    const d = discounts?.find((x) => x.id === l.discountId);
-    if (!d) return dec(0);
-    return d.discountType === "PORCENTAJE" ? gross.times(dec(d.value)).toDecimalPlaces(2) : dec(d.value);
-  }
-  return dec(l.discountAmount ?? 0);
-}
-const linesTotal = (lines: ProductLine[], discounts: Discount[] | undefined) =>
-  lines.reduce((a, l) => a.plus(dec(l.listPrice).times(l.quantity).minus(lineDiscount(l, discounts))), dec(0));
+/** Price per unit actually charged: the agreed one when it was lowered (DEC-052). */
+const unitPriceOf = (l: ProductLine) => (l.unitPrice !== undefined && dec(l.unitPrice).lt(dec(l.listPrice)) ? dec(l.unitPrice) : dec(l.listPrice));
+const lineTotal = (l: ProductLine) => unitPriceOf(l).times(l.quantity);
+const lowered = (l: ProductLine) => unitPriceOf(l).lt(dec(l.listPrice));
+const linesTotal = (lines: ProductLine[]) => lines.reduce((a, l) => a.plus(lineTotal(l)), dec(0));
 
-function tabTotal(t: Tab, discounts: Discount[] | undefined, faults = dec(0)) {
-  if (t.kind === "sale") return linesTotal(t.lines, discounts);
-  return linesTotal(t.parts, discounts)
+function tabTotal(t: Tab, faults = dec(0)) {
+  if (t.kind === "sale") return linesTotal(t.lines);
+  return linesTotal(t.parts)
     .plus(t.labor.reduce((a, l) => a.plus(dec(l.price || 0)), dec(0)))
     .plus(t.external.reduce((a, l) => a.plus(dec(l.price || 0)), dec(0)))
     .plus(faults);
@@ -73,10 +70,10 @@ function addProduct(lines: ProductLine[], p: Product) {
 
 function Caja({ username, perms }: { username: string; perms: string[] }) {
   const t = useTabs(username);
-  const discounts = api.admin.discounts.useQuery();
   const searchRef = useRef<ProductPickerHandle>(null);
   const chargeRef = useRef<() => void>(() => undefined);
   const [receipt, setReceipt] = useState<{ id: number; total: string; label: string } | null>(null);
+  const [askPrint, setAskPrint] = useState(false);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => setMounted(true), []);
@@ -105,6 +102,7 @@ function Caja({ username, perms }: { username: string; perms: string[] }) {
   const onCharged = useCallback(
     (tab: Tab, invoiceId: number, total: string) => {
       setReceipt({ id: invoiceId, total, label: tab.kind === "sale" ? `Venta ${tab.number}` : `Orden #${tab.orderId}` });
+      setAskPrint(true);
       t.close(tab.id);
       setTimeout(() => searchRef.current?.focus(), 50);
     },
@@ -117,7 +115,6 @@ function Caja({ username, perms }: { username: string; perms: string[] }) {
     <>
       <PageTitle
         title="Caja"
-        subtitle="Cada pestaña es un cobro en curso: atienda a varios clientes sin perder lo que lleva cada uno."
         actions={
           <div className="flex items-center gap-2">
             <PendingOrders onOpen={(orderId, title, customer) => t.openService(orderId, title, customer)} />
@@ -132,7 +129,7 @@ function Caja({ username, perms }: { username: string; perms: string[] }) {
         {mounted &&
           t.tabs.map((tab) => {
             const selected = tab.id === active?.id;
-            const total = tabTotal(tab, discounts.data);
+            const total = tabTotal(tab);
             const items = tab.kind === "sale" ? tab.lines.length : tab.labor.length + tab.parts.length + tab.external.length;
             return (
               <div
@@ -161,17 +158,20 @@ function Caja({ username, perms }: { username: string; perms: string[] }) {
                     {items > 0 ? money(total) : "—"}
                   </span>
                 </button>
-                <button
-                  type="button"
-                  aria-label={`Cerrar ${tab.kind === "sale" ? `venta ${tab.number}` : `orden ${tab.orderId}`}`}
-                  onClick={() => {
-                    if (items > 0 && !window.confirm("Esta pestaña tiene productos. ¿Descartarla sin cobrar?")) return;
-                    t.close(tab.id);
-                  }}
-                  className="px-2 text-neutral-500 opacity-60 hover:text-neutral-100 group-hover:opacity-100"
-                >
-                  ×
-                </button>
+                {/* The only tab, and empty: closing it would just open another one. */}
+                {(t.tabs.length > 1 || items > 0 || tab.kind === "service") && (
+                  <button
+                    type="button"
+                    aria-label={`Cerrar ${tab.kind === "sale" ? `venta ${tab.number}` : `orden ${tab.orderId}`}`}
+                    onClick={async () => {
+                      if (items > 0 && !(await confirmDialog("Esta pestaña tiene productos. ¿Descartarla sin cobrar?", { title: "Cerrar pestaña", confirmLabel: "Sí, descartar", danger: true }))) return;
+                      t.close(tab.id);
+                    }}
+                    className="px-2 text-neutral-500 opacity-60 hover:text-neutral-100 group-hover:opacity-100"
+                  >
+                    ×
+                  </button>
+                )}
               </div>
             );
           })}
@@ -182,18 +182,28 @@ function Caja({ username, perms }: { username: string; perms: string[] }) {
           <Alert kind="ok">
             {receipt.label} cobrada: {money(receipt.total)}.{" "}
             <Link className="font-medium underline" href={`/ventas/${receipt.id}`}>
-              Ver o imprimir la factura #{receipt.id}
+              Ver la factura N.º {docNumber(receipt.id)}
             </Link>
           </Alert>
         </div>
       )}
+      <PrintPrompt
+        open={askPrint && !!receipt}
+        title="Cobro registrado"
+        message={receipt ? `${receipt.label} cobrada: ${money(receipt.total)}. ¿El cliente quiere factura impresa?` : ""}
+        printLabel="Imprimir factura"
+        href={receipt ? `/imprimir/factura/${receipt.id}?imprimir=1` : ""}
+        onClose={() => {
+          setAskPrint(false);
+          setTimeout(() => searchRef.current?.focus(), 50);
+        }}
+      />
 
       {mounted && active?.kind === "sale" && (
         <SaleTicket
           key={active.id}
           tab={active}
           perms={perms}
-          discounts={discounts.data}
           searchRef={searchRef}
           chargeRef={chargeRef}
           update={(patch) => t.update(active.id, (x) => ({ ...(x as SaleTab), ...patch }))}
@@ -205,7 +215,6 @@ function Caja({ username, perms }: { username: string; perms: string[] }) {
           key={active.id}
           tab={active}
           perms={perms}
-          discounts={discounts.data}
           searchRef={searchRef}
           chargeRef={chargeRef}
           update={(patch) => t.update(active.id, (x) => ({ ...(x as ServiceTab), ...patch }))}
@@ -274,7 +283,6 @@ function PendingOrders({ onOpen }: { onOpen: (orderId: number, title: string, cu
 type TicketProps<T extends Tab> = {
   tab: T;
   perms: string[];
-  discounts: Discount[] | undefined;
   searchRef: React.RefObject<ProductPickerHandle | null>;
   chargeRef: React.RefObject<() => void>;
   update: (patch: Partial<T>) => void;
@@ -283,25 +291,26 @@ type TicketProps<T extends Tab> = {
 
 function ProductLines({
   lines,
-  discounts,
+  canSeeCost,
   onChange,
 }: {
   lines: ProductLine[];
-  discounts: Discount[] | undefined;
+  canSeeCost: boolean;
   onChange: (lines: ProductLine[]) => void;
 }) {
+  const [editing, setEditing] = useState<number | null>(null);
   const set = (i: number, patch: Partial<ProductLine>) => onChange(lines.map((l, j) => (j === i ? { ...l, ...patch } : l)));
   if (lines.length === 0) return null;
   return (
     <ul className="divide-y divide-neutral-800">
       {lines.map((l, i) => {
-        const disc = lineDiscount(l, discounts);
+        const low = lowered(l);
         return (
-          <li key={l.productId} className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-2 py-3 sm:grid-cols-[1fr_auto_auto_auto]">
+          <li key={l.productId} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 py-3 sm:grid-cols-[minmax(0,1fr)_auto_auto_7rem]">
             <div className="min-w-0">
-              <p className="truncate font-medium text-neutral-100">{l.name}</p>
-              <p className={cx("text-xs", l.quantity > l.stock ? "text-bad-fg" : "text-neutral-500")}>
-                {money(l.listPrice)} c/u · {l.quantity > l.stock ? `solo hay ${l.stock} en stock` : `${l.stock} en stock`}
+              <p className="text-base leading-tight font-semibold text-neutral-50">{l.name}</p>
+              <p className={cx("mt-0.5 text-xs", l.quantity > l.stock ? "text-bad-fg" : "text-neutral-500")}>
+                {l.quantity > l.stock ? `Solo hay ${l.stock} en stock` : `${l.stock} en stock`}
               </p>
             </div>
             <div className="flex items-center gap-1" aria-label={`Cantidad de ${l.name}`}>
@@ -313,10 +322,11 @@ function ProductLines({
               >
                 −
               </button>
-              <Input
+              <input
                 type="number"
                 min={1}
-                className="h-8 w-14 px-1 text-center"
+                aria-label="Cantidad"
+                className="focus:border-brand-500 h-8 w-12 rounded-md border border-neutral-700 bg-neutral-900 text-center text-sm tabular-nums focus:outline-none"
                 value={l.quantity}
                 onChange={(e) => set(i, { quantity: Math.max(1, Number(e.target.value) || 1) })}
               />
@@ -329,47 +339,148 @@ function ProductLines({
                 +
               </button>
             </div>
-            <div className="col-span-2 flex items-center gap-1 sm:col-span-1">
-              <Select
-                aria-label="Descuento"
-                className="h-8 w-36 py-0 text-xs"
-                value={l.discountId ?? (l.discountAmount !== undefined ? "manual" : "")}
-                onChange={(e) =>
-                  set(i, {
-                    discountId: e.target.value && e.target.value !== "manual" ? Number(e.target.value) : undefined,
-                    discountAmount: e.target.value === "manual" ? "" : undefined,
-                  })
-                }
+            <div className="relative">
+              <button
+                type="button"
+                title="Doble clic para cambiar el precio"
+                aria-label={`Precio de ${l.name}: ${money(unitPriceOf(l))}. Doble clic para cambiarlo.`}
+                onDoubleClick={() => setEditing(i)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") setEditing(i);
+                }}
+                className={cx(
+                  "flex h-10 min-w-28 flex-col items-end justify-center rounded-md border px-2.5 text-right tabular-nums select-none",
+                  low ? "border-ok-line bg-ok-bg" : "border-neutral-700 bg-neutral-900 hover:border-neutral-600",
+                )}
               >
-                <option value="">Sin descuento</option>
-                {discounts
-                  ?.filter((d) => d.active)
-                  .map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name}
-                    </option>
-                  ))}
-                <option value="manual">Monto manual…</option>
-              </Select>
-              {l.discountAmount !== undefined && !l.discountId && (
-                <Input
-                  aria-label="Descuento en córdobas"
-                  className="h-8 w-20 text-xs"
-                  placeholder="C$"
-                  inputMode="decimal"
-                  value={l.discountAmount}
-                  onChange={(e) => set(i, { discountAmount: e.target.value })}
+                {low && <span className="text-[11px] leading-none text-neutral-500 line-through">{money(l.listPrice)}</span>}
+                <span className={cx("text-sm leading-tight font-medium", low && "text-ok-fg")}>{money(unitPriceOf(l))}</span>
+              </button>
+              {editing === i && (
+                <PriceEditor
+                  line={l}
+                  canSeeCost={canSeeCost}
+                  onClose={() => setEditing(null)}
+                  onApply={(unitPrice) => {
+                    set(i, { unitPrice });
+                    setEditing(null);
+                  }}
                 />
               )}
             </div>
-            <div className="text-right">
-              <p className="font-medium tabular-nums">{money(dec(l.listPrice).times(l.quantity).minus(disc))}</p>
-              {disc.gt(0) && <p className="text-ok-fg text-xs tabular-nums">−{money(disc)}</p>}
-            </div>
+            <p className="col-span-2 text-right text-base font-semibold tabular-nums sm:col-span-1">{money(lineTotal(l))}</p>
           </li>
         );
       })}
     </ul>
+  );
+}
+
+const SUGGESTED_DISCOUNTS = [2, 3, 5] as const;
+
+/**
+ * DEC-052 — Small panel to lower the price of one line: 2 %, 3 % or 5 % as
+ * suggestions, or a price typed by hand. Never more than the list price, never
+ * below the last cost (the server and trigger tg_sale_invoice_line_min_price
+ * check it again).
+ */
+function PriceEditor({
+  line,
+  canSeeCost,
+  onApply,
+  onClose,
+}: {
+  line: ProductLine;
+  canSeeCost: boolean;
+  onApply: (unitPrice: string | undefined) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const list = dec(line.listPrice);
+  const floor = dec(line.lastCost ?? 0);
+  const [typed, setTyped] = useState(lowered(line) ? unitPriceOf(line).toFixed(2) : "");
+  const typedValue = dec(typed);
+  const typedError = !typed
+    ? null
+    : typedValue.gt(list)
+      ? "No puede ser mayor que el precio normal."
+      : typedValue.lt(floor)
+        ? canSeeCost
+          ? `No puede bajar de ${money(floor)} (costo).`
+          : "Ese precio queda por debajo del costo."
+        : typedValue.lte(0)
+          ? "Escriba un precio."
+          : null;
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  const apply = (v: ReturnType<typeof dec>) => onApply(v.gte(list) ? undefined : v.toFixed(2));
+
+  return (
+    <div
+      ref={ref}
+      role="dialog"
+      aria-label={`Cambiar el precio de ${line.name}`}
+      className="absolute right-0 z-30 mt-2 w-72 space-y-3 rounded-xl border border-neutral-700 bg-neutral-900 p-3 shadow-xl shadow-neutral-50/10"
+    >
+      <div className="flex items-baseline justify-between text-sm">
+        <span className="text-neutral-400">Precio normal</span>
+        <span className="font-medium tabular-nums">{money(list)}</span>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        {SUGGESTED_DISCOUNTS.map((pct) => {
+          const v = list.times(100 - pct).div(100).toDecimalPlaces(2);
+          const blocked = v.lt(floor);
+          return (
+            <button
+              key={pct}
+              type="button"
+              disabled={blocked}
+              onClick={() => apply(v)}
+              title={blocked ? "Quedaría por debajo del costo" : undefined}
+              className="hover:border-brand-500 flex flex-col items-center rounded-lg border border-neutral-700 px-1 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <span className="font-semibold">−{pct} %</span>
+              <span className="text-xs text-neutral-400 tabular-nums">{money(v)}</span>
+            </button>
+          );
+        })}
+      </div>
+      <form
+        className="flex items-start gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (typed && !typedError) apply(typedValue);
+        }}
+      >
+        <div className="flex-1">
+          <Input autoFocus aria-label="Otro precio" placeholder="Otro precio C$" inputMode="decimal" className="h-9" value={typed} onChange={(e) => setTyped(e.target.value)} />
+          {typedError && <p className="text-bad-fg mt-1 text-xs">{typedError}</p>}
+        </div>
+        <Button type="submit" className="h-9" disabled={!typed || !!typedError}>
+          Aplicar
+        </Button>
+      </form>
+      {canSeeCost && floor.gt(0) && <p className="text-xs text-neutral-500">Mínimo: {money(floor)} (último costo)</p>}
+      {lowered(line) && (
+        <button type="button" className="text-brand-600 text-xs font-medium hover:underline" onClick={() => onApply(undefined)}>
+          Volver al precio normal
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -382,6 +493,7 @@ function ChargePanel({
   disabled,
   onCharge,
   cta,
+  confirm,
 }: {
   title: string;
   total: ReturnType<typeof dec>;
@@ -389,8 +501,10 @@ function ChargePanel({
   error: unknown;
   pending: boolean;
   disabled: boolean;
+  /** Opens the «Realizar cobro» confirmation (the invoice is only created there). */
   onCharge: () => void;
   cta: string;
+  confirm: ConfirmProps;
 }) {
   return (
     <Card title={title} className="lg:sticky lg:top-20">
@@ -400,27 +514,95 @@ function ChargePanel({
           <span className="text-sm text-neutral-400">Total a cobrar</span>
           <span className="font-display text-4xl font-semibold tracking-tight text-neutral-50 tabular-nums">{money(total)}</span>
         </div>
-        <Alert>{error ? errorMessage(error) : null}</Alert>
+        <Alert>{error && !confirm.open ? errorMessage(error) : null}</Alert>
         <Button className="h-12 w-full text-base" disabled={disabled || pending} onClick={onCharge}>
-          {pending ? "Guardando…" : cta} <Kbd>F9</Kbd>
+          {cta} <Kbd>F9</Kbd>
         </Button>
       </div>
+      <ConfirmCharge {...confirm} total={total} pending={pending} error={error} />
     </Card>
   );
 }
 
-const manualDiscount = (lines: ProductLine[]) => lines.some((l) => !l.discountId && dec(l.discountAmount ?? 0).gt(0));
+type ConfirmProps = {
+  open: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+  customer: string;
+  terms: TermsDraft;
+  items: number;
+};
+
+/**
+ * DEC-054 — «Realizar cobro»: nothing is billed until the person confirms.
+ * «Cancelar» goes back to the ticket as it was, to keep adding or editing.
+ */
+function ConfirmCharge({
+  open,
+  onCancel,
+  onConfirm,
+  customer,
+  terms,
+  items,
+  total,
+  pending,
+  error,
+}: ConfirmProps & { total: ReturnType<typeof dec>; pending: boolean; error: unknown }) {
+  const methods = api.admin.catalog.useQuery({ kind: "paymentMethod" });
+  const method = methods.data?.find((m) => m.id === terms.payment?.paymentMethodId)?.name;
+  const how =
+    terms.paymentTerms === "CREDITO"
+      ? `Crédito${terms.dueDate ? ` · vence ${formatDay(terms.dueDate)}` : ""}`
+      : `Contado${method ? ` · ${method}` : ""}${terms.payment?.currency === "USD" ? " · en dólares" : ""}`;
+  return (
+    <Dialog open={open} onClose={() => !pending && onCancel()} title="Realizar cobro">
+      <dl className="space-y-2 text-base">
+        <div className="flex justify-between gap-4">
+          <dt className="text-neutral-400">Cliente</dt>
+          <dd className="text-right font-medium">{customer}</dd>
+        </div>
+        <div className="flex justify-between gap-4">
+          <dt className="text-neutral-400">Forma de pago</dt>
+          <dd className="text-right font-medium">{how}</dd>
+        </div>
+        <div className="flex justify-between gap-4">
+          <dt className="text-neutral-400">Líneas</dt>
+          <dd className="text-right font-medium">{items}</dd>
+        </div>
+        <div className="flex items-end justify-between gap-4 border-t border-dashed border-neutral-700 pt-3">
+          <dt className="text-neutral-400">Total</dt>
+          <dd className="font-display text-4xl font-semibold tabular-nums">{money(total)}</dd>
+        </div>
+      </dl>
+      {error ? (
+        <div className="mt-3">
+          <Alert>{errorMessage(error)}</Alert>
+        </div>
+      ) : null}
+      <div className="mt-5 flex justify-end gap-2">
+        <Button variant="secondary" className="h-11 px-5" disabled={pending} onClick={onCancel}>
+          Cancelar
+        </Button>
+        <Button autoFocus className="h-11 px-6" disabled={pending} onClick={onConfirm}>
+          {pending ? "Cobrando…" : "Cobrar"}
+        </Button>
+      </div>
+    </Dialog>
+  );
+}
+
+const anyLowered = (lines: ProductLine[]) => lines.some(lowered);
+/** Only the agreed price travels, and only when lowered; the server recomputes everything. */
 const productInput = (lines: ProductLine[]) =>
   lines.map((l) => ({
     productId: l.productId,
     quantity: l.quantity,
-    discountId: l.discountId,
-    discountAmount: !l.discountId && l.discountAmount ? l.discountAmount : undefined,
+    unitPrice: lowered(l) ? unitPriceOf(l).toFixed(2) : undefined,
   }));
 
 /* ───────────── Venta de mostrador ───────────── */
 
-function SaleTicket({ tab, perms, discounts, searchRef, chargeRef, update, onCharged }: TicketProps<SaleTab>) {
+function SaleTicket({ tab, perms, searchRef, chargeRef, update, onCharged }: TicketProps<SaleTab>) {
   const utils = api.useUtils();
   const create = api.sales.create.useMutation({
     onSuccess: (r) => {
@@ -429,16 +611,19 @@ function SaleTicket({ tab, perms, discounts, searchRef, chargeRef, update, onCha
       onCharged(tab, r.id, r.total.toString());
     },
   });
-  const total = linesTotal(tab.lines, discounts);
+  const total = linesTotal(tab.lines);
   const needsAuthorization =
     (tab.terms.paymentTerms === "CREDITO" && !perms.includes("ventas.autorizar_credito")) ||
-    (manualDiscount(tab.lines) && !perms.includes("ventas.autorizar_descuento"));
+    (anyLowered(tab.lines) && !perms.includes("ventas.autorizar_descuento"));
   const creditWithoutCustomer = tab.terms.paymentTerms === "CREDITO" && !tab.customer;
 
+  const [confirming, setConfirming] = useState(false);
   const charge = () => {
     if (tab.lines.length === 0 || creditWithoutCustomer || create.isPending) return;
-    create.mutate({ terms: cleanTerms(tab.terms, tab.customer?.id), lines: productInput(tab.lines) });
+    create.reset();
+    setConfirming(true);
   };
+  const doCharge = () => create.mutate({ terms: cleanTerms(tab.terms, tab.customer?.id), lines: productInput(tab.lines) });
   chargeRef.current = charge;
 
   return (
@@ -460,7 +645,7 @@ function SaleTicket({ tab, perms, discounts, searchRef, chargeRef, update, onCha
               </EmptyState>
             </div>
           ) : (
-            <ProductLines lines={tab.lines} discounts={discounts} onChange={(lines) => update({ lines })} />
+            <ProductLines lines={tab.lines} canSeeCost={perms.includes("compras.ver")} onChange={(lines) => update({ lines })} />
           )}
         </div>
       </Card>
@@ -473,6 +658,14 @@ function SaleTicket({ tab, perms, discounts, searchRef, chargeRef, update, onCha
         disabled={tab.lines.length === 0 || creditWithoutCustomer}
         onCharge={charge}
         cta="Cobrar"
+        confirm={{
+          open: confirming,
+          onCancel: () => setConfirming(false),
+          onConfirm: doCharge,
+          customer: tab.customer?.name ?? "Cliente de contado",
+          terms: tab.terms,
+          items: tab.lines.reduce((a, l) => a + l.quantity, 0),
+        }}
       >
         <div>
           <p className="mb-1 text-sm font-medium text-neutral-300">Cliente {tab.terms.paymentTerms === "CONTADO" && <span className="font-normal text-neutral-500">(opcional)</span>}</p>
@@ -494,7 +687,7 @@ function SaleTicket({ tab, perms, discounts, searchRef, chargeRef, update, onCha
 
 /* ───────────── Cobro de una orden del taller ───────────── */
 
-function ServiceTicket({ tab, perms, discounts, searchRef, chargeRef, update, onCharged }: TicketProps<ServiceTab>) {
+function ServiceTicket({ tab, perms, searchRef, chargeRef, update, onCharged }: TicketProps<ServiceTab>) {
   const utils = api.useUtils();
   const order = api.service.get.useQuery({ id: tab.orderId });
   const types = api.admin.serviceTypes.useQuery();
@@ -509,15 +702,17 @@ function ServiceTicket({ tab, perms, discounts, searchRef, chargeRef, update, on
   const accepted = order.data?.additionalFaults.filter((f) => f.decision === "ACEPTADA") ?? [];
   const pendingFaults = order.data?.additionalFaults.filter((f) => f.decision === "PENDIENTE") ?? [];
   const faultsTotal = accepted.reduce((a, f) => a.plus(dec(f.proposedPrice ?? 0)), dec(0));
-  const total = tabTotal(tab, discounts, faultsTotal);
+  const total = tabTotal(tab, faultsTotal);
   const closed = order.data && (order.data.status === "ENTREGADA" || order.data.status === "CANCELADA");
   const needsAuthorization =
     (tab.terms.paymentTerms === "CREDITO" && !perms.includes("ventas.autorizar_credito")) ||
-    (manualDiscount(tab.parts) && !perms.includes("ventas.autorizar_descuento"));
+    (anyLowered(tab.parts) && !perms.includes("ventas.autorizar_descuento"));
   const empty = tab.labor.length + tab.parts.length + tab.external.length + accepted.length === 0;
   const [addingJob, setAddingJob] = useState(false);
   const typeById = new Map((types.data ?? []).map((t) => [t.id, t]));
   const untyped = tab.labor.some((l) => !l.serviceTypeId);
+  // A job without price would be left out of the bill without notice: ask for it instead.
+  const unpriced = tab.labor.filter((l) => !dec(l.price).gt(0));
 
   // The jobs chosen at reception become the labor lines, with their reference price (once).
   useEffect(() => {
@@ -538,8 +733,13 @@ function ServiceTicket({ tab, perms, discounts, searchRef, chargeRef, update, on
   const setLabor = (labor: LaborLine[]) => update({ labor });
   const setExternal = (external: ChargeLine[]) => update({ external });
 
+  const [confirming, setConfirming] = useState(false);
   const charge = () => {
-    if (empty || close.isPending || closed || untyped) return;
+    if (empty || close.isPending || closed || untyped || unpriced.length > 0) return;
+    close.reset();
+    setConfirming(true);
+  };
+  const doCharge = () =>
     close.mutate({
       serviceOrderId: tab.orderId,
       terms: cleanTerms(tab.terms, tab.customer?.id),
@@ -547,7 +747,6 @@ function ServiceTicket({ tab, perms, discounts, searchRef, chargeRef, update, on
       parts: productInput(tab.parts),
       externalCharges: tab.external.filter((x) => x.description && x.price).map(({ description, price }) => ({ description, price })),
     });
-  };
   chargeRef.current = charge;
 
   const o = order.data;
@@ -593,8 +792,8 @@ function ServiceTicket({ tab, perms, discounts, searchRef, chargeRef, update, on
         <Card
           title="Mano de obra"
           actions={
-            <Button variant="ghost" onClick={() => setAddingJob((v) => !v)}>
-              {addingJob ? "Listo" : "+ Agregar trabajo"}
+            <Button variant="secondary" onClick={() => setAddingJob(true)}>
+              + Agregar trabajo
             </Button>
           }
         >
@@ -612,7 +811,12 @@ function ServiceTicket({ tab, perms, discounts, searchRef, chargeRef, update, on
                     {!l.serviceTypeId && <p className="text-bad-fg text-xs">Quítelo y elíjalo de la lista de trabajos.</p>}
                     {range && <p className="text-xs text-neutral-500">{range}</p>}
                   </div>
-                  <Input aria-label={`Precio de ${l.description}`} inputMode="decimal" placeholder="C$" value={l.price} onChange={(e) => setLabor(tab.labor.map((x, j) => (j === i ? { ...x, price: e.target.value } : x)))} />
+                  <Input
+                    aria-label={`Precio de ${l.description}`}
+                    aria-invalid={!dec(l.price).gt(0)}
+                    inputMode="decimal"
+                    placeholder="C$"
+                    value={l.price} onChange={(e) => setLabor(tab.labor.map((x, j) => (j === i ? { ...x, price: e.target.value } : x)))} />
                   <Button variant="ghost" aria-label={`Quitar ${l.description}`} onClick={() => setLabor(tab.labor.filter((_, j) => j !== i))}>
                     ×
                   </Button>
@@ -629,26 +833,37 @@ function ServiceTicket({ tab, perms, discounts, searchRef, chargeRef, update, on
               <li className="text-sm text-neutral-500">Sin mano de obra. Use «+ Agregar trabajo».</li>
             )}
           </ul>
-          {addingJob && (
-            <div className="mt-3">
-              <ServiceCatalogPicker
-                compact
-                selected={tab.labor.flatMap((l) => (l.serviceTypeId ? [l.serviceTypeId] : []))}
-                onToggle={(ty) =>
-                  setLabor(
-                    tab.labor.some((l) => l.serviceTypeId === ty.id)
-                      ? tab.labor.filter((l) => l.serviceTypeId !== ty.id)
-                      : [...tab.labor, { key: newKey(), serviceTypeId: ty.id, description: ty.name, price: ty.referencePrice?.toString() ?? "" }],
-                  )
-                }
-              />
-            </div>
+          {unpriced.length > 0 && (
+            <p className="text-bad-fg mt-2 text-sm">
+              Ponga el precio de {unpriced.map((l) => `«${l.description}»`).join(", ")} antes de cobrar.
+            </p>
           )}
         </Card>
 
+        <Dialog open={addingJob} onClose={() => setAddingJob(false)} title={`Trabajos de la orden #${tab.orderId}`} size="xl">
+          <ServiceCatalogPicker
+            selected={tab.labor.flatMap((l) => (l.serviceTypeId ? [l.serviceTypeId] : []))}
+            onToggle={(ty) =>
+              setLabor(
+                tab.labor.some((l) => l.serviceTypeId === ty.id)
+                  ? tab.labor.filter((l) => l.serviceTypeId !== ty.id)
+                  : [...tab.labor, { key: newKey(), serviceTypeId: ty.id, description: ty.name, price: ty.referencePrice?.toString() ?? "" }],
+              )
+            }
+          />
+          <div className="sticky bottom-0 -mx-4 -mb-4 mt-4 flex items-center justify-between gap-3 border-t border-neutral-800 bg-neutral-900 px-4 py-3">
+            <span className="text-sm text-neutral-400">
+              {tab.labor.length} trabajo{tab.labor.length === 1 ? "" : "s"} en la cuenta
+            </span>
+            <Button className="h-11 px-6" onClick={() => setAddingJob(false)}>
+              Listo
+            </Button>
+          </div>
+        </Dialog>
+
         <Card title="Repuestos e insumos">
           <ProductPicker ref={searchRef} autoFocus={false} placeholder="Buscar repuesto o insumo…" onPick={(p) => update({ parts: addProduct(tab.parts, p) })} />
-          <ProductLines lines={tab.parts} discounts={discounts} onChange={(parts) => update({ parts })} />
+          <ProductLines lines={tab.parts} canSeeCost={perms.includes("compras.ver")} onChange={(parts) => update({ parts })} />
         </Card>
 
         <Card title="Cargos externos" actions={<Button variant="ghost" onClick={() => setExternal([...tab.external, { key: newKey(), description: "", price: "" }])}>+ Agregar</Button>}>
@@ -675,9 +890,17 @@ function ServiceTicket({ tab, perms, discounts, searchRef, chargeRef, update, on
         total={total}
         error={close.error}
         pending={close.isPending}
-        disabled={empty || !!closed || untyped}
+        disabled={empty || !!closed || untyped || unpriced.length > 0}
         onCharge={charge}
         cta="Cobrar y entregar"
+        confirm={{
+          open: confirming,
+          onCancel: () => setConfirming(false),
+          onConfirm: doCharge,
+          customer: tab.customer?.name ?? "",
+          terms: tab.terms,
+          items: tab.labor.length + accepted.length + tab.external.length + tab.parts.reduce((a, l) => a + l.quantity, 0),
+        }}
       >
         <p className="text-sm text-neutral-400">
           Cliente: <span className="font-medium text-neutral-100">{tab.customer?.name}</span>

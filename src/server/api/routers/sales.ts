@@ -13,6 +13,7 @@ import {
 import { buildProductLines, createInvoice, lineNet, zProductLine, zTerms } from "~/server/domain/billing";
 import {
   CURRENCIES,
+  PAYMENT_TERMS,
   dayToDate,
   zDay,
   zExchangeRate,
@@ -23,8 +24,79 @@ import {
   zQty,
 } from "~/server/domain/constants";
 import { recordMovement } from "~/server/domain/inventory";
-import { lockRows } from "~/server/domain/sql";
-import { D, round2, sum, toNio } from "~/server/domain/money";
+import { lockRows, Sql } from "~/server/domain/sql";
+import { D, type Dec, round2, sum, toNio } from "~/server/domain/money";
+import { type Prisma } from "~/server/db";
+
+/** Prompt v2 §2: owners can void an invoice up to 3 days after it was made. */
+export const VOID_DAYS = 3;
+
+type Tx = Prisma.TransactionClient;
+
+/**
+ * API-016 — Products come back from an invoice: return + lines + DEVOLUCION_CLIENTE
+ * movements at the cost they left with. Used by returns and by voids (DEC-055).
+ */
+async function createCustomerReturn(
+  tx: Tx,
+  userId: number,
+  input: {
+    saleInvoiceId: number;
+    returnReasonId: number;
+    creditNoteNumber?: string | null;
+    notes?: string | null;
+    lines: { saleInvoiceLineId: number; quantity: number }[];
+  },
+) {
+  // Lock the invoice so two returns can't both pass the quantity check.
+  await tx.$queryRaw`SELECT id FROM sale_invoice WHERE id = ${input.saleInvoiceId} FOR UPDATE`;
+  const lines = await tx.saleInvoiceLine.findMany({
+    where: { saleInvoiceId: input.saleInvoiceId },
+    include: { returnLines: true, inventoryMovements: true },
+  });
+  const byId = new Map(lines.map((l) => [l.id, l]));
+  for (const r of input.lines) {
+    const line = byId.get(r.saleInvoiceLineId);
+    if (!line) throw fail("Una de las líneas no pertenece a esta factura.");
+    if (line.lineType !== "PRODUCTO" || !line.productId) throw fail("Solo se devuelven productos.");
+    const already = line.returnLines.reduce((a, x) => a + x.quantity, 0);
+    if (r.quantity > line.quantity - already) {
+      throw fail(`Línea ${line.lineNo}: se vendieron ${line.quantity} y ya se devolvieron ${already}.`);
+    }
+  }
+  const ret = await tx.customerReturn.create({
+    data: {
+      saleInvoiceId: input.saleInvoiceId,
+      returnReasonId: input.returnReasonId,
+      creditNoteNumber: input.creditNoteNumber ?? null,
+      notes: input.notes ?? null,
+      registeredByUserId: userId,
+    },
+  });
+  for (const [i, r] of input.lines.entries()) {
+    const line = byId.get(r.saleInvoiceLineId)!;
+    const rl = await tx.customerReturnLine.create({
+      data: {
+        customerReturnId: ret.id,
+        saleInvoiceId: input.saleInvoiceId,
+        lineNo: i + 1,
+        saleInvoiceLineId: line.id,
+        productId: line.productId!,
+        quantity: r.quantity,
+      },
+    });
+    // Goods come back at the cost they left with.
+    await recordMovement(tx, {
+      productId: line.productId!,
+      movementType: "DEVOLUCION_CLIENTE",
+      quantity: r.quantity,
+      unitCost: line.inventoryMovements[0]?.unitCost,
+      userId,
+      customerReturnLineId: rl.id,
+    });
+  }
+  return ret;
+}
 
 /**
  * API-012 counter sale · API-013 customer payments · API-014 receivables ·
@@ -80,6 +152,174 @@ export const salesRouter = createTRPCRouter({
       };
     }),
 
+  /**
+   * Facturas (registro de lo cobrado): filters done by the database (DEC-049, DEC-054)
+   * on v_invoice_balance, plus the totals of everything that matches (not only
+   * the page). Pages by offset: the list is sorted newest first.
+   */
+  searchInvoices: permissionProcedure("ventas.ver")
+    .input(
+      z
+        .object({
+          from: zDay.optional(),
+          to: zDay.optional(),
+          /** Customer name (no accents needed) or the invoice number. */
+          text: z.string().trim().max(100).optional(),
+          paymentTerms: z.enum(PAYMENT_TERMS).optional(),
+          state: z.enum(["TODAS", "PENDIENTES", "PAGADAS", "VENCIDAS", "ANULADAS"]).default("TODAS"),
+          origin: z.enum(["TODAS", "MOSTRADOR", "TALLER"]).default("TODAS"),
+          offset: z.number().int().min(0).default(0),
+          limit: z.number().int().min(1).max(100).default(50),
+        })
+        .default({}),
+    )
+    .query(async ({ ctx, input }) => {
+      const q = new Sql();
+      const conds = ["true"];
+      // created_at is TIMESTAMPTZ: the day is the one in Managua (DEC-038).
+      if (input.from) conds.push(`(si.created_at AT TIME ZONE 'America/Managua')::date >= ${q.p(input.from, "date")}`);
+      if (input.to) conds.push(`(si.created_at AT TIME ZONE 'America/Managua')::date <= ${q.p(input.to, "date")}`);
+      if (input.paymentTerms) conds.push(`b.payment_terms = ${q.p(input.paymentTerms)}`);
+      if (input.state === "PENDIENTES") conds.push("b.balance > 0");
+      if (input.state === "PAGADAS") conds.push("b.balance <= 0 AND NOT b.voided");
+      if (input.state === "ANULADAS") conds.push("b.voided");
+      if (input.state === "VENCIDAS") conds.push("b.days_overdue > 0");
+      if (input.origin === "TALLER") conds.push("si.service_order_id IS NOT NULL");
+      if (input.origin === "MOSTRADOR") conds.push("si.service_order_id IS NULL");
+      if (input.text) {
+        const digits = /^#?0*(\d{1,9})$/.exec(input.text)?.[1];
+        const byName = `mirm_norm(coalesce(c.name, 'Cliente de contado')) LIKE '%' || mirm_norm(${q.p(input.text)}) || '%'`;
+        conds.push(
+          digits
+            ? `(si.id = ${q.p(Number(digits), "int")} OR si.invoice_number = ${q.p(input.text)} OR ${byName})`
+            : `(si.invoice_number = ${q.p(input.text)} OR ${byName})`,
+        );
+      }
+      const from = `FROM v_invoice_balance b
+        JOIN sale_invoice si ON si.id = b.sale_invoice_id
+        LEFT JOIN customer c ON c.id = b.customer_id
+        JOIN app_user u ON u.id = si.created_by_user_id
+       WHERE ${conds.join(" AND ")}`;
+      const rows = await q.run<
+        {
+          id: number;
+          invoice_number: string | null;
+          created_at: Date;
+          payment_terms: string;
+          due_date: Date | null;
+          customer_id: number | null;
+          customer_name: string | null;
+          service_order_id: number | null;
+          created_by: string;
+          total: Dec;
+          returned: Dec;
+          paid: Dec;
+          balance: Dec;
+          days_overdue: number | null;
+          voided: boolean;
+          count: bigint;
+          sum_total: Dec;
+          sum_paid: Dec;
+          sum_balance: Dec;
+        }[]
+      >(
+        ctx.db,
+        `SELECT si.id, si.invoice_number, b.created_at, b.payment_terms, b.due_date, b.customer_id,
+                c.name AS customer_name, si.service_order_id, u.username AS created_by,
+                b.total, b.returned, b.paid, b.balance, b.days_overdue, b.voided,
+                count(*) OVER () AS count,
+                -- A voided invoice counts as billed 0 and collected 0 (its money went back).
+                sum(CASE WHEN b.voided THEN 0 ELSE b.total - b.returned END) OVER () AS sum_total,
+                sum(CASE WHEN b.voided THEN 0 ELSE b.paid END) OVER () AS sum_paid,
+                sum(b.balance) OVER () AS sum_balance
+           ${from}
+          ORDER BY si.id DESC
+          LIMIT ${q.p(input.limit, "int")} OFFSET ${q.p(input.offset, "int")}`,
+      );
+      const first = rows[0];
+      return {
+        items: rows.map((r) => ({
+          id: r.id,
+          invoiceNumber: r.invoice_number,
+          createdAt: r.created_at,
+          paymentTerms: r.payment_terms,
+          dueDate: r.due_date,
+          customer: r.customer_id ? { id: r.customer_id, name: r.customer_name ?? "" } : null,
+          serviceOrderId: r.service_order_id,
+          createdBy: r.created_by,
+          total: r.total,
+          returned: r.returned,
+          paid: r.paid,
+          balance: r.balance,
+          overdue: (r.days_overdue ?? 0) > 0,
+          voided: r.voided,
+        })),
+        // With an offset past the end there are no rows to read the totals from.
+        count: first ? Number(first.count) : 0,
+        sumTotal: first?.sum_total ?? D(0),
+        sumPaid: first?.sum_paid ?? D(0),
+        sumBalance: first?.sum_balance ?? D(0),
+      };
+    }),
+
+  /**
+   * DEC-055 — Void an invoice: only an owner, within 3 days, with a reason. Nothing
+   * is deleted: the unreturned products come back through a return, what was paid
+   * is recorded as cash given back, and the balance becomes 0. The database checks
+   * the same rules (tg_sale_invoice_void_check) and blocks new payments/returns.
+   */
+  voidInvoice: permissionProcedure("ventas.anular")
+    .input(z.object({ saleInvoiceId: zId, reason: z.string().trim().min(5, "Escriba el motivo (al menos 5 letras)").max(200) }))
+    .mutation(({ ctx, input }) =>
+      ctx.db.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM sale_invoice WHERE id = ${input.saleInvoiceId} FOR UPDATE`;
+        const inv = await tx.saleInvoice.findUniqueOrThrow({
+          where: { id: input.saleInvoiceId },
+          include: {
+            void: true,
+            serviceOrder: { select: { staffPayoutId: true } },
+            lines: { include: { returnLines: true } },
+          },
+        });
+        if (inv.void) throw fail("Esta factura ya está anulada.");
+        const me = await tx.appUser.findUniqueOrThrow({ where: { id: ctx.user.id }, include: { staff: true } });
+        if (me.staff?.kind !== "DUENO" || !me.staff.active) throw fail("Solo un dueño puede anular facturas.", "FORBIDDEN");
+        if (Date.now() - inv.createdAt.getTime() > VOID_DAYS * 86_400_000) {
+          throw fail(`La factura tiene más de ${VOID_DAYS} días: ya no se puede anular.`);
+        }
+        if (inv.serviceOrder?.staffPayoutId) throw fail("La comisión de esta orden ya se pagó: no se puede anular la factura.");
+
+        // Products not returned yet go back to the shelf.
+        const pending = inv.lines.flatMap((l) => {
+          const left = l.lineType === "PRODUCTO" ? l.quantity - l.returnLines.reduce((a, r) => a + r.quantity, 0) : 0;
+          return left > 0 ? [{ saleInvoiceLineId: l.id, quantity: left }] : [];
+        });
+        let customerReturnId: number | null = null;
+        if (pending.length) {
+          const reason = await tx.returnReason.findFirst({ where: { name: { equals: "Anulación de factura", mode: "insensitive" } } });
+          if (!reason) throw fail("Falta el motivo «Anulación de factura» (migración 7).");
+          const ret = await createCustomerReturn(tx, ctx.user.id, {
+            saleInvoiceId: inv.id,
+            returnReasonId: reason.id,
+            notes: `Anulación: ${input.reason}`.slice(0, 200),
+            lines: pending,
+          });
+          customerReturnId = ret.id;
+        }
+        // Read before the void row: after it, the view says balance 0.
+        const b = await invoiceBalance(tx, inv.id);
+        return tx.saleInvoiceVoid.create({
+          data: {
+            saleInvoiceId: inv.id,
+            voidedByUserId: ctx.user.id,
+            reason: input.reason,
+            refundAmount: b.paid,
+            customerReturnId,
+          },
+        });
+      }),
+    ),
+
   getInvoice: permissionProcedure("ventas.ver")
     .input(z.object({ id: zId }))
     .query(async ({ ctx, input }) => {
@@ -95,6 +335,10 @@ export const salesRouter = createTRPCRouter({
           },
           paymentAllocations: { include: { customerPayment: { include: { paymentMethod: true } } } },
           returns: { include: { lines: true, returnReason: true } },
+          serviceOrder: {
+            select: { id: true, odometerKm: true, motorcycle: { include: { model: { include: { brand: true } } } } },
+          },
+          void: { include: { voidedBy: { select: { username: true } } } },
         },
       });
       const b = await invoiceBalance(ctx.db, inv.id);
@@ -151,54 +395,7 @@ export const salesRouter = createTRPCRouter({
     )
     .mutation(({ ctx, input }) =>
       ctx.db.$transaction(async (tx) => {
-        // Lock the invoice so two returns can't both pass the quantity check.
-        await tx.$queryRaw`SELECT id FROM sale_invoice WHERE id = ${input.saleInvoiceId} FOR UPDATE`;
-        const lines = await tx.saleInvoiceLine.findMany({
-          where: { saleInvoiceId: input.saleInvoiceId },
-          include: { returnLines: true, inventoryMovements: true },
-        });
-        const byId = new Map(lines.map((l) => [l.id, l]));
-        for (const r of input.lines) {
-          const line = byId.get(r.saleInvoiceLineId);
-          if (!line) throw fail("Una de las líneas no pertenece a esta factura.");
-          if (line.lineType !== "PRODUCTO" || !line.productId) throw fail("Solo se devuelven productos.");
-          const already = line.returnLines.reduce((a, x) => a + x.quantity, 0);
-          if (r.quantity > line.quantity - already) {
-            throw fail(`Línea ${line.lineNo}: se vendieron ${line.quantity} y ya se devolvieron ${already}.`);
-          }
-        }
-        const ret = await tx.customerReturn.create({
-          data: {
-            saleInvoiceId: input.saleInvoiceId,
-            returnReasonId: input.returnReasonId,
-            creditNoteNumber: input.creditNoteNumber ?? null,
-            notes: input.notes ?? null,
-            registeredByUserId: ctx.user.id,
-          },
-        });
-        for (const [i, r] of input.lines.entries()) {
-          const line = byId.get(r.saleInvoiceLineId)!;
-          const rl = await tx.customerReturnLine.create({
-            data: {
-              customerReturnId: ret.id,
-              saleInvoiceId: input.saleInvoiceId,
-              lineNo: i + 1,
-              saleInvoiceLineId: line.id,
-              productId: line.productId!,
-              quantity: r.quantity,
-            },
-          });
-          // Goods come back at the cost they left with.
-          await recordMovement(tx, {
-            productId: line.productId!,
-            movementType: "DEVOLUCION_CLIENTE",
-            quantity: r.quantity,
-            unitCost: line.inventoryMovements[0]?.unitCost,
-            userId: ctx.user.id,
-            customerReturnLineId: rl.id,
-          });
-        }
-        return ret;
+        return createCustomerReturn(tx, ctx.user.id, input);
       }),
     ),
 
@@ -316,6 +513,55 @@ export const salesRouter = createTRPCRouter({
         oldestDue: r.oldestDueDate?.toISOString().slice(0, 10) ?? null,
       }));
       return { rows: list, total: sum(list.map((r) => r.balance)), overdue: sum(list.map((r) => r.overdue)) };
+    }),
+
+  /**
+   * A customer payment (abono) with what it paid and what is still owed, for the
+   * printable receipt (DEC-053). The customer comes from what the payment paid.
+   */
+  getPayment: permissionProcedure("clientes.ver")
+    .input(z.object({ id: zId }))
+    .query(async ({ ctx, input }) => {
+      const p = await ctx.db.customerPayment.findUniqueOrThrow({
+        where: { id: input.id },
+        include: {
+          paymentMethod: true,
+          receivedBy: { select: { username: true } },
+          allocations: {
+            orderBy: { id: "asc" },
+            include: { saleInvoice: { include: { customer: true } }, customerOpeningBalance: { include: { customer: true } } },
+          },
+        },
+      });
+      const customer = p.allocations[0]?.saleInvoice?.customer ?? p.allocations[0]?.customerOpeningBalance?.customer ?? null;
+      const invoiceIds = p.allocations.flatMap((a) => (a.saleInvoiceId ? [a.saleInvoiceId] : []));
+      const invoices = await invoiceBalances(ctx.db, invoiceIds);
+      const openings = await openingBalances(ctx.db, {
+        ids: p.allocations.flatMap((a) => (a.customerOpeningBalanceId ? [a.customerOpeningBalanceId] : [])),
+      });
+      const account = customer ? (await customerBalances(ctx.db, { customerId: customer.id }))[0] : undefined;
+      return {
+        id: p.id,
+        paidAt: p.paidAt,
+        amount: p.amount,
+        currency: p.currency,
+        exchangeRate: p.exchangeRate,
+        amountNio: toNio(p.amount, p.currency, p.exchangeRate),
+        method: p.paymentMethod.name,
+        receivedBy: p.receivedBy.username,
+        customer: customer ? { id: customer.id, name: customer.name, phone: customer.phone, nationalId: customer.nationalId } : null,
+        allocations: p.allocations.map((a) => ({
+          id: a.id,
+          saleInvoiceId: a.saleInvoiceId,
+          customerOpeningBalanceId: a.customerOpeningBalanceId,
+          amount: a.amount,
+          /** What that debt still owes now. */
+          balanceNow: a.saleInvoiceId
+            ? (invoices.get(a.saleInvoiceId)?.balance ?? null)
+            : (openings.find((o) => o.customerOpeningBalanceId === a.customerOpeningBalanceId)?.balance ?? null),
+        })),
+        customerBalanceNow: account?.balance ?? null,
+      };
     }),
 
   /** Net value of a line per unit, for the returns screen. */

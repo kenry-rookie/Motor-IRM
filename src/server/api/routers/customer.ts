@@ -169,6 +169,33 @@ export const customerRouter = createTRPCRouter({
     });
     const total = sum([...invoiceRows.map((r) => r.balance), ...openingRows.map((r) => r.balance)]);
     const interest = sum([...invoiceRows.map((r) => r.interest), ...openingRows.map((r) => r.interest)]);
-    return { customer, invoices: invoiceRows, openingBalances: openingRows, totalBalance: total, totalInterest: interest };
+    // Abonos (payments that paid one of this customer's debts), to reprint their receipt (DEC-053).
+    const payments = await ctx.db.customerPayment.findMany({
+      where: {
+        allocations: {
+          some: {
+            OR: [{ saleInvoice: { customerId: input.customerId } }, { customerOpeningBalance: { customerId: input.customerId } }],
+          },
+        },
+      },
+      orderBy: { id: "desc" },
+      take: 50,
+      include: { paymentMethod: { select: { name: true } }, allocations: { select: { saleInvoiceId: true, customerOpeningBalanceId: true } } },
+    });
+    // Contado payments are made with the invoice itself; only list the ones of credit debts.
+    const creditInvoiceIds = new Set(invoiceRows.filter((r) => r.paymentTerms === "CREDITO").map((r) => r.id));
+    const paymentRows = payments
+      .filter((p) =>
+        p.allocations.some((a) => a.customerOpeningBalanceId != null || (a.saleInvoiceId != null && creditInvoiceIds.has(a.saleInvoiceId))),
+      )
+      .map((p) => ({ id: p.id, paidAt: p.paidAt, amount: p.amount, currency: p.currency, method: p.paymentMethod.name }));
+    return {
+      customer,
+      invoices: invoiceRows,
+      openingBalances: openingRows,
+      payments: paymentRows,
+      totalBalance: total,
+      totalInterest: interest,
+    };
   }),
 });

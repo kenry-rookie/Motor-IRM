@@ -103,6 +103,7 @@ model AppUser {
 
   // Audit back-relations: what this user registered / authorized.
   priceChanges                 ProductPriceHistory[]
+  invoicesVoided               SaleInvoiceVoid[]            @relation("SaleInvoiceVoidedBy")
   staffPayoutsPaid             StaffPayout[]
   staffAdvancesGiven           StaffAdvance[]
   cashWithdrawals              CashWithdrawal[]
@@ -402,9 +403,31 @@ model SaleInvoice {
   serviceOrder       ServiceOrder?               @relation(fields: [serviceOrderId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_service_order_id")
   paymentAllocations CustomerPaymentAllocation[]
   warrantyClaim      WarrantyClaim? // set when this invoice sells a part for a warranty claim
+  void               SaleInvoiceVoid? // set when an owner voided it (DEC-055)
 
   @@unique([id, serviceOrderId], map: "uq_sale_invoice_id_service_order_id")
   @@map("sale_invoice")
+}
+
+/// Voided invoice (DEC-055): never deleted. Owners only, within 3 days, with a
+/// reason; the products came back through `customerReturn`. Rules: trigger
+/// tg_sale_invoice_void_check (migration 7). Append-only.
+model SaleInvoiceVoid {
+  saleInvoiceId    Int      @id(map: "pk_sale_invoice_void") @map("sale_invoice_id")
+  voidedAt         DateTime @default(dbgenerated("CURRENT_TIMESTAMP(0)")) @map("voided_at") @db.Timestamptz(0)
+  voidedByUserId   Int      @map("voided_by_user_id")
+  reason           String   @db.VarChar(200)
+  /// Cash given back to the customer (NIO): what had been paid.
+  refundAmount     Decimal  @default(0) @map("refund_amount") @db.Decimal(12, 2)
+  customerReturnId Int?     @map("customer_return_id")
+
+  saleInvoice    SaleInvoice     @relation(fields: [saleInvoiceId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_void_sale_invoice_id")
+  voidedBy       AppUser         @relation("SaleInvoiceVoidedBy", fields: [voidedByUserId], references: [id], onDelete: Restrict, map: "fk_sale_invoice_void_voided_by_user_id")
+  // Composite FK: the return belongs to this same invoice.
+  customerReturn CustomerReturn? @relation(fields: [customerReturnId, saleInvoiceId], references: [id, saleInvoiceId], onDelete: Restrict, map: "fk_sale_invoice_void_customer_return")
+
+  @@unique([customerReturnId, saleInvoiceId], map: "uq_sale_invoice_void_customer_return_id_sale_invoice_id")
+  @@map("sale_invoice_void")
 }
 
 model SaleInvoiceLine {
@@ -454,6 +477,7 @@ model CustomerReturn {
   returnReason ReturnReason         @relation(fields: [returnReasonId], references: [id], onDelete: Restrict, map: "fk_customer_return_return_reason_id")
   registeredBy AppUser              @relation(fields: [registeredByUserId], references: [id], onDelete: Restrict, map: "fk_customer_return_registered_by_user_id")
   lines        CustomerReturnLine[]
+  invoiceVoid  SaleInvoiceVoid?
 
   @@unique([id, saleInvoiceId], map: "uq_customer_return_id_sale_invoice_id")
   @@map("customer_return")

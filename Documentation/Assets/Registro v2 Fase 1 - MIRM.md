@@ -68,3 +68,38 @@ reviewed: false
 - Datos de demostración ampliados (42 productos, 4 proveedores con compras, 10 clientes con y sin deuda, ventas y taller), todo ficticio.
 
 **Migración nueva:** `5_workshop_catalog_phones_filters`. **Pruebas nuevas:** trabajos obligatorios, rango de precio, teléfonos, filtros, contraseña en permisos.
+
+---
+
+## Tercera ronda (10-nov, noche) — revisión de Kenry en su Mac
+
+**Corregido**
+- Una orden Terminada o En prueba ya no se puede cancelar (pantalla, API y trigger) → DEC-051.
+- Caja: cerrar con × una pestaña ya no «gasta» números: la pestaña toma el número libre más bajo («Venta 1», «Venta 2»…), que es solo su nombre, no el de la factura. La única pestaña vacía no muestra ×.
+- Caja (cobro del taller): un trabajo sin precio (p. ej. «Diagnóstico», que no tiene precio de referencia) ya no se descarta sin aviso; se pide su precio antes de cobrar.
+
+**Pedidos implementados**
+- Caja: «+ Agregar trabajo» abre un panel grande con buscador y categorías, en lugar de alargar la pantalla.
+- Caja: sin desplegable de descuento; doble clic en el precio → rebajas de 2/3/5 % u otro precio, nunca bajo el costo → DEC-052.
+- Nombre del producto más grande que el control de cantidad.
+- Al cobrar, ventana «¿Imprimir factura?»; factura con formato real «Motoservicios y Repuestos Rivera»; recibo de abono imprimible y reimprimible → DEC-053.
+- Textos de ayuda quitados: recepción (teléfono, chasis, kilometraje, nota del cliente, responsable), placa de moto nueva y subtítulos de Caja e Inventario.
+
+**Migración nueva:** `6_order_status_guard_min_price` (solo triggers). **Pruebas nuevas:** cancelar orden terminada (API y base), precio rebajado con y sin permiso, precio mayor al normal y bajo el costo (API y base), recibo de abono.
+
+**Probado por Claude:** migraciones 0–6 en base vacía (PostgreSQL 16) y los triggers con SQL directo; `tsc --noEmit` y ESLint sin errores.
+**Falta:** `npm run db:migrate`, `npm test`, `npm run build` en la Mac, y el recorrido en la app.
+
+**Pendiente para decidir:** otras pantallas también tienen subtítulos o ayudas (Compras, Retiros, Administración y sus opciones, Resumen, formularios de usuarios). No los toqué: dime cuáles quitar.
+
+**Cuarta ronda (10-nov, 22 h)** → DEC-054
+- Pantalla **Facturas**: registro de todo lo cobrado con filtros, totales y reimpresión.
+- Caja: «Cobrar» abre «Realizar cobro» (Cobrar / Cancelar); recién después se pregunta si imprimir.
+- Administración: opciones como sub-menú en la barra lateral; sin el recuadro.
+- Prueba nueva: registro de facturas (filtros, búsqueda sin tilde y por número, totales).
+
+**Quinta ronda (10-nov, 22:30 h)** → DEC-055, DEC-056
+- **Anulación de facturas**: solo dueños, hasta 3 días, con motivo; productos de vuelta, efectivo devuelto registrado, saldo 0, sin comisión; reglas en la base. Migración `7_sale_invoice_void`, permiso `ventas.anular`.
+- **Pago a mecánicos** como área propia del menú con «Dar adelanto» y «Pagar periodo trabajado».
+- Pruebas nuevas: anulación (permiso, motivo, stock, saldo, efectivo, doble anulación, abonos bloqueados, plazo de 3 días).
+- Pregunta abierta: al anular la factura de una moto, ¿reabrir la misma orden o recibirla como orden nueva? (por ahora, orden nueva).

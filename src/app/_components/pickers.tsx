@@ -551,7 +551,7 @@ export function MotorcyclePicker({
           <Field label="Color" error={errors.color}>
             <Input value={draft.color} onChange={(e) => setNew({ ...draft, color: e.target.value })} />
           </Field>
-          <Field label="Placa (opcional)" hint="Las motos nuevas pueden no tener placa.">
+          <Field label="Placa (opcional)">
             <Input value={draft.plate} onChange={(e) => setNew({ ...draft, plate: e.target.value.toUpperCase() })} />
           </Field>
         </div>

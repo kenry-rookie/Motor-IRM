@@ -11,7 +11,7 @@ import { cleanTerms, emptyTerms, type Terms, TermsForm } from "~/app/_components
 import { Alert, BackBar, Badge, Button, Card, Dialog, Field, Input, PageTitle, Select, Table, Textarea } from "~/app/_components/ui";
 import { errorMessage } from "~/lib/errors";
 import { formatDateTime, money } from "~/lib/format";
-import { LABELS, type ServiceOrderStatus } from "~/server/domain/constants";
+import { FINISHED_SERVICE_STATUSES, LABELS, type ServiceOrderStatus } from "~/server/domain/constants";
 import { api, type RouterInputs } from "~/trpc/react";
 
 type MovableStatus = RouterInputs["service"]["changeStatus"]["status"];
@@ -201,9 +201,12 @@ export default function OrderPage() {
               >
                 Cobrar en caja
               </Button>
-              <Button variant="danger" onClick={() => setCancelling(true)}>
-                Cancelar orden
-              </Button>
+              {/* A finished order is charged, not cancelled (DEC-051). */}
+              {!FINISHED_SERVICE_STATUSES.includes(o.status) && (
+                <Button variant="danger" onClick={() => setCancelling(true)}>
+                  Cancelar orden
+                </Button>
+              )}
             </div>
           )}
         </Card>

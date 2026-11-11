@@ -19,6 +19,7 @@ export const PERMISSIONS = {
   "ventas.autorizar_descuento": "Autorizar descuentos",
   "ventas.autorizar_credito": "Autorizar ventas al crédito y prórrogas",
   "ventas.devoluciones": "Registrar devoluciones de clientes",
+  "ventas.anular": "Anular facturas (solo dueños, hasta 3 días)",
   "cobros.registrar": "Registrar abonos y pagos de clientes",
   "taller.ver": "Ver órdenes de servicio",
   "taller.gestionar": "Recibir motos, asignar mecánico, cambiar estados, fallas adicionales",

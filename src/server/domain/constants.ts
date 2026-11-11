@@ -43,6 +43,8 @@ export type MovementType = (typeof MOVEMENT_TYPES)[number];
 
 /** Final states: an order in one of these cannot change any more. */
 export const FINAL_SERVICE_STATUSES: readonly ServiceOrderStatus[] = ["ENTREGADA", "CANCELADA"];
+/** The work is done: the order is charged, never cancelled (DEC-051, trigger tg_service_order_cancel_finished). */
+export const FINISHED_SERVICE_STATUSES: readonly ServiceOrderStatus[] = ["TERMINADA", "EN_PRUEBA"];
 
 /** Spanish labels for the UI. */
 export const LABELS = {

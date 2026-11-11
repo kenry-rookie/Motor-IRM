@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { confirmDialog } from "~/app/_components/confirm";
 import { SupplierForm } from "~/app/(app)/compras/supplier-form";
 import { type CatalogProduct, ProductCatalogDialog } from "~/app/_components/catalog";
 import { ProductPicker } from "~/app/_components/pickers";
@@ -345,8 +346,8 @@ export default function NewPurchasePage() {
             <Button
               variant="ghost"
               className="mt-2 w-full"
-              onClick={() => {
-                if (window.confirm("¿Borrar esta compra sin registrarla?")) setD(empty());
+              onClick={async () => {
+                if (await confirmDialog("¿Borrar esta compra sin registrarla?", { title: "Empezar de nuevo", confirmLabel: "Sí, borrar", danger: true })) setD(empty());
               }}
             >
               Empezar de nuevo
