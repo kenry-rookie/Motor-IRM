@@ -15,6 +15,8 @@
 //   - responsible of an order: owner ⇒ no commission (DEC-041)    4_staff_kind_and_balance_views
 //   - balance / commission / margin VIEWS (v_*, DEC-042)          4_staff_kind_and_balance_views
 //     Views are read with $queryRaw from src/server/domain/balances.ts.
+//   - phone format CHECKs, "at least one service per order" (deferred
+//     constraint trigger), filter views v_*_overview      5_workshop_catalog_phones_filters
 // When you change a column covered by one of those, update the SQL migration too.
 // Dates: every instant is TIMESTAMPTZ (DEC-038); DATE columns are calendar days.
 
@@ -180,13 +182,31 @@ model Discount {
   @@map("discount")
 }
 
-model ServiceType {
-  id             Int      @id(map: "pk_service_type") @default(autoincrement())
-  name           String   @db.VarChar(50)
-  referencePrice Decimal? @map("reference_price") @db.Decimal(12, 2)
-  active         Boolean  @default(true)
+/// Groups of the workshop catalog (Frenos, Motor…). A table, not text, so
+/// "Frenos" and "frenos " can't become two categories (DEC-048).
+model ServiceCategory {
+  id        Int    @id(map: "pk_service_category") @default(autoincrement())
+  name      String @db.VarChar(40) // unique on lower(name): SQL migration
+  sortOrder Int    @default(100) @map("sort_order") @db.SmallInt
 
+  serviceTypes ServiceType[]
+
+  @@map("service_category")
+}
+
+/// A standard job of the workshop. Charging outside [minPrice, maxPrice] needs an owner's key.
+model ServiceType {
+  id                Int      @id(map: "pk_service_type") @default(autoincrement())
+  name              String   @db.VarChar(50)
+  referencePrice    Decimal? @map("reference_price") @db.Decimal(12, 2)
+  active            Boolean  @default(true)
+  serviceCategoryId Int      @map("service_category_id")
+  minPrice          Decimal? @map("min_price") @db.Decimal(12, 2)
+  maxPrice          Decimal? @map("max_price") @db.Decimal(12, 2)
+
+  category         ServiceCategory    @relation(fields: [serviceCategoryId], references: [id], onDelete: Restrict, map: "fk_service_type_service_category_id")
   saleInvoiceLines SaleInvoiceLine[]
+  orderItems       ServiceOrderItem[]
 
   @@map("service_type")
 }
@@ -236,6 +256,7 @@ model Motorcycle {
   color             String  @db.VarChar(30)
   plate             String? @db.VarChar(15) // unique on upper(plate): SQL migration
   notes             String? @db.VarChar(200)
+  chassisNumber     String? @map("chassis_number") @db.VarChar(30) // unique on upper(): SQL migration
 
   customer      Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict, map: "fk_motorcycle_customer_id")
   model         MotorcycleModel @relation(fields: [motorcycleModelId], references: [id], onDelete: Restrict, map: "fk_motorcycle_motorcycle_model_id")
@@ -486,12 +507,14 @@ model ServiceOrder {
   id                    Int      @id(map: "pk_service_order") @default(autoincrement())
   motorcycleId          Int      @map("motorcycle_id")
   mechanicStaffId       Int?     @map("mechanic_staff_id") // the responsible: a mechanic or an owner (DEC-041)
-  requestedWork         String   @map("requested_work") @db.VarChar(500)
+  requestedWork         String?  @map("requested_work") @db.VarChar(500) // customer's note; the jobs are `items`
   diagnosis             String?  @db.VarChar(500)
   cancellationFee       Decimal? @map("cancellation_fee") @db.Decimal(12, 2)
   appliedCommissionRate Decimal? @map("applied_commission_rate") @db.Decimal(5, 4) // NULL = no commission
   staffPayoutId         Int?     @map("staff_payout_id")
+  odometerKm            Int?     @map("odometer_km")
 
+  items                     ServiceOrderItem[]
   saleInvoice               SaleInvoice?
   motorcycle                Motorcycle                 @relation(fields: [motorcycleId], references: [id], onDelete: Restrict, map: "fk_service_order_motorcycle_id")
   mechanic                  Staff?                     @relation(fields: [mechanicStaffId], references: [id], onDelete: Restrict, map: "fk_service_order_mechanic_staff_id")
@@ -503,6 +526,22 @@ model ServiceOrder {
   warrantyClaimAsNewService WarrantyClaim?             @relation("WarrantyClaimNewServiceOrder")
 
   @@map("service_order")
+}
+
+/// The jobs of an order, chosen from the catalog. Every order has at least one
+/// (deferred constraint trigger tg_service_order_has_items, DEC-048).
+model ServiceOrderItem {
+  id             Int     @id(map: "pk_service_order_item") @default(autoincrement())
+  serviceOrderId Int     @map("service_order_id")
+  serviceTypeId  Int     @map("service_type_id")
+  notes          String? @db.VarChar(200)
+
+  serviceOrder ServiceOrder @relation(fields: [serviceOrderId], references: [id], onDelete: Restrict, map: "fk_service_order_item_service_order_id")
+  serviceType  ServiceType  @relation(fields: [serviceTypeId], references: [id], onDelete: Restrict, map: "fk_service_order_item_service_type_id")
+
+  @@unique([serviceOrderId, serviceTypeId], map: "uq_service_order_item_order_type")
+  @@index([serviceTypeId], map: "ix_service_order_item_service_type_id")
+  @@map("service_order_item")
 }
 
 model ServiceOrderStatusChange {

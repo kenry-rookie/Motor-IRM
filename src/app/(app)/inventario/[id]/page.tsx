@@ -3,7 +3,7 @@
 import { useParams } from "next/navigation";
 import { useState } from "react";
 
-import { Alert, Badge, Button, Card, Field, Input, PageTitle, Select, Table } from "~/app/_components/ui";
+import { Alert, BackBar, Badge, Button, Card, Field, Input, PageTitle, Select, Table } from "~/app/_components/ui";
 import { LABELS } from "~/server/domain/constants";
 import { errorMessage } from "~/lib/errors";
 import { formatDateTime, money } from "~/lib/format";
@@ -34,6 +34,7 @@ export default function ProductPage() {
 
   return (
     <>
+      <BackBar crumbs={[{ label: "Inventario", href: "/inventario" }, { label: p.name }]} back={{ href: "/inventario", label: "Volver al inventario" }} />
       <PageTitle title={p.name} subtitle={`${p.category.name} · ${p.brand.name} · ${p.barcode ?? "sin código"}`} />
       <div className="grid gap-4 lg:grid-cols-3">
         <Card title="Existencias">

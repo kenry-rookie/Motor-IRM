@@ -49,3 +49,22 @@ reviewed: false
 | ¿La caja se abre y se cierra una vez al día, o cada dueño la cuenta al cambiar de turno? | Una vez al día |
 | ¿Cuántos estantes hay y cuántos niveles tiene cada uno? | Lo define el equipo al visitar el negocio |
 | Si un dueño ayuda al mecánico en la misma moto, ¿cambia el 60 % del mecánico? | Un solo responsable por orden; la comisión es completa del responsable |
+
+---
+
+## Segunda ronda (10-nov, noche) — revisión de Kenry en su Mac
+
+**Errores corregidos**
+- Clientes, Compras y Resumen fallaban dentro de la app (no en las pruebas): fragmentos SQL anidados llegaban como JSON → DEC-046.
+- Caja se caía con el descuento vacío. «Registrar marca/modelo» cerraba la ventana de recepción.
+
+**Pedidos implementados**
+- Administración por opciones (Personas, Pago a mecánicos, Usuarios, Permisos por perfil, Trabajos del taller, Marcas y modelos, Otros catálogos). Personal pasó adentro; **Retiros de caja** es una opción aparte del menú.
+- Guardar permisos pide la contraseña de quien guarda → DEC-050.
+- Inventario y Clientes con filtros hechos por la base de datos → DEC-049.
+- Compras: pantalla completa, «Ver todos los productos» abre el catálogo con filtros, último costo pagado a ese proveedor con ▲/▼, cambio de precio de venta desde la línea, borrador automático. Proveedores en tabla con «qué nos vende» y ficha propia.
+- Taller: trabajos elegidos del catálogo (con buscador y categorías; un dueño agrega los que falten), kilometraje, chasis, estado y responsable desde la tarjeta o arrastrando, botón «Volver al taller», historial de la moto → DEC-048.
+- Teléfonos con formato 8888-1111 / extranjero → DEC-047.
+- Datos de demostración ampliados (42 productos, 4 proveedores con compras, 10 clientes con y sin deuda, ventas y taller), todo ficticio.
+
+**Migración nueva:** `5_workshop_catalog_phones_filters`. **Pruebas nuevas:** trabajos obligatorios, rango de precio, teléfonos, filtros, contraseña en permisos.

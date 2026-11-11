@@ -1,12 +1,14 @@
 "use client";
 
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { queueServiceBill } from "~/app/(app)/ventas/tabs-store";
 import { ResponsibleSelect } from "~/app/_components/pickers";
+import { ServiceCatalogPicker } from "~/app/_components/service-catalog";
 import { cleanTerms, emptyTerms, type Terms, TermsForm } from "~/app/_components/terms-form";
-import { Alert, Badge, Button, Card, Dialog, Field, Input, PageTitle, Select, Table, Textarea } from "~/app/_components/ui";
+import { Alert, BackBar, Badge, Button, Card, Dialog, Field, Input, PageTitle, Select, Table, Textarea } from "~/app/_components/ui";
 import { errorMessage } from "~/lib/errors";
 import { formatDateTime, money } from "~/lib/format";
 import { LABELS, type ServiceOrderStatus } from "~/server/domain/constants";
@@ -28,6 +30,10 @@ export default function OrderPage() {
   const diag = api.service.setDiagnosis.useMutation({ onSuccess: refresh });
   const addFault = api.service.addFault.useMutation({ onSuccess: () => { setFault({ description: "", price: "" }); refresh(); } });
   const decide = api.service.decideFault.useMutation({ onSuccess: refresh });
+  const setItems = api.service.setItems.useMutation({ onSuccess: () => { setEditingJobs(null); refresh(); } });
+  const setKm = api.service.setOdometer.useMutation({ onSuccess: () => { setKmDraft(null); refresh(); } });
+  const [editingJobs, setEditingJobs] = useState<{ id: number; name: string }[] | null>(null);
+  const [kmDraft, setKmDraft] = useState<string | null>(null);
   const [diagnosis, setDiagnosis] = useState<string | null>(null);
   const [fault, setFault] = useState({ description: "", price: "" });
   const router = useRouter();
@@ -39,10 +45,11 @@ export default function OrderPage() {
   const perms = me.data?.permissions ?? [];
   const open = o.status !== "ENTREGADA" && o.status !== "CANCELADA";
   const canManage = open && perms.includes("taller.gestionar");
-  const err = assign.error ?? change.error ?? diag.error ?? addFault.error ?? decide.error;
+  const err = assign.error ?? change.error ?? diag.error ?? addFault.error ?? decide.error ?? setItems.error ?? setKm.error;
 
   return (
     <>
+      <BackBar crumbs={[{ label: "Taller", href: "/taller" }, { label: `Orden #${o.id}` }]} back={{ href: "/taller", label: "Volver al taller" }} />
       <PageTitle
         title={`Orden #${o.id}`}
         subtitle={`${o.motorcycle.customer.name} · ${o.motorcycle.customer.phone} · ${o.motorcycle.model.brand.name} ${o.motorcycle.model.name} ${o.motorcycle.color} · ${o.motorcycle.plate ?? "sin placa"}`}
@@ -59,8 +66,84 @@ export default function OrderPage() {
       />
       {err && <Alert>{errorMessage(err)}</Alert>}
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
-        <Card title="Trabajo">
-          <p className="text-sm">{o.requestedWork}</p>
+        <Card
+          title="Trabajos"
+          actions={
+            canManage &&
+            editingJobs === null && (
+              <Button variant="ghost" onClick={() => setEditingJobs(o.items.map((i) => ({ id: i.serviceType.id, name: i.serviceType.name })))}>
+                Cambiar trabajos
+              </Button>
+            )
+          }
+        >
+          {editingJobs ? (
+            <div className="space-y-3">
+              <div className="flex flex-wrap gap-2">
+                {editingJobs.map((j) => (
+                  <span key={j.id} className="inline-flex items-center gap-1 rounded-full bg-brand-600 px-3 py-1 text-sm text-white">
+                    {j.name}
+                    <button type="button" aria-label={`Quitar ${j.name}`} className="ml-1 rounded-full px-1 hover:bg-white/20" onClick={() => setEditingJobs(editingJobs.filter((x) => x.id !== j.id))}>
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <ServiceCatalogPicker
+                selected={editingJobs.map((j) => j.id)}
+                onToggle={(t) =>
+                  setEditingJobs(editingJobs.some((j) => j.id === t.id) ? editingJobs.filter((j) => j.id !== t.id) : [...editingJobs, { id: t.id, name: t.name }])
+                }
+              />
+              <div className="flex gap-2">
+                <Button disabled={editingJobs.length === 0 || setItems.isPending} onClick={() => setItems.mutate({ serviceOrderId: o.id, items: editingJobs.map((j) => ({ serviceTypeId: j.id })) })}>
+                  Guardar trabajos
+                </Button>
+                <Button variant="ghost" onClick={() => setEditingJobs(null)}>
+                  Cancelar
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <ul className="flex flex-wrap gap-2">
+              {o.items.map((i) => (
+                <li key={i.id} className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm">
+                  <span className="font-medium">{i.serviceType.name}</span>{" "}
+                  <span className="text-xs text-neutral-500">{i.serviceType.category.name}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {o.requestedWork && (
+            <p className="mt-3 text-sm text-neutral-400">
+              Nota del cliente: <span className="text-neutral-200">«{o.requestedWork}»</span>
+            </p>
+          )}
+          <div className="mt-3 flex flex-wrap items-end gap-3 text-sm">
+            {kmDraft === null ? (
+              <p>
+                Kilometraje: <span className="font-medium">{o.odometerKm != null ? `${o.odometerKm.toLocaleString("es-NI")} km` : "no registrado"}</span>{" "}
+                {canManage && (
+                  <button type="button" className="text-brand-600 hover:underline" onClick={() => setKmDraft(o.odometerKm?.toString() ?? "")}>
+                    cambiar
+                  </button>
+                )}
+              </p>
+            ) : (
+              <>
+                <Field label="Kilometraje">
+                  <Input inputMode="numeric" className="w-36" value={kmDraft} onChange={(e) => setKmDraft(e.target.value.replace(/\D/g, "").slice(0, 7))} />
+                </Field>
+                <Button variant="secondary" onClick={() => setKm.mutate({ serviceOrderId: o.id, odometerKm: kmDraft ? Number(kmDraft) : null })}>
+                  Guardar
+                </Button>
+                <Button variant="ghost" onClick={() => setKmDraft(null)}>
+                  Cancelar
+                </Button>
+              </>
+            )}
+            {o.motorcycle.chassisNumber && <p className="text-neutral-400">Chasis: {o.motorcycle.chassisNumber}</p>}
+          </div>
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <Field
               label="Responsable"
@@ -164,7 +247,9 @@ export default function OrderPage() {
           )}
         </Card>
 
-        <Card title="Historial" className="lg:col-span-2">
+        <MotorcycleHistory motorcycleId={o.motorcycle.id} currentOrderId={o.id} />
+
+        <Card title="Cambios de estado de esta orden" className="lg:col-span-2">
           <ul className="space-y-1 text-sm">
             {o.statusChanges.map((s) => (
               <li key={s.id}>
@@ -179,6 +264,38 @@ export default function OrderPage() {
         <CancelForm orderId={o.id} onDone={() => { setCancelling(false); refresh(); }} />
       </Dialog>
     </>
+  );
+}
+
+function MotorcycleHistory({ motorcycleId, currentOrderId }: { motorcycleId: number; currentOrderId: number }) {
+  const history = api.service.motorcycleHistory.useQuery({ motorcycleId });
+  const past = (history.data ?? []).filter((h) => h.id !== currentOrderId);
+  return (
+    <Card title="Historial de la moto" className="lg:col-span-2">
+      {past.length === 0 ? (
+        <p className="text-sm text-neutral-500">Es la primera vez que esta moto viene al taller.</p>
+      ) : (
+        <Table head={["Orden", "Fecha", "Km", "Trabajos", "Repuestos", "Responsable", "Estado"]}>
+          {past.map((h) => (
+            <tr key={h.id}>
+              <td>
+                <Link href={`/taller/${h.id}`} className="hover:text-brand-600">
+                  #{h.id}
+                </Link>
+              </td>
+              <td>{formatDateTime(h.date)}</td>
+              <td className="tabular-nums">{h.odometerKm != null ? h.odometerKm.toLocaleString("es-NI") : "—"}</td>
+              <td>{h.jobs.join(", ")}</td>
+              <td className="text-neutral-400">{h.parts.join(", ") || "—"}</td>
+              <td>{h.responsible ?? "—"}</td>
+              <td>
+                <Badge tone={h.status === "ENTREGADA" ? "green" : h.status === "CANCELADA" ? "red" : "amber"}>{LABELS.serviceStatus[h.status]}</Badge>
+              </td>
+            </tr>
+          ))}
+        </Table>
+      )}
+    </Card>
   );
 }
 

@@ -15,6 +15,10 @@ import {
   useState,
 } from "react";
 
+import Link from "next/link";
+
+import { formatPhoneInput } from "~/lib/phone";
+
 export const cx = (...c: (string | false | null | undefined)[]) =>
   c.filter(Boolean).join(" ");
 
@@ -112,6 +116,29 @@ const inputCls =
 export function Input({ className, ...props }: ComponentProps<"input">) {
   return <input className={cx(inputCls, className)} {...props} />;
 }
+/**
+ * Phone field (DEC-047): formats while typing — 8888-1111 for Nicaragua, or a
+ * foreign number when it starts with + (+1 305-555-1234, +506 8888-1111…).
+ */
+export function PhoneInput({
+  value,
+  onValue,
+  className,
+  ...props
+}: Omit<ComponentProps<"input">, "value" | "onChange"> & { value: string; onValue: (v: string) => void }) {
+  return (
+    <input
+      inputMode="tel"
+      autoComplete="tel"
+      placeholder="8888-1111"
+      className={cx(inputCls, "tabular-nums", className)}
+      value={value}
+      onChange={(e) => onValue(formatPhoneInput(e.target.value))}
+      {...props}
+    />
+  );
+}
+
 export function Textarea({ className, ...props }: ComponentProps<"textarea">) {
   return (
     <textarea className={cx(inputCls, "min-h-20", className)} {...props} />
@@ -343,7 +370,7 @@ export function Dialog({
   onClose: () => void;
   title: string;
   children: ReactNode;
-  size?: "md" | "lg";
+  size?: "md" | "lg" | "xl";
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -362,7 +389,11 @@ export function Dialog({
       onCancel={(e) => e.stopPropagation()}
       className={cx(
         "m-auto rounded-xl border border-neutral-800 bg-neutral-900 p-0 text-neutral-100 shadow-2xl shadow-neutral-50/15 backdrop:bg-neutral-50/30 backdrop:backdrop-blur-[2px]",
-        size === "lg" ? "w-[min(880px,calc(100vw-2rem))]" : "w-[min(640px,calc(100vw-2rem))]",
+        size === "xl"
+          ? "w-[min(1200px,calc(100vw-2rem))]"
+          : size === "lg"
+            ? "w-[min(880px,calc(100vw-2rem))]"
+            : "w-[min(640px,calc(100vw-2rem))]",
       )}
     >
       <div className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
@@ -390,6 +421,37 @@ export function Dialog({
       </div>
       <div className="max-h-[75vh] overflow-y-auto p-4">{open && children}</div>
     </dialog>
+  );
+}
+
+/**
+ * Where am I and how do I go back (prompt v2 §6.2): breadcrumbs plus a real
+ * «← Volver a …» button on every detail screen.
+ */
+export function BackBar({ crumbs, back }: { crumbs: { label: string; href?: string }[]; back: { href: string; label: string } }) {
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-3">
+      <Link
+        href={back.href}
+        className="inline-flex min-h-10 items-center gap-1.5 rounded-md border border-neutral-700 bg-neutral-900 px-3 text-sm font-medium text-neutral-200 hover:bg-neutral-800"
+      >
+        ← {back.label}
+      </Link>
+      <nav aria-label="Ruta" className="text-sm text-neutral-500">
+        {crumbs.map((c, i) => (
+          <span key={i}>
+            {i > 0 && <span className="mx-1.5">›</span>}
+            {c.href ? (
+              <Link href={c.href} className="hover:text-neutral-200 hover:underline">
+                {c.label}
+              </Link>
+            ) : (
+              <span className="text-neutral-300">{c.label}</span>
+            )}
+          </span>
+        ))}
+      </nav>
+    </div>
   );
 }
 
@@ -508,6 +570,75 @@ export function EmptyState({ title, children, action }: { title: string; childre
       <p className="font-medium text-neutral-200">{title}</p>
       {children && <p className="max-w-sm text-sm text-neutral-400">{children}</p>}
       {action && <div className="mt-2">{action}</div>}
+    </div>
+  );
+}
+
+/* ───────────── Búsqueda ───────────── */
+
+/**
+ * Text box + visible «Buscar» and «Limpiar» buttons: everything can be done with
+ * the mouse; the keyboard shortcut (F2 at the counter) is only a shortcut.
+ */
+export function SearchField({
+  value,
+  onValue,
+  placeholder,
+  label,
+  onSearch,
+  inputRef,
+  inputProps,
+  className,
+}: {
+  value: string;
+  onValue: (v: string) => void;
+  placeholder: string;
+  label: string;
+  /** What «Buscar» does; by default it just focuses the box (results come as you type). */
+  onSearch?: () => void;
+  inputRef?: React.Ref<HTMLInputElement>;
+  inputProps?: React.ComponentProps<"input">;
+  className?: string;
+}) {
+  const own = useRef<HTMLInputElement>(null);
+  const ref = (inputRef ?? own) as React.RefObject<HTMLInputElement | null>;
+  return (
+    <div className={cx("flex gap-2", className)}>
+      <Input
+        ref={ref}
+        type="search"
+        aria-label={label}
+        autoComplete="off"
+        placeholder={placeholder}
+        value={value}
+        className="h-11 text-base"
+        onChange={(e) => onValue(e.target.value)}
+        {...inputProps}
+      />
+      <Button
+        type="button"
+        variant="secondary"
+        className="h-11 shrink-0"
+        onClick={() => {
+          ref.current?.focus();
+          onSearch?.();
+        }}
+      >
+        Buscar
+      </Button>
+      {value && (
+        <Button
+          type="button"
+          variant="ghost"
+          className="h-11 shrink-0"
+          onClick={() => {
+            onValue("");
+            ref.current?.focus();
+          }}
+        >
+          Limpiar
+        </Button>
+      )}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { fail } from "~/server/api/errors";
 import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
 import { type DbClient, type Prisma } from "~/server/db";
 import { type PurchaseBalance, purchaseBalances, supplierBalance } from "~/server/domain/balances";
+import { intList, Sql } from "~/server/domain/sql";
 import {
   CURRENCIES,
   dayToDate,
@@ -19,6 +20,7 @@ import {
   zPositiveMoney,
   zQty,
   zText,
+  zOptPhone,
 } from "~/server/domain/constants";
 import { recordMovement } from "~/server/domain/inventory";
 import { D, sum, toNio } from "~/server/domain/money";
@@ -61,15 +63,110 @@ const pick = (b: PurchaseBalance) => ({ total: b.total, returned: b.returned, pa
 
 const zSupplier = z.object({
   name: zText(100),
-  phone: zOptText(20),
+  phone: zOptPhone,
   contactPerson: zOptText(100),
   givesWarranty: z.boolean().nullish(),
   openingBalance: zMoney.optional(),
   openingDate: zDay.optional(),
 });
 
+type Dec = Prisma.Decimal;
+
 export const purchasingRouter = createTRPCRouter({
   suppliers: view.query(({ ctx }) => ctx.db.supplier.findMany({ orderBy: { name: "asc" } })),
+
+  /** Suppliers as a table: what we owe, what they sell us, when we last bought (DEC-049). */
+  suppliersOverview: view.query(async ({ ctx }) => {
+    const rows = await new Sql().run<
+      {
+        id: number;
+        name: string;
+        phone: string | null;
+        contact_person: string | null;
+        gives_warranty: boolean | null;
+        balance: Dec;
+        overdue: Dec;
+        products: number;
+        top_products: string[] | null;
+        last_purchase: Date | null;
+      }[]
+    >(
+      ctx.db,
+      `SELECT s.id, s.name, s.phone, s.contact_person, s.gives_warranty, b.balance, b.overdue,
+              (SELECT count(*)::int FROM v_supplier_product sp WHERE sp.supplier_id = s.id) AS products,
+              (SELECT array_agg(x.name) FROM (
+                 SELECT p.name FROM v_supplier_product sp JOIN product p ON p.id = sp.product_id
+                  WHERE sp.supplier_id = s.id ORDER BY sp.total_quantity DESC, p.name LIMIT 4) x) AS top_products,
+              (SELECT max(pi.purchase_date) FROM purchase_invoice pi WHERE pi.supplier_id = s.id) AS last_purchase
+         FROM supplier s
+         JOIN v_supplier_balance b ON b.supplier_id = s.id
+        ORDER BY s.name`,
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      phone: r.phone,
+      contactPerson: r.contact_person,
+      givesWarranty: r.gives_warranty,
+      balance: r.balance,
+      overdue: r.overdue,
+      products: Number(r.products),
+      topProducts: r.top_products ?? [],
+      lastPurchase: r.last_purchase,
+    }));
+  }),
+
+  /** What a supplier sells us (from its invoices): last cost, last date, how much. */
+  supplierProducts: view.input(z.object({ supplierId: zId })).query(async ({ ctx, input }) => {
+    const q = new Sql();
+    const rows = await q.run<
+      {
+        product_id: number;
+        name: string;
+        barcode: string | null;
+        stock: number;
+        list_price: Dec;
+        last_unit_cost: Dec;
+        last_purchase_date: Date;
+        times_bought: number;
+        total_quantity: number;
+      }[]
+    >(
+      ctx.db,
+      `SELECT sp.product_id, p.name, p.barcode, p.stock, p.list_price, sp.last_unit_cost, sp.last_purchase_date,
+              sp.times_bought::int AS times_bought, sp.total_quantity::int AS total_quantity
+         FROM v_supplier_product sp
+         JOIN product p ON p.id = sp.product_id
+        WHERE sp.supplier_id = ${q.p(input.supplierId, "int")}
+        ORDER BY p.name`,
+    );
+    return rows.map((r) => ({
+      productId: r.product_id,
+      name: r.name,
+      barcode: r.barcode,
+      stock: r.stock,
+      listPrice: r.list_price,
+      lastUnitCost: r.last_unit_cost,
+      lastPurchaseDate: r.last_purchase_date,
+      timesBought: Number(r.times_bought),
+      totalQuantity: Number(r.total_quantity),
+    }));
+  }),
+
+  /**
+   * For the purchase lines: the last cost paid TO THIS SUPPLIER (and when), not
+   * the sale price, to compare with the new cost (prompt v2 §6.4).
+   */
+  lastCosts: view.input(z.object({ supplierId: zId, productIds: z.array(zId).max(200) })).query(async ({ ctx, input }) => {
+    if (!input.productIds.length) return [];
+    const q = new Sql();
+    const rows = await q.run<{ product_id: number; last_unit_cost: Dec; last_purchase_date: Date }[]>(
+      ctx.db,
+      `SELECT product_id, last_unit_cost, last_purchase_date FROM v_supplier_product
+        WHERE supplier_id = ${q.p(input.supplierId, "int")} AND product_id IN (${intList(input.productIds)})`,
+    );
+    return rows.map((r) => ({ productId: r.product_id, lastUnitCost: r.last_unit_cost, lastPurchaseDate: r.last_purchase_date }));
+  }),
 
   saveSupplier: manage.input(zSupplier.extend({ id: zId.optional() })).mutation(({ ctx, input }) => {
     const data = {
@@ -77,10 +174,15 @@ export const purchasingRouter = createTRPCRouter({
       phone: input.phone ?? null,
       contactPerson: input.contactPerson ?? null,
       givesWarranty: input.givesWarranty ?? null,
-      openingBalance: input.openingBalance ?? null,
-      openingDate: input.openingDate ? dayToDate(input.openingDate) : null,
     };
-    return input.id ? ctx.db.supplier.update({ where: { id: input.id }, data }) : ctx.db.supplier.create({ data });
+    // The opening balance is only set when it is sent: editing the contact data must not erase it.
+    const opening =
+      input.openingBalance !== undefined
+        ? { openingBalance: input.openingBalance, openingDate: input.openingDate ? dayToDate(input.openingDate) : null }
+        : {};
+    return input.id
+      ? ctx.db.supplier.update({ where: { id: input.id }, data: { ...data, ...opening } })
+      : ctx.db.supplier.create({ data: { ...data, ...opening } });
   }),
 
   supplierAccount: view.input(z.object({ supplierId: zId })).query(({ ctx, input }) =>
@@ -141,7 +243,17 @@ export const purchasingRouter = createTRPCRouter({
           paymentTerms: z.enum(PAYMENT_TERMS),
           dueDate: zDay.optional(),
           discountAmount: zMoney.default("0"),
-          lines: z.array(z.object({ productId: zId, quantity: zQty, unitCost: zMoney })).min(1),
+          lines: z
+            .array(
+              z.object({
+                productId: zId,
+                quantity: zQty,
+                unitCost: zMoney,
+                /** Change the sale price from the same line when the cost changed (needs inventario.precios). */
+                newListPrice: zMoney.optional(),
+              }),
+            )
+            .min(1, "Agregue al menos un producto"),
         })
         .refine((v) => v.paymentTerms === "CONTADO" || !!v.dueDate, {
           path: ["dueDate"],
@@ -175,6 +287,16 @@ export const purchasingRouter = createTRPCRouter({
             userId: ctx.user.id,
             purchaseInvoiceLineId: line.id,
           });
+          if (l.newListPrice) {
+            if (!ctx.user.permissions.has("inventario.precios")) throw fail("No tiene permiso para cambiar precios de venta.", "FORBIDDEN");
+            const product = await tx.product.findUniqueOrThrow({ where: { id: l.productId } });
+            if (!D(product.listPrice).eq(l.newListPrice)) {
+              await tx.product.update({ where: { id: l.productId }, data: { listPrice: l.newListPrice } });
+              await tx.productPriceHistory.create({
+                data: { productId: l.productId, newPrice: l.newListPrice, changedByUserId: ctx.user.id },
+              });
+            }
+          }
         }
         return invoice;
       }),

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { fail } from "~/server/api/errors";
 import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
 import { type Prisma } from "~/server/db";
+import { resolveAuthorizer } from "~/server/domain/authorize";
 import { buildProductLines, createInvoice, type LineDraft, zProductLine, zTerms } from "~/server/domain/billing";
 import {
   FAULT_DECISIONS,
@@ -18,6 +19,8 @@ import {
   zPositiveMoney,
   zQty,
   zText,
+  zOptChassis,
+  zPhone,
 } from "~/server/domain/constants";
 import { recordMovement } from "~/server/domain/inventory";
 import { D } from "~/server/domain/money";
@@ -49,6 +52,29 @@ async function assertOpen(tx: Tx, serviceOrderId: number) {
   return status;
 }
 
+/** Jobs of an order: from the catalog, active, no repeats (DEC-048). */
+const zItems = z
+  .array(z.object({ serviceTypeId: zId, notes: zOptText(200) }))
+  .min(1, "Elija al menos un trabajo de la lista")
+  .refine((items) => new Set(items.map((i) => i.serviceTypeId)).size === items.length, "Un trabajo aparece dos veces");
+
+async function assertActiveTypes(tx: Tx, ids: number[]) {
+  const types = await tx.serviceType.findMany({ where: { id: { in: ids } } });
+  if (types.length !== ids.length || types.some((t) => !t.active)) {
+    throw fail("Uno de los trabajos no está en el catálogo o está desactivado.");
+  }
+  return types;
+}
+
+/** The job used when a new order is opened without choosing one (warranty with another fault). */
+async function diagnosisType(tx: Tx) {
+  const t =
+    (await tx.serviceType.findFirst({ where: { name: { equals: "Diagnóstico", mode: "insensitive" }, active: true } })) ??
+    (await tx.serviceType.findFirst({ where: { active: true }, orderBy: { id: "asc" } }));
+  if (!t) throw fail("El catálogo de trabajos está vacío: registre al menos uno en Administración.");
+  return t;
+}
+
 /**
  * DEC-041 — who can be responsible and with what rate. The database checks it
  * again (tg_service_order_check_responsible); this gives a clear message first.
@@ -60,15 +86,22 @@ async function responsibleRate(tx: Tx, staffId: number) {
   return { staff, appliedCommissionRate };
 }
 
+const itemsInclude = {
+  orderBy: { id: "asc" as const },
+  include: { serviceType: { include: { category: true } } },
+} satisfies Prisma.ServiceOrder$itemsArgs;
+
 const orderListInclude = {
   motorcycle: { include: { customer: true, model: { include: { brand: true } } } },
   mechanic: true,
+  items: itemsInclude,
   statusChanges: { orderBy: [{ changedAt: "desc" as const }, { id: "desc" as const }], take: 1 },
 } satisfies Prisma.ServiceOrderInclude;
 
 const orderInclude = {
   motorcycle: { include: { customer: true, model: { include: { brand: true } } } },
   mechanic: true,
+  items: itemsInclude,
   statusChanges: { orderBy: { changedAt: "desc" }, include: { registeredBy: { select: { username: true } } } },
   additionalFaults: { orderBy: { faultNo: "asc" } },
   saleInvoice: { select: { id: true, invoiceNumber: true, paymentTerms: true } },
@@ -125,18 +158,23 @@ export const serviceRouter = createTRPCRouter({
             .object({
               customerId: zId.optional(),
               newCustomer: z
-                .object({ name: zText(100), phone: zText(20), nationalId: zOptText(20) })
+                .object({ name: zText(100), phone: zPhone, nationalId: zOptText(20) })
                 .optional(),
               motorcycleModelId: z.number().int().positive("Elija la marca y el modelo de la moto"),
               color: zText(30),
               plate: zOptText(15),
+              chassisNumber: zOptChassis,
             })
             .refine((m) => !!m.customerId !== !!m.newCustomer, {
               message: "Elija un cliente existente o registre uno nuevo",
               path: ["customerId"],
             })
             .optional(),
-          requestedWork: zText(500),
+          /** The jobs, chosen from the catalog (at least one). */
+          items: zItems,
+          /** The customer's words ("dice que suena al frenar"): optional, never replaces a job. */
+          requestedWork: zOptText(500),
+          odometerKm: z.number().int().min(0).max(2_000_000).optional(),
           mechanicStaffId: zId.optional(),
           notes: zOptText(200),
         })
@@ -159,19 +197,30 @@ export const serviceRouter = createTRPCRouter({
             ).id;
           motorcycleId = (
             await tx.motorcycle.create({
-              data: { customerId, motorcycleModelId: m.motorcycleModelId, color: m.color, plate: m.plate ?? null },
+              data: {
+                customerId,
+                motorcycleModelId: m.motorcycleModelId,
+                color: m.color,
+                plate: m.plate ?? null,
+                chassisNumber: m.chassisNumber ?? null,
+              },
             })
           ).id;
         }
         const appliedCommissionRate = input.mechanicStaffId
           ? (await responsibleRate(tx, input.mechanicStaffId)).appliedCommissionRate
           : null;
+        await assertActiveTypes(tx, input.items.map((i) => i.serviceTypeId));
+        // Order + its jobs in the same transaction: the deferred trigger
+        // tg_service_order_has_items checks at COMMIT that there is at least one.
         const order = await tx.serviceOrder.create({
           data: {
             motorcycleId: motorcycleId!,
-            requestedWork: input.requestedWork,
+            requestedWork: input.requestedWork ?? null,
+            odometerKm: input.odometerKm ?? null,
             mechanicStaffId: input.mechanicStaffId ?? null,
             appliedCommissionRate,
+            items: { create: input.items.map((i) => ({ serviceTypeId: i.serviceTypeId, notes: i.notes ?? null })) },
           },
         });
         await tx.serviceOrderStatusChange.create({
@@ -200,6 +249,63 @@ export const serviceRouter = createTRPCRouter({
         });
       }),
     ),
+
+  /** Change the jobs of an open order (the customer asked for something else). */
+  setItems: manage
+    .input(z.object({ serviceOrderId: zId, items: zItems }))
+    .mutation(({ ctx, input }) =>
+      ctx.db.$transaction(async (tx) => {
+        await assertOpen(tx, input.serviceOrderId);
+        await assertActiveTypes(tx, input.items.map((i) => i.serviceTypeId));
+        await tx.serviceOrderItem.deleteMany({ where: { serviceOrderId: input.serviceOrderId } });
+        await tx.serviceOrderItem.createMany({
+          data: input.items.map((i) => ({ serviceOrderId: input.serviceOrderId, serviceTypeId: i.serviceTypeId, notes: i.notes ?? null })),
+        });
+        return { ok: true };
+      }),
+    ),
+
+  setOdometer: manage
+    .input(z.object({ serviceOrderId: zId, odometerKm: z.number().int().min(0).max(2_000_000).nullable() }))
+    .mutation(({ ctx, input }) =>
+      ctx.db.$transaction(async (tx) => {
+        await assertOpen(tx, input.serviceOrderId);
+        return tx.serviceOrder.update({ where: { id: input.serviceOrderId }, data: { odometerKm: input.odometerKm } });
+      }),
+    ),
+
+  /** History of a motorcycle: every order, its jobs, mileage and what was charged. */
+  motorcycleHistory: view.input(z.object({ motorcycleId: zId })).query(async ({ ctx, input }) => {
+    const orders = await ctx.db.serviceOrder.findMany({
+      where: { motorcycleId: input.motorcycleId },
+      orderBy: { id: "desc" },
+      include: {
+        items: itemsInclude,
+        mechanic: true,
+        statusChanges: { orderBy: [{ changedAt: "desc" }, { id: "desc" }], take: 1 },
+        saleInvoice: {
+          select: {
+            id: true,
+            lines: {
+              where: { lineType: "PRODUCTO" },
+              select: { quantity: true, product: { select: { name: true } } },
+            },
+          },
+        },
+      },
+      take: 50,
+    });
+    return orders.map((o) => ({
+      id: o.id,
+      status: (o.statusChanges[0]?.status ?? "RECIBIDA") as ServiceOrderStatus,
+      date: o.statusChanges[0]?.changedAt ?? null,
+      odometerKm: o.odometerKm,
+      responsible: o.mechanic?.name ?? null,
+      jobs: o.items.map((i) => i.serviceType.name),
+      parts: o.saleInvoice?.lines.map((l) => `${l.quantity} × ${l.product?.name ?? ""}`) ?? [],
+      invoiceId: o.saleInvoice?.id ?? null,
+    }));
+  }),
 
   setDiagnosis: manage
     .input(z.object({ serviceOrderId: zId, diagnosis: zText(500) }))
@@ -277,8 +383,9 @@ export const serviceRouter = createTRPCRouter({
       z.object({
         serviceOrderId: zId,
         terms: zTerms,
+        /** Labor is always a job of the catalog (CHECK ck_sale_invoice_line_labor_service_type). */
         labor: z
-          .array(z.object({ serviceTypeId: zId.optional(), description: zText(200), price: zMoney }))
+          .array(z.object({ serviceTypeId: zId, description: zOptText(200), price: zMoney }))
           .default([]),
         parts: z.array(zProductLine).default([]),
         externalCharges: z.array(z.object({ description: zText(200), price: zPositiveMoney })).default([]),
@@ -298,11 +405,22 @@ export const serviceRouter = createTRPCRouter({
         const pending = order.additionalFaults.filter((f) => f.decision === "PENDIENTE");
         if (pending.length) throw fail("Hay fallas adicionales sin decisión del cliente.");
 
+        // Charging outside the job's price range needs an owner's key (prompt §7.3).
+        const types = new Map(
+          (await assertActiveTypes(tx, [...new Set(input.labor.map((l) => l.serviceTypeId))])).map((t) => [t.id, t]),
+        );
+        for (const l of input.labor) {
+          const t = types.get(l.serviceTypeId)!;
+          const price = D(l.price);
+          if ((t.minPrice && price.lt(t.minPrice)) || (t.maxPrice && price.gt(t.maxPrice))) {
+            await resolveAuthorizer(tx, ctx.user, "taller.precio_especial", input.terms.authorizer);
+          }
+        }
         const drafts: LineDraft[] = [
           ...input.labor.map((l) => ({
             lineType: "MANO_OBRA" as const,
             serviceTypeId: l.serviceTypeId,
-            description: l.description,
+            description: l.description ?? types.get(l.serviceTypeId)!.name,
             quantity: 1,
             unitPrice: D(l.price),
             discountAmount: D(0),
@@ -361,6 +479,10 @@ export const serviceRouter = createTRPCRouter({
         let invoiceId: number | null = null;
         if (input.cancellationFee) {
           if (!input.terms) throw fail("Indique cómo se cobra el cargo por cancelación.");
+          const feeType = await tx.serviceType.findFirst({
+            where: { name: { equals: "Cargo por cancelación", mode: "insensitive" } },
+          });
+          if (!feeType) throw fail("Falta el trabajo «Cargo por cancelación» en el catálogo.");
           const inv = await createInvoice(
             tx,
             ctx.user,
@@ -368,6 +490,7 @@ export const serviceRouter = createTRPCRouter({
             [
               {
                 lineType: "MANO_OBRA",
+                serviceTypeId: feeType.id,
                 description: "Cargo por cancelación",
                 quantity: 1,
                 unitPrice: D(input.cancellationFee),
@@ -435,6 +558,7 @@ export const serviceRouter = createTRPCRouter({
               requestedWork: input.newOrderRequestedWork,
               mechanicStaffId: original.mechanicStaffId,
               appliedCommissionRate: original.appliedCommissionRate,
+              items: { create: [{ serviceTypeId: (await diagnosisType(tx)).id }] },
             },
           });
           await tx.serviceOrderStatusChange.create({

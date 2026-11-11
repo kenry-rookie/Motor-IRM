@@ -11,6 +11,7 @@
 import { PrismaClient } from "../generated/prisma";
 import { hashPassword } from "../src/server/auth/password";
 import { DEFAULT_ROLES, PERMISSIONS } from "../src/server/auth/permissions";
+import { demoMore } from "./demo-more";
 
 const db = new PrismaClient();
 
@@ -45,6 +46,15 @@ async function base() {
     }
     roles[name] = role.id;
   }
+  // An owner can do everything: permissions added in a new version reach the
+  // "Dueño" role too (the other roles keep what the owners chose).
+  const owner = roles["Dueño"];
+  if (owner) {
+    await db.rolePermission.createMany({
+      data: perms.map((p) => ({ roleId: owner, permissionId: p.id })),
+      skipDuplicates: true,
+    });
+  }
 
   // Catalogs
   await ensureNamed((n) => db.paymentMethod.findFirst({ where: ci(n) }), (name) => db.paymentMethod.create({ data: { name } }), [
@@ -74,17 +84,7 @@ async function base() {
   await ensureNamed((n) => db.productBrand.findFirst({ where: ci(n) }), (name) => db.productBrand.create({ data: { name } }), [
     "Genérico",
   ]);
-  for (const [name, price] of [
-    ["Engrase", "400"],
-    ["Cambio de aceite", "150"],
-    ["Instalación de accesorio", "200"],
-    ["Trabajo de motor", null],
-    ["Diagnóstico", null],
-  ] as const) {
-    if (!(await db.serviceType.findFirst({ where: ci(name) }))) {
-      await db.serviceType.create({ data: { name, referencePrice: price } });
-    }
-  }
+  await workshopCatalog();
 
   // First administrator
   const username = process.env.SEED_ADMIN_USERNAME ?? "admin";
@@ -100,6 +100,60 @@ async function base() {
     console.log(`👤 Usuario administrador creado: ${username} (cambie la contraseña al entrar)`);
   }
   return roles;
+}
+
+/**
+ * The workshop catalog (DEC-048): standard jobs by category, with a reference
+ * price and, where it makes sense, the allowed range (outside it an owner's key
+ * is needed). Existing jobs are not touched: the owners may have edited them.
+ */
+async function workshopCatalog() {
+  const CATEGORIES: [string, number][] = [
+    ["Mantenimiento", 10], ["Frenos", 20], ["Motor", 30], ["Sistema eléctrico", 40], ["Suspensión y dirección", 50],
+    ["Transmisión", 60], ["Llantas", 70], ["Accesorios", 80], ["Diagnóstico", 90], ["Otros cargos", 200],
+  ];
+  const cat: Record<string, number> = {};
+  for (const [name, sortOrder] of CATEGORIES) {
+    const c = (await db.serviceCategory.findFirst({ where: ci(name) })) ?? (await db.serviceCategory.create({ data: { name, sortOrder } }));
+    cat[name] = c.id;
+  }
+  // [name, category, reference, min, max]
+  const JOBS: [string, string, string | null, string | null, string | null][] = [
+    ["Cambio de aceite", "Mantenimiento", "150", "100", "250"],
+    ["Engrase", "Mantenimiento", "400", "300", "600"],
+    ["Mantenimiento general", "Mantenimiento", "800", "600", "1500"],
+    ["Lavado y lubricación de cadena", "Mantenimiento", "150", "100", "250"],
+    ["Ajuste de cadena", "Mantenimiento", "100", "50", "200"],
+    ["Cambio de filtro de aire", "Mantenimiento", "100", "50", "200"],
+    ["Cambio de bujía", "Mantenimiento", "80", "50", "150"],
+    ["Cambio de pastillas de freno", "Frenos", "250", "150", "400"],
+    ["Cambio de zapatas", "Frenos", "250", "150", "400"],
+    ["Purga de frenos", "Frenos", "200", "150", "350"],
+    ["Rectificado de disco", "Frenos", "300", null, null],
+    ["Trabajo de motor", "Motor", null, null, null],
+    ["Limpieza de carburador", "Motor", "500", "350", "800"],
+    ["Calibración de válvulas", "Motor", "400", "300", "600"],
+    ["Cambio de empaques", "Motor", "600", null, null],
+    ["Revisión eléctrica", "Sistema eléctrico", "300", "200", "600"],
+    ["Cambio de batería", "Sistema eléctrico", "100", "50", "200"],
+    ["Instalación de luces", "Sistema eléctrico", "250", "150", "500"],
+    ["Cambio de aceite de barras", "Suspensión y dirección", "500", "400", "800"],
+    ["Cambio de rodamientos de dirección", "Suspensión y dirección", "450", "300", "700"],
+    ["Cambio de kit de arrastre", "Transmisión", "350", "250", "500"],
+    ["Ajuste de clutch", "Transmisión", "150", "100", "250"],
+    ["Cambio de cable de clutch", "Transmisión", "150", "100", "250"],
+    ["Cambio de llanta", "Llantas", "100", "50", "200"],
+    ["Reparación de neumático", "Llantas", "80", "50", "150"],
+    ["Cambio de rodamientos de rueda", "Llantas", "300", "200", "450"],
+    ["Instalación de accesorio", "Accesorios", "200", "100", "500"],
+    ["Diagnóstico", "Diagnóstico", null, null, null],
+    ["Cargo por cancelación", "Otros cargos", null, null, null],
+  ];
+  for (const [name, category, referencePrice, minPrice, maxPrice] of JOBS) {
+    if (!(await db.serviceType.findFirst({ where: ci(name) }))) {
+      await db.serviceType.create({ data: { name, serviceCategoryId: cat[category]!, referencePrice, minPrice, maxPrice } });
+    }
+  }
 }
 
 /** Small, realistic demo data (from the real purchase invoice and interviews). */
@@ -190,7 +244,11 @@ async function demo(roles: Record<string, number>) {
 
 async function main() {
   const roles = await base();
-  if (process.env.SEED_DEMO === "true") await demo(roles);
+  if (process.env.SEED_DEMO === "true") {
+    await demo(roles);
+    const admin = await db.appUser.findFirstOrThrow({ where: { roleId: roles["Dueño"] }, orderBy: { id: "asc" } });
+    await demoMore(db, admin.id);
+  }
   console.log("✅ Seed terminado.");
 }
 

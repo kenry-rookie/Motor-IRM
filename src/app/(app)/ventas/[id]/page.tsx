@@ -3,7 +3,7 @@
 import { useParams } from "next/navigation";
 import { useState } from "react";
 
-import { Alert, Badge, Button, Card, Dialog, Input, PageTitle, Select, Table } from "~/app/_components/ui";
+import { Alert, BackBar, Badge, Button, Card, Dialog, Input, PageTitle, Select, Table } from "~/app/_components/ui";
 import { errorMessage } from "~/lib/errors";
 import { formatDateTime, formatDay, money } from "~/lib/format";
 import { api } from "~/trpc/react";
@@ -19,6 +19,7 @@ export default function InvoicePage() {
   if (!d) return <p className="text-neutral-400">Cargando…</p>;
   return (
     <>
+      <BackBar crumbs={[{ label: "Caja", href: "/ventas" }, { label: `Factura #${d.id}` }]} back={{ href: "/ventas", label: "Volver a caja" }} />
       <PageTitle
         title={`Factura #${d.id}${d.invoiceNumber ? ` · ${d.invoiceNumber}` : ""}`}
         subtitle={`${formatDateTime(d.createdAt)} · ${d.customer?.name ?? "Cliente de contado"} · atendió ${d.createdBy.username}`}

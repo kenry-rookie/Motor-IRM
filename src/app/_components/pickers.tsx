@@ -2,7 +2,8 @@
 
 import { forwardRef, type ReactNode, useId, useImperativeHandle, useRef, useState } from "react";
 
-import { Alert, Badge, Button, cx, Dialog, Field, Input, Select } from "~/app/_components/ui";
+import { ProductCatalogDialog } from "~/app/_components/catalog";
+import { Alert, Badge, Button, cx, Dialog, Field, Input, SearchField, Select } from "~/app/_components/ui";
 import { errorMessage } from "~/lib/errors";
 import { money } from "~/lib/format";
 import { useDebounced } from "~/lib/use-debounced";
@@ -12,7 +13,7 @@ import { api, type RouterOutputs } from "~/trpc/react";
  * The ONLY pickers of the app (DEC-043). Every screen that chooses a product,
  * a customer, a motorcycle or the responsible of an order uses one of these:
  *
- *   SearchField          the search box (with a real «Buscar» button)
+ *   SearchField          the search box (with a real «Buscar» button) — in ui.tsx
  *   ProductPicker        products: scanner or typed name, typo-tolerant
  *   CustomerPicker       customers: name, phone, cédula or plate
  *   MotorcyclePicker     one of the customer's motorcycles, or a new one
@@ -22,78 +23,8 @@ import { api, type RouterOutputs } from "~/trpc/react";
  * Text search always goes through the server's `search` router.
  */
 export type Product = RouterOutputs["search"]["products"]["items"][number];
+export { SearchField };
 export type Customer = RouterOutputs["search"]["customers"]["items"][number];
-
-// ---------------------------------------------------------------------------
-//  Search field
-// ---------------------------------------------------------------------------
-
-/**
- * Text box + visible «Buscar» and «Limpiar» buttons: everything can be done with
- * the mouse; the keyboard shortcut (F2 at the counter) is only a shortcut.
- */
-export function SearchField({
-  value,
-  onValue,
-  placeholder,
-  label,
-  onSearch,
-  inputRef,
-  inputProps,
-  className,
-}: {
-  value: string;
-  onValue: (v: string) => void;
-  placeholder: string;
-  label: string;
-  /** What «Buscar» does; by default it just focuses the box (results come as you type). */
-  onSearch?: () => void;
-  inputRef?: React.Ref<HTMLInputElement>;
-  inputProps?: React.ComponentProps<"input">;
-  className?: string;
-}) {
-  const own = useRef<HTMLInputElement>(null);
-  const ref = (inputRef ?? own) as React.RefObject<HTMLInputElement | null>;
-  return (
-    <div className={cx("flex gap-2", className)}>
-      <Input
-        ref={ref}
-        type="search"
-        aria-label={label}
-        autoComplete="off"
-        placeholder={placeholder}
-        value={value}
-        className="h-11 text-base"
-        onChange={(e) => onValue(e.target.value)}
-        {...inputProps}
-      />
-      <Button
-        type="button"
-        variant="secondary"
-        className="h-11 shrink-0"
-        onClick={() => {
-          ref.current?.focus();
-          onSearch?.();
-        }}
-      >
-        Buscar
-      </Button>
-      {value && (
-        <Button
-          type="button"
-          variant="ghost"
-          className="h-11 shrink-0"
-          onClick={() => {
-            onValue("");
-            ref.current?.focus();
-          }}
-        >
-          Limpiar
-        </Button>
-      )}
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 //  Combobox (internal)
@@ -117,9 +48,12 @@ function Combobox<T extends { id: number }>({
   inputRef,
   autoFocus,
   label,
+  onSearchButton,
 }: {
   value: string;
   onValue: (v: string) => void;
+  /** What «Buscar» does; by default it opens the suggestions. */
+  onSearchButton?: () => void;
   items: T[];
   loading: boolean;
   render: (item: T, active: boolean) => ReactNode;
@@ -155,7 +89,7 @@ function Combobox<T extends { id: number }>({
         }}
         placeholder={placeholder}
         inputRef={inputRef}
-        onSearch={() => setOpen(true)}
+        onSearch={onSearchButton ?? (() => setOpen(true))}
         inputProps={{
           role: "combobox",
           "aria-expanded": show,
@@ -225,9 +159,17 @@ export type ProductPickerHandle = { focus: () => void };
  */
 export const ProductPicker = forwardRef<
   ProductPickerHandle,
-  { onPick: (p: Product) => void; placeholder?: string; autoFocus?: boolean; label?: string }
->(function ProductPicker({ onPick, placeholder, autoFocus = true, label = "Buscar producto" }, ref) {
+  {
+    onPick: (p: Product) => void;
+    placeholder?: string;
+    autoFocus?: boolean;
+    label?: string;
+    /** «Buscar» opens the catalog window with filters (DEC-049). */
+    catalog?: { title?: string; allowCreate?: boolean; showCost?: boolean; supplierId?: number };
+  }
+>(function ProductPicker({ onPick, placeholder, autoFocus = true, label = "Buscar producto", catalog = {} }, ref) {
   const [q, setQ] = useState("");
+  const [browsing, setBrowsing] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   useImperativeHandle(ref, () => ({ focus: () => input.current?.focus() }));
   const dq = useDebounced(q.trim(), 150);
@@ -242,8 +184,19 @@ export const ProductPicker = forwardRef<
   };
 
   return (
+    <>
+    <ProductCatalogDialog
+      open={browsing}
+      onClose={() => {
+        setBrowsing(false);
+        input.current?.focus();
+      }}
+      onPick={onPick}
+      {...catalog}
+    />
     <Combobox
       label={label}
+      onSearchButton={() => setBrowsing(true)}
       inputRef={input}
       autoFocus={autoFocus}
       value={q}
@@ -256,7 +209,9 @@ export const ProductPicker = forwardRef<
         const code = q.trim();
         if (!code) return;
         const byCode = await utils.inventory.byBarcode.fetch({ barcode: code });
-        if (byCode) done({ ...byCode, exact: true, score: 3 });
+        const found = await utils.search.products.fetch({ q: code, limit: 1 });
+        const hit = found.items[0];
+        if (byCode && hit?.id === byCode.id) done(hit);
       }}
       header={
         res.data?.didYouMean && dq.length >= 2 ? (
@@ -286,6 +241,7 @@ export const ProductPicker = forwardRef<
         </div>
       )}
     />
+    </>
   );
 });
 
@@ -303,7 +259,8 @@ export function CustomerPicker({
   onCreateNew,
   autoFocus,
 }: {
-  value: Customer | null;
+  /** Only what is shown when chosen; a saved tab may hold just these fields. */
+  value: Pick<Customer, "id" | "name" | "phone"> | null;
   onChange: (c: Customer | null) => void;
   onCreateNew?: (typed: string) => void;
   autoFocus?: boolean;
@@ -622,11 +579,14 @@ export function ResponsibleSelect({
   onChange,
   disabled,
   emptyLabel = "Asignar después",
+  compact = false,
 }: {
   value: number;
   onChange: (staffId: number) => void;
   disabled?: boolean;
   emptyLabel?: string;
+  /** Small, for the board cards. */
+  compact?: boolean;
 }) {
   const staff = api.staff.list.useQuery({ onlyRepairers: true });
   const groups = [
@@ -634,7 +594,13 @@ export function ResponsibleSelect({
     { label: "Dueños", rows: staff.data?.filter((s) => s.kind === "DUENO") ?? [] },
   ];
   return (
-    <Select value={value} disabled={disabled} onChange={(e) => onChange(Number(e.target.value))}>
+    <Select
+      aria-label="Responsable"
+      className={compact ? "h-9 py-1 text-xs" : undefined}
+      value={value}
+      disabled={disabled}
+      onChange={(e) => onChange(Number(e.target.value))}
+    >
       <option value={0}>{emptyLabel}</option>
       {groups.map(
         (g) =>

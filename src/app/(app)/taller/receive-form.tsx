@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   type Customer,
@@ -10,61 +10,116 @@ import {
   NEW_MOTORCYCLE,
   ResponsibleSelect,
 } from "~/app/_components/pickers";
-import { Alert, Button, Field, Input, Kbd, Textarea } from "~/app/_components/ui";
+import { ServiceCatalogPicker, type ServiceType } from "~/app/_components/service-catalog";
+import { Alert, Button, Field, Input, Kbd, PhoneInput, Textarea } from "~/app/_components/ui";
 import { errorMessage, fieldErrors } from "~/lib/errors";
+import { formatPhoneInput } from "~/lib/phone";
 import { api } from "~/trpc/react";
 
 /**
  * Reception in ONE step. Search the plate, name or phone:
  *  - known customer → pick one of their motorcycles (or add another);
  *  - unknown → "Registrar como cliente nuevo" and fill name + phone right here.
- * Brand and model are chosen from the catalog, never typed (DEC-044): an owner
- * can register a missing one from the same screen.
+ * Brand and model are chosen from the catalog (DEC-044). The jobs are chosen
+ * from the workshop catalog (DEC-048); the customer's words go in an optional
+ * note. What is filled in is kept as a draft until the motorcycle is received.
  */
+type Draft = {
+  customer: Customer | null;
+  newCustomer: { name: string; phone: string } | null;
+  moto: MotorcycleChoice;
+  chassis: string;
+  items: { id: number; name: string }[];
+  note: string;
+  km: string;
+  responsible: number;
+};
+const EMPTY: Draft = {
+  customer: null,
+  newCustomer: null,
+  moto: NEW_MOTORCYCLE,
+  chassis: "",
+  items: [],
+  note: "",
+  km: "",
+  responsible: 0,
+};
+const DRAFT_KEY = "motor-irm.recepcion.borrador.v1";
+
+function loadDraft(): Draft {
+  try {
+    const raw = window.localStorage.getItem(DRAFT_KEY);
+    return raw ? { ...EMPTY, ...(JSON.parse(raw) as Partial<Draft>) } : EMPTY;
+  } catch {
+    return EMPTY;
+  }
+}
+
 export function ReceiveForm({ onDone }: { onDone: (orderId: number) => void }) {
   const utils = api.useUtils();
-  const types = api.admin.serviceTypes.useQuery();
+  const [d, setD] = useState<Draft>(EMPTY);
+  const [restored, setRestored] = useState(false);
+  const set = (patch: Partial<Draft>) => setD((x) => ({ ...x, ...patch }));
 
-  const [customer, setCustomer] = useState<Customer | null>(null);
-  const [newCustomer, setNewCustomer] = useState<{ name: string; phone: string } | null>(null);
-  const [moto, setMoto] = useState<MotorcycleChoice>(NEW_MOTORCYCLE);
-  const [requestedWork, setRequestedWork] = useState("");
-  const [mechanicStaffId, setMechanicStaffId] = useState(0);
+  useEffect(() => {
+    const draft = loadDraft();
+    if (draft !== EMPTY) {
+      setD(draft);
+      setRestored(draft.items.length > 0 || !!draft.customer || !!draft.newCustomer);
+    }
+  }, []);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(DRAFT_KEY, JSON.stringify(d));
+    } catch {
+      /* without storage the form still works; it just isn't kept */
+    }
+  }, [d]);
 
   const receive = api.service.receive.useMutation({
     onSuccess: (o) => {
+      try {
+        window.localStorage.removeItem(DRAFT_KEY);
+      } catch {
+        /* nothing to clear */
+      }
       void utils.service.invalidate();
-      void utils.customer.invalidate();
       void utils.search.invalidate();
       onDone(o.id);
     },
   });
   const errs = fieldErrors(receive.error);
+  const hasCustomer = !!d.customer || !!d.newCustomer;
+  const ready = hasCustomer && d.items.length > 0;
 
-  const hasCustomer = !!customer || !!newCustomer;
+  const toggle = (t: ServiceType) =>
+    set({ items: d.items.some((i) => i.id === t.id) ? d.items.filter((i) => i.id !== t.id) : [...d.items, { id: t.id, name: t.name }] });
 
   const submit = () => {
-    if (!hasCustomer || !requestedWork.trim()) return;
+    if (!ready || receive.isPending) return;
     receive.mutate({
-      motorcycleId: moto.kind === "existing" ? moto.motorcycleId : undefined,
+      motorcycleId: d.moto.kind === "existing" ? d.moto.motorcycleId : undefined,
       newMotorcycle:
-        moto.kind === "new"
+        d.moto.kind === "new"
           ? {
-              customerId: customer?.id,
-              newCustomer: newCustomer ?? undefined,
-              motorcycleModelId: moto.motorcycleModelId,
-              color: moto.color,
-              plate: moto.plate || undefined,
+              customerId: d.customer?.id,
+              newCustomer: d.newCustomer ?? undefined,
+              motorcycleModelId: d.moto.motorcycleModelId,
+              color: d.moto.color,
+              plate: d.moto.plate || undefined,
+              chassisNumber: d.chassis || undefined,
             }
           : undefined,
-      requestedWork,
-      mechanicStaffId: mechanicStaffId || undefined,
+      items: d.items.map((i) => ({ serviceTypeId: i.id })),
+      requestedWork: d.note || undefined,
+      odometerKm: d.km ? Number(d.km) : undefined,
+      mechanicStaffId: d.responsible || undefined,
     });
   };
 
   return (
     <form
-      className="space-y-5"
+      className="space-y-6"
       onSubmit={(e) => {
         e.preventDefault();
         submit();
@@ -73,75 +128,111 @@ export function ReceiveForm({ onDone }: { onDone: (orderId: number) => void }) {
         if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit();
       }}
     >
+      {restored && (
+        <Alert kind="info">
+          Se recuperó lo que había llenado antes.{" "}
+          <button
+            type="button"
+            className="font-medium underline"
+            onClick={() => {
+              setD(EMPTY);
+              setRestored(false);
+            }}
+          >
+            Empezar de cero
+          </button>
+        </Alert>
+      )}
+
       <section className="space-y-2">
-        <h3 className="text-sm font-semibold text-neutral-200">Cliente</h3>
-        {newCustomer ? (
+        <h3 className="text-sm font-semibold text-neutral-200">1. Cliente</h3>
+        {d.newCustomer ? (
           <div className="grid gap-3 rounded-lg border border-dashed border-neutral-700 p-3 sm:grid-cols-[1fr_1fr_auto]">
             <Field label="Nombre" error={errs.name}>
-              <Input autoFocus value={newCustomer.name} onChange={(e) => setNewCustomer({ ...newCustomer, name: e.target.value })} />
+              <Input autoFocus value={d.newCustomer.name} onChange={(e) => set({ newCustomer: { ...d.newCustomer!, name: e.target.value } })} />
             </Field>
-            <Field label="Teléfono" error={errs.phone}>
-              <Input inputMode="tel" value={newCustomer.phone} onChange={(e) => setNewCustomer({ ...newCustomer, phone: e.target.value })} />
+            <Field label="Teléfono" error={errs.phone} hint="8 dígitos; extranjero con +">
+              <PhoneInput value={d.newCustomer.phone} onValue={(v) => set({ newCustomer: { ...d.newCustomer!, phone: v } })} />
             </Field>
-            <Button type="button" variant="ghost" className="self-end" onClick={() => setNewCustomer(null)}>
+            <Button type="button" variant="ghost" className="self-start sm:mt-6" onClick={() => set({ newCustomer: null })}>
               Buscar otro
             </Button>
           </div>
         ) : (
           <CustomerPicker
             autoFocus
-            value={customer}
+            value={d.customer}
             onChange={(c) => {
-              setCustomer(c);
               const first = c?.motorcycles[0];
-              setMoto(first ? { kind: "existing", motorcycleId: first.id } : NEW_MOTORCYCLE);
+              set({ customer: c, moto: first ? { kind: "existing", motorcycleId: first.id } : NEW_MOTORCYCLE });
             }}
             onCreateNew={(typed) => {
-              const looksLikePhone = /^[\d\s-]{6,}$/.test(typed);
-              setNewCustomer({ name: looksLikePhone ? "" : typed, phone: looksLikePhone ? typed : "" });
-              setMoto(NEW_MOTORCYCLE);
+              const looksLikePhone = /^[+\d\s-]{6,}$/.test(typed);
+              set({
+                newCustomer: { name: looksLikePhone ? "" : typed, phone: looksLikePhone ? formatPhoneInput(typed) : "" },
+                moto: NEW_MOTORCYCLE,
+              });
             }}
           />
         )}
       </section>
 
       {hasCustomer && (
-        <section className="space-y-2">
-          <h3 className="text-sm font-semibold text-neutral-200">Moto</h3>
-          <MotorcyclePicker motorcycles={customer?.motorcycles ?? []} value={moto} onChange={setMoto} errors={errs} />
+        <section className="space-y-3">
+          <h3 className="text-sm font-semibold text-neutral-200">2. Moto</h3>
+          <MotorcyclePicker motorcycles={d.customer?.motorcycles ?? []} value={d.moto} onChange={(moto) => set({ moto })} errors={errs} />
+          <div className="grid gap-3 sm:grid-cols-2">
+            {d.moto.kind === "new" && (
+              <Field label="Número de chasis (opcional)" error={errs.chassisNumber} hint="Viene en el chasis o en la circulación">
+                <Input value={d.chassis} onChange={(e) => set({ chassis: e.target.value.toUpperCase() })} />
+              </Field>
+            )}
+            <Field label="Kilometraje (opcional)" error={errs.odometerKm} hint="Las motos nuevas sin circular no tienen">
+              <Input inputMode="numeric" value={d.km} onChange={(e) => set({ km: e.target.value.replace(/\D/g, "").slice(0, 7) })} />
+            </Field>
+          </div>
         </section>
       )}
 
       <section className="space-y-2">
-        <Field label="Trabajo solicitado" error={errs.requestedWork}>
-          <Textarea value={requestedWork} onChange={(e) => setRequestedWork(e.target.value)} placeholder="Qué pide el cliente, en sus palabras" />
-        </Field>
-        <div className="flex flex-wrap gap-1.5">
-          {types.data
-            ?.filter((t) => t.active)
-            .map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => setRequestedWork((w) => (w.trim() ? `${w.trim()}, ${t.name.toLowerCase()}` : t.name))}
-                className="rounded-full border border-neutral-700 px-2.5 py-1 text-xs text-neutral-300 hover:bg-neutral-800/60"
-              >
-                + {t.name}
-              </button>
+        <h3 className="text-sm font-semibold text-neutral-200">3. Trabajos</h3>
+        {d.items.length > 0 ? (
+          <div className="flex flex-wrap gap-2">
+            {d.items.map((i) => (
+              <span key={i.id} className="inline-flex items-center gap-1 rounded-full bg-brand-600 px-3 py-1 text-sm text-white">
+                {i.name}
+                <button
+                  type="button"
+                  aria-label={`Quitar ${i.name}`}
+                  className="ml-1 rounded-full px-1 hover:bg-white/20"
+                  onClick={() => set({ items: d.items.filter((x) => x.id !== i.id) })}
+                >
+                  ×
+                </button>
+              </span>
             ))}
-        </div>
+          </div>
+        ) : (
+          <p className="text-sm text-neutral-500">Elija uno o varios trabajos de la lista.</p>
+        )}
+        {errs.items && <p className="text-bad-fg text-xs">{errs.items}</p>}
+        <ServiceCatalogPicker selected={d.items.map((i) => i.id)} onToggle={toggle} />
+        <Field label="Nota del cliente (opcional)" hint="Lo que dice el cliente, por ejemplo «suena al frenar». No reemplaza al trabajo.">
+          <Textarea value={d.note} onChange={(e) => set({ note: e.target.value })} />
+        </Field>
       </section>
 
-      <Field label="Responsable" hint="Mecánico o dueño. Si lo repara un dueño, no hay comisión.">
-        <ResponsibleSelect value={mechanicStaffId} onChange={setMechanicStaffId} />
+      <Field label="4. Responsable" hint="Mecánico o dueño. Si lo repara un dueño, no hay comisión.">
+        <ResponsibleSelect value={d.responsible} onChange={(responsible) => set({ responsible })} />
       </Field>
 
-      <Alert>{receive.error && errorMessage(receive.error)}</Alert>
-      <div className="flex items-center justify-between gap-3">
+      {receive.error && <Alert>{errorMessage(receive.error)}</Alert>}
+      <div className="sticky bottom-0 -mx-4 flex items-center justify-between gap-3 border-t border-neutral-800 bg-neutral-900 px-4 py-3">
         <span className="text-xs text-neutral-500">
-          <Kbd>Ctrl</Kbd> + <Kbd>Enter</Kbd> para guardar
+          {!hasCustomer ? "Falta el cliente" : d.items.length === 0 ? "Falta elegir el trabajo" : "Listo para recibir"} ·{" "}
+          <Kbd>Ctrl</Kbd> + <Kbd>Enter</Kbd>
         </span>
-        <Button type="submit" disabled={!hasCustomer || !requestedWork.trim() || receive.isPending}>
+        <Button type="submit" className="h-11 px-6" disabled={!ready || receive.isPending}>
           {receive.isPending ? "Guardando…" : "Recibir moto"}
         </Button>
       </div>

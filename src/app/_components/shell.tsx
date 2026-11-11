@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
+import { ADMIN_PERMISSIONS } from "~/app/(app)/admin/options";
 import { ThemeToggle } from "~/app/_components/theme-toggle";
 import { BrandMark, cx } from "~/app/_components/ui";
 import { api } from "~/trpc/react";
@@ -42,7 +43,8 @@ function Icon({
 const AREAS: {
   href: string;
   label: string;
-  permission: string;
+  /** One code, or several (the area shows if the user has any of them). */
+  permission: string | readonly string[];
   icon: ReactNode;
 }[] = [
   {
@@ -116,21 +118,21 @@ const AREAS: {
     ),
   },
   {
-    href: "/personal",
-    label: "Personal",
-    permission: "personal.ver",
+    href: "/retiros",
+    label: "Retiros de caja",
+    permission: "caja.retiros",
     icon: (
       <Icon>
-        <rect x="3" y="4" width="18" height="16" rx="2" />
-        <circle cx="9" cy="11" r="2" />
-        <path d="M15 9h3M15 13h3M6 16c.5-1.5 1.7-2 3-2s2.5.5 3 2" />
+        <rect x="2" y="6" width="20" height="12" rx="2" />
+        <circle cx="12" cy="12" r="2.5" />
+        <path d="M6 12h.01M18 12h.01" />
       </Icon>
     ),
   },
   {
     href: "/admin",
     label: "Administración",
-    permission: "catalogos.gestionar",
+    permission: ADMIN_PERMISSIONS,
     icon: (
       <Icon>
         <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3" />
@@ -177,7 +179,9 @@ export function Shell({
     },
   });
 
-  const allowed = AREAS.filter((a) => me.permissions.includes(a.permission));
+  const allowed = AREAS.filter((a) =>
+    typeof a.permission === "string" ? me.permissions.includes(a.permission) : a.permission.some((p) => me.permissions.includes(p)),
+  );
   const isActive = (href: string) =>
     href === "/" ? pathname === "/" : pathname.startsWith(href);
   const current = allowed.find((a) => isActive(a.href));

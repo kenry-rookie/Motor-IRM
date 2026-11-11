@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { fail } from "~/server/api/errors";
 import { createTRPCRouter, permissionProcedure, protectedProcedure } from "~/server/api/trpc";
-import { hashPassword, PASSWORD_MIN_LENGTH } from "~/server/auth/password";
+import { hashPassword, PASSWORD_MIN_LENGTH, verifyPassword } from "~/server/auth/password";
 import { DISCOUNT_TYPES, zId, zMoney, zOptText, zText } from "~/server/domain/constants";
 
 /**
@@ -120,22 +120,56 @@ export const adminRouter = createTRPCRouter({
         : ctx.db.motorcycleModel.create({ data: { motorcycleBrandId: input.motorcycleBrandId, name: input.name } }),
     ),
 
-  // ---- Service types -----------------------------------------------------------
-  serviceTypes: protectedProcedure.query(({ ctx }) => ctx.db.serviceType.findMany({ orderBy: { name: "asc" } })),
+  // ---- Workshop catalog (DEC-048) ---------------------------------------------
+  /** Jobs grouped by category; also how often each one was asked (to show the usual ones first). */
+  serviceTypes: protectedProcedure.query(async ({ ctx }) => {
+    const types = await ctx.db.serviceType.findMany({
+      include: { category: true, _count: { select: { orderItems: true } } },
+      orderBy: [{ category: { sortOrder: "asc" } }, { name: "asc" }],
+    });
+    return types.map(({ _count, ...t }) => ({ ...t, timesOrdered: _count.orderItems }));
+  }),
+  serviceCategories: protectedProcedure.query(({ ctx }) =>
+    ctx.db.serviceCategory.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
+  ),
+  saveServiceCategory: admin
+    .input(z.object({ id: zId.optional(), name: zText(40), sortOrder: z.number().int().min(0).max(999).default(100) }))
+    .mutation(({ ctx, input }) => {
+      const data = { name: input.name, sortOrder: input.sortOrder };
+      return input.id
+        ? ctx.db.serviceCategory.update({ where: { id: input.id }, data })
+        : ctx.db.serviceCategory.create({ data });
+    }),
+  /** Only owners (catalogos.gestionar) add jobs, so the catalog grows in order (prompt §7.2). */
   saveServiceType: admin
     .input(
-      z.object({
-        id: zId.optional(),
-        name: zText(50),
-        referencePrice: zMoney.nullish(),
-        active: z.boolean().default(true),
-      }),
+      z
+        .object({
+          id: zId.optional(),
+          name: zText(50),
+          serviceCategoryId: zId,
+          referencePrice: zMoney.nullish(),
+          minPrice: zMoney.nullish(),
+          maxPrice: zMoney.nullish(),
+          active: z.boolean().default(true),
+        })
+        .refine((v) => !v.minPrice || !v.maxPrice || Number(v.maxPrice) >= Number(v.minPrice), {
+          path: ["maxPrice"],
+          message: "El máximo no puede ser menor que el mínimo",
+        }),
     )
     .mutation(({ ctx, input }) => {
-      const data = { name: input.name, referencePrice: input.referencePrice ?? null, active: input.active };
+      const data = {
+        name: input.name,
+        serviceCategoryId: input.serviceCategoryId,
+        referencePrice: input.referencePrice ?? null,
+        minPrice: input.minPrice ?? null,
+        maxPrice: input.maxPrice ?? null,
+        active: input.active,
+      };
       return input.id
-        ? ctx.db.serviceType.update({ where: { id: input.id }, data })
-        : ctx.db.serviceType.create({ data });
+        ? ctx.db.serviceType.update({ where: { id: input.id }, data, include: { category: true } })
+        : ctx.db.serviceType.create({ data, include: { category: true } });
     }),
 
   // ---- Discounts ---------------------------------------------------------------
@@ -229,6 +263,11 @@ export const adminRouter = createTRPCRouter({
   ),
   permissions: users.query(({ ctx }) => ctx.db.permission.findMany({ orderBy: { code: "asc" } })),
 
+  /**
+   * Changing what a role can do asks for the password of the person saving it,
+   * even an owner who is already logged in (DEC-050): a computer left open at
+   * the counter must not be enough to hand out permissions.
+   */
   saveRole: users
     .input(
       z.object({
@@ -237,10 +276,20 @@ export const adminRouter = createTRPCRouter({
         description: zOptText(200),
         active: z.boolean().default(true),
         permissionIds: z.array(zId),
+        confirmPassword: z.string().min(1, "Escriba su contraseña para guardar"),
       }),
     )
     .mutation(({ ctx, input }) =>
       ctx.db.$transaction(async (tx) => {
+        const me = await tx.appUser.findUniqueOrThrow({ where: { id: ctx.user.id } });
+        if (!(await verifyPassword(input.confirmPassword, me.passwordHash))) {
+          throw fail("La contraseña no es correcta; no se guardaron los permisos.", "FORBIDDEN");
+        }
+        const own = await tx.appUser.findFirst({ where: { id: ctx.user.id, roleId: input.id } });
+        const adminPerm = await tx.permission.findUnique({ where: { code: "admin.usuarios" } });
+        if (own && adminPerm && !input.permissionIds.includes(adminPerm.id)) {
+          throw fail("No puede quitarle a su propio rol el permiso de administrar usuarios.");
+        }
         const data = { name: input.name, description: input.description ?? null, active: input.active };
         const role = input.id
           ? await tx.role.update({ where: { id: input.id }, data })

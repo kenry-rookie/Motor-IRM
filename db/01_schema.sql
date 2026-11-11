@@ -132,12 +132,70 @@ $$;
 
 
 --
+-- Name: fn_service_order_has_items(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.fn_service_order_has_items() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_order integer;
+BEGIN
+    IF TG_TABLE_NAME = 'service_order' THEN
+        v_order := NEW."id";
+    ELSE
+        v_order := OLD."service_order_id";
+    END IF;
+    IF EXISTS (SELECT 1 FROM "service_order" WHERE "id" = v_order)
+       AND NOT EXISTS (SELECT 1 FROM "service_order_item" WHERE "service_order_id" = v_order) THEN
+        RAISE EXCEPTION 'La orden % necesita al menos un trabajo del catálogo', v_order
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'tg_service_order_has_items';
+    END IF;
+    RETURN NULL;
+END
+$$;
+
+
+--
 -- Name: mirm_norm(text); Type: FUNCTION; Schema: public; Owner: -
 --
 
 CREATE FUNCTION public.mirm_norm(text) RETURNS text
     LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
     AS $_$ SELECT lower(public.unaccent('public.unaccent'::regdictionary, $1)) $_$;
+
+
+--
+-- Name: mirm_phone_format(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.mirm_phone_format(text) RETURNS text
+    LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+    AS $_$
+    WITH d AS (SELECT regexp_replace($1, '[^0-9]', '', 'g') AS n, btrim($1) LIKE '+%' AS intl)
+    SELECT CASE
+             WHEN length(n) = 8 AND NOT intl              THEN substr(n, 1, 4) || '-' || substr(n, 5, 4)
+             WHEN length(n) = 11 AND n LIKE '505%'        THEN substr(n, 4, 4) || '-' || substr(n, 8, 4)
+             WHEN length(n) = 11 AND n ~ '^50[2-7]'       THEN '+' || substr(n, 1, 3) || ' ' || substr(n, 4, 4) || '-' || substr(n, 8, 4)
+             WHEN length(n) = 11 AND n LIKE '1%'          THEN '+1 ' || substr(n, 2, 3) || '-' || substr(n, 5, 3) || '-' || substr(n, 8, 4)
+             WHEN intl AND length(n) BETWEEN 7 AND 15     THEN '+' || n
+             ELSE $1 END
+      FROM d
+$_$;
+
+
+--
+-- Name: mirm_phone_valid(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.mirm_phone_valid(text) RETURNS boolean
+    LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+    AS $_$
+    SELECT $1 ~ '^[0-9]{4}-[0-9]{4}$'
+        OR $1 ~ '^\+1 [0-9]{3}-[0-9]{3}-[0-9]{4}$'
+        OR $1 ~ '^\+50[2-7] [0-9]{4}-[0-9]{4}$'
+        OR $1 ~ '^\+[0-9]{7,15}$'
+$_$;
 
 
 
@@ -333,7 +391,8 @@ CREATE TABLE public.customer (
     CONSTRAINT ck_customer_address CHECK (((address IS NULL) OR (btrim((address)::text) <> ''::text))),
     CONSTRAINT ck_customer_name CHECK ((btrim((name)::text) <> ''::text)),
     CONSTRAINT ck_customer_national_id CHECK (((national_id IS NULL) OR (btrim((national_id)::text) <> ''::text))),
-    CONSTRAINT ck_customer_phone CHECK ((btrim((phone)::text) <> ''::text))
+    CONSTRAINT ck_customer_phone CHECK ((btrim((phone)::text) <> ''::text)),
+    CONSTRAINT ck_customer_phone_format CHECK (public.mirm_phone_valid((phone)::text))
 );
 
 
@@ -640,6 +699,8 @@ CREATE TABLE public.motorcycle (
     color character varying(30) NOT NULL,
     plate character varying(15),
     notes character varying(200),
+    chassis_number character varying(30),
+    CONSTRAINT ck_motorcycle_chassis_number CHECK (((chassis_number IS NULL) OR ((chassis_number)::text ~ '^[A-Z0-9-]{5,30}$'::text))),
     CONSTRAINT ck_motorcycle_color CHECK ((btrim((color)::text) <> ''::text)),
     CONSTRAINT ck_motorcycle_plate CHECK (((plate IS NULL) OR (btrim((plate)::text) <> ''::text)))
 );
@@ -1180,6 +1241,38 @@ ALTER SEQUENCE public.sale_invoice_line_id_seq OWNED BY public.sale_invoice_line
 
 
 --
+-- Name: service_category; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.service_category (
+    id integer NOT NULL,
+    name character varying(40) NOT NULL,
+    sort_order smallint DEFAULT 100 NOT NULL,
+    CONSTRAINT ck_service_category_name CHECK ((btrim((name)::text) <> ''::text))
+);
+
+
+--
+-- Name: service_category_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.service_category_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: service_category_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.service_category_id_seq OWNED BY public.service_category.id;
+
+
+--
 -- Name: service_order; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1187,16 +1280,18 @@ CREATE TABLE public.service_order (
     id integer NOT NULL,
     motorcycle_id integer NOT NULL,
     mechanic_staff_id integer,
-    requested_work character varying(500) NOT NULL,
+    requested_work character varying(500),
     diagnosis character varying(500),
     cancellation_fee numeric(12,2),
     applied_commission_rate numeric(5,4),
     staff_payout_id integer,
+    odometer_km integer,
     CONSTRAINT ck_service_order_applied_commission_rate CHECK (((applied_commission_rate > (0)::numeric) AND (applied_commission_rate <= (1)::numeric))),
     CONSTRAINT ck_service_order_cancellation_fee CHECK ((cancellation_fee >= (0)::numeric)),
+    CONSTRAINT ck_service_order_odometer_km CHECK (((odometer_km IS NULL) OR (odometer_km >= 0))),
     CONSTRAINT ck_service_order_payout_rate CHECK (((staff_payout_id IS NULL) OR ((applied_commission_rate IS NOT NULL) AND (mechanic_staff_id IS NOT NULL)))),
     CONSTRAINT ck_service_order_rate_needs_responsible CHECK (((applied_commission_rate IS NULL) OR (mechanic_staff_id IS NOT NULL))),
-    CONSTRAINT ck_service_order_requested_work CHECK ((btrim((requested_work)::text) <> ''::text))
+    CONSTRAINT ck_service_order_requested_work CHECK (((requested_work IS NULL) OR (btrim((requested_work)::text) <> ''::text)))
 );
 
 
@@ -1218,6 +1313,39 @@ CREATE SEQUENCE public.service_order_id_seq
 --
 
 ALTER SEQUENCE public.service_order_id_seq OWNED BY public.service_order.id;
+
+
+--
+-- Name: service_order_item; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.service_order_item (
+    id integer NOT NULL,
+    service_order_id integer NOT NULL,
+    service_type_id integer NOT NULL,
+    notes character varying(200),
+    CONSTRAINT ck_service_order_item_notes CHECK (((notes IS NULL) OR (btrim((notes)::text) <> ''::text)))
+);
+
+
+--
+-- Name: service_order_item_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.service_order_item_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: service_order_item_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.service_order_item_id_seq OWNED BY public.service_order_item.id;
 
 
 --
@@ -1264,7 +1392,11 @@ CREATE TABLE public.service_type (
     name character varying(50) NOT NULL,
     reference_price numeric(12,2),
     active boolean DEFAULT true NOT NULL,
+    service_category_id integer NOT NULL,
+    min_price numeric(12,2),
+    max_price numeric(12,2),
     CONSTRAINT ck_service_type_name CHECK ((btrim((name)::text) <> ''::text)),
+    CONSTRAINT ck_service_type_price_range CHECK ((((min_price IS NULL) OR (min_price >= (0)::numeric)) AND ((max_price IS NULL) OR (max_price >= COALESCE(min_price, (0)::numeric))) AND ((reference_price IS NULL) OR ((reference_price >= COALESCE(min_price, reference_price)) AND (reference_price <= COALESCE(max_price, reference_price)))))),
     CONSTRAINT ck_service_type_reference_price CHECK ((reference_price >= (0)::numeric))
 );
 
@@ -1305,7 +1437,8 @@ CREATE TABLE public.staff (
     CONSTRAINT ck_staff_kind CHECK (((kind)::text = ANY ((ARRAY['DUENO'::character varying, 'MECANICO'::character varying, 'ENCARGADO'::character varying])::text[]))),
     CONSTRAINT ck_staff_name CHECK ((btrim((name)::text) <> ''::text)),
     CONSTRAINT ck_staff_owner_no_commission CHECK ((((kind)::text <> 'DUENO'::text) OR (commission_rate IS NULL))),
-    CONSTRAINT ck_staff_phone CHECK ((btrim((phone)::text) <> ''::text))
+    CONSTRAINT ck_staff_phone CHECK ((btrim((phone)::text) <> ''::text)),
+    CONSTRAINT ck_staff_phone_format CHECK (public.mirm_phone_valid((phone)::text))
 );
 
 
@@ -1415,7 +1548,8 @@ CREATE TABLE public.supplier (
     opening_date date,
     CONSTRAINT ck_supplier_name CHECK ((btrim((name)::text) <> ''::text)),
     CONSTRAINT ck_supplier_opening_balance CHECK ((opening_balance >= (0)::numeric)),
-    CONSTRAINT ck_supplier_opening_pair CHECK (((opening_balance IS NULL) = (opening_date IS NULL)))
+    CONSTRAINT ck_supplier_opening_pair CHECK (((opening_balance IS NULL) = (opening_date IS NULL))),
+    CONSTRAINT ck_supplier_phone_format CHECK (((phone IS NULL) OR public.mirm_phone_valid((phone)::text)))
 );
 
 
@@ -1633,6 +1767,37 @@ CREATE VIEW public.v_customer_balance AS
 
 
 --
+-- Name: v_customer_overview; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_customer_overview AS
+ SELECT c.id AS customer_id,
+    (COALESCE(mo.motorcycles, (0)::bigint))::integer AS motorcycles,
+    COALESCE(mo.brand_ids, '{}'::integer[]) AS motorcycle_brand_ids,
+    COALESCE(b.balance, (0)::numeric) AS balance,
+    COALESCE(b.overdue, (0)::numeric) AS overdue,
+    b.max_days_overdue,
+    b.oldest_due_date,
+    (EXISTS ( SELECT 1
+           FROM public.sale_invoice si
+          WHERE ((si.customer_id = c.id) AND ((si.payment_terms)::text = 'CREDITO'::text)))) AS has_credit,
+    GREATEST(( SELECT max(si.created_at) AS max
+           FROM public.sale_invoice si
+          WHERE (si.customer_id = c.id)), ( SELECT max(sc.changed_at) AS max
+           FROM ((public.service_order_status_change sc
+             JOIN public.service_order so ON ((so.id = sc.service_order_id)))
+             JOIN public.motorcycle m ON ((m.id = so.motorcycle_id)))
+          WHERE (m.customer_id = c.id))) AS last_visit_at
+   FROM ((public.customer c
+     LEFT JOIN LATERAL ( SELECT count(*) AS motorcycles,
+            array_agg(DISTINCT mm.motorcycle_brand_id) AS brand_ids
+           FROM (public.motorcycle m
+             JOIN public.motorcycle_model mm ON ((mm.id = m.motorcycle_model_id)))
+          WHERE (m.customer_id = c.id)) mo ON (true))
+     LEFT JOIN public.v_customer_balance b ON ((b.customer_id = c.id)));
+
+
+--
 -- Name: v_mechanic_unpaid_commission; Type: VIEW; Schema: public; Owner: -
 --
 
@@ -1673,6 +1838,49 @@ CREATE VIEW public.v_product_margin AS
           WHERE ((m.product_id = p.id) AND ((m.movement_type)::text = ANY ((ARRAY['COMPRA'::character varying, 'DEVOLUCION_CLIENTE'::character varying, 'INVENTARIO_INICIAL'::character varying, 'AJUSTE_ENTRADA'::character varying])::text[])))
           ORDER BY m.moved_at DESC, m.id DESC
          LIMIT 1) lc ON (true));
+
+
+--
+-- Name: v_supplier_product; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_supplier_product AS
+ SELECT DISTINCT ON (pi.supplier_id, l.product_id) pi.supplier_id,
+    l.product_id,
+    l.unit_cost AS last_unit_cost,
+    pi.purchase_date AS last_purchase_date,
+    count(*) OVER (PARTITION BY pi.supplier_id, l.product_id) AS times_bought,
+    sum(l.quantity) OVER (PARTITION BY pi.supplier_id, l.product_id) AS total_quantity
+   FROM (public.purchase_invoice_line l
+     JOIN public.purchase_invoice pi ON ((pi.id = l.purchase_invoice_id)))
+  ORDER BY pi.supplier_id, l.product_id, pi.purchase_date DESC, pi.id DESC, l.id DESC;
+
+
+--
+-- Name: v_product_overview; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_product_overview AS
+ SELECT p.id AS product_id,
+    p.product_category_id,
+    p.product_brand_id,
+    p.quality_tier,
+    p.list_price,
+    p.stock,
+    m.last_cost,
+    m.margin_pct,
+    s.last_sold_at,
+    (COALESCE(s.sold_90d, (0)::bigint))::integer AS sold_90d,
+    COALESCE(sp.supplier_ids, '{}'::integer[]) AS supplier_ids
+   FROM (((public.product p
+     JOIN public.v_product_margin m ON ((m.product_id = p.id)))
+     LEFT JOIN LATERAL ( SELECT max(mv.moved_at) AS last_sold_at,
+            sum(mv.quantity) FILTER (WHERE (mv.moved_at >= (now() - '90 days'::interval))) AS sold_90d
+           FROM public.inventory_movement mv
+          WHERE ((mv.product_id = p.id) AND ((mv.movement_type)::text = ANY ((ARRAY['VENTA'::character varying, 'USO_SERVICIO'::character varying])::text[])))) s ON (true))
+     LEFT JOIN LATERAL ( SELECT array_agg(DISTINCT x.supplier_id) AS supplier_ids
+           FROM public.v_supplier_product x
+          WHERE (x.product_id = p.id)) sp ON (true));
 
 
 --
@@ -2011,10 +2219,24 @@ ALTER TABLE ONLY public.sale_invoice_line ALTER COLUMN id SET DEFAULT nextval('p
 
 
 --
+-- Name: service_category id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_category ALTER COLUMN id SET DEFAULT nextval('public.service_category_id_seq'::regclass);
+
+
+--
 -- Name: service_order id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.service_order ALTER COLUMN id SET DEFAULT nextval('public.service_order_id_seq'::regclass);
+
+
+--
+-- Name: service_order_item id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_order_item ALTER COLUMN id SET DEFAULT nextval('public.service_order_item_id_seq'::regclass);
 
 
 --
@@ -2085,6 +2307,14 @@ ALTER TABLE ONLY public.supplier_return_line ALTER COLUMN id SET DEFAULT nextval
 --
 
 ALTER TABLE ONLY public.warranty_claim ALTER COLUMN id SET DEFAULT nextval('public.warranty_claim_id_seq'::regclass);
+
+
+--
+-- Name: sale_invoice_line ck_sale_invoice_line_labor_service_type; Type: CHECK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE public.sale_invoice_line
+    ADD CONSTRAINT ck_sale_invoice_line_labor_service_type CHECK ((((line_type)::text <> 'MANO_OBRA'::text) OR (service_type_id IS NOT NULL) OR (additional_fault_id IS NOT NULL))) NOT VALID;
 
 
 --
@@ -2320,11 +2550,27 @@ ALTER TABLE ONLY public.sale_invoice_line
 
 
 --
+-- Name: service_category pk_service_category; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_category
+    ADD CONSTRAINT pk_service_category PRIMARY KEY (id);
+
+
+--
 -- Name: service_order pk_service_order; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.service_order
     ADD CONSTRAINT pk_service_order PRIMARY KEY (id);
+
+
+--
+-- Name: service_order_item pk_service_order_item; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_order_item
+    ADD CONSTRAINT pk_service_order_item PRIMARY KEY (id);
 
 
 --
@@ -2426,6 +2672,20 @@ CREATE INDEX ix_customer_name_trgm ON public.customer USING gin (public.mirm_nor
 --
 
 CREATE INDEX ix_product_name_trgm ON public.product USING gin (public.mirm_norm((name)::text) public.gin_trgm_ops);
+
+
+--
+-- Name: ix_service_order_item_service_type_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_service_order_item_service_type_id ON public.service_order_item USING btree (service_type_id);
+
+
+--
+-- Name: ix_service_type_name_trgm; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_service_type_name_trgm ON public.service_type USING gin (public.mirm_norm((name)::text) public.gin_trgm_ops);
 
 
 --
@@ -2566,6 +2826,13 @@ CREATE UNIQUE INDEX uq_inventory_movement_supplier_return_line_id ON public.inve
 --
 
 CREATE UNIQUE INDEX uq_motorcycle_brand_name ON public.motorcycle_brand USING btree (lower((name)::text));
+
+
+--
+-- Name: uq_motorcycle_chassis_number; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_motorcycle_chassis_number ON public.motorcycle USING btree (upper((chassis_number)::text));
 
 
 --
@@ -2716,6 +2983,20 @@ CREATE UNIQUE INDEX uq_sale_invoice_service_order_id ON public.sale_invoice USIN
 
 
 --
+-- Name: uq_service_category_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_service_category_name ON public.service_category USING btree (lower((name)::text));
+
+
+--
+-- Name: uq_service_order_item_order_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_service_order_item_order_type ON public.service_order_item USING btree (service_order_id, service_type_id);
+
+
+--
 -- Name: uq_service_order_status_change_service_order_id_changed_at; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2811,6 +3092,20 @@ CREATE TRIGGER tg_product_guard_stock BEFORE INSERT OR UPDATE ON public.product 
 --
 
 CREATE TRIGGER tg_service_order_check_responsible BEFORE INSERT OR UPDATE OF mechanic_staff_id, applied_commission_rate ON public.service_order FOR EACH ROW EXECUTE FUNCTION public.fn_service_order_check_responsible();
+
+
+--
+-- Name: service_order tg_service_order_has_items; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE CONSTRAINT TRIGGER tg_service_order_has_items AFTER INSERT ON public.service_order DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.fn_service_order_has_items();
+
+
+--
+-- Name: service_order_item tg_service_order_item_keep_one; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE CONSTRAINT TRIGGER tg_service_order_item_keep_one AFTER DELETE OR UPDATE OF service_order_id ON public.service_order_item DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.fn_service_order_has_items();
 
 
 --
@@ -3206,6 +3501,22 @@ ALTER TABLE ONLY public.sale_invoice
 
 
 --
+-- Name: service_order_item fk_service_order_item_service_order_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_order_item
+    ADD CONSTRAINT fk_service_order_item_service_order_id FOREIGN KEY (service_order_id) REFERENCES public.service_order(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: service_order_item fk_service_order_item_service_type_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_order_item
+    ADD CONSTRAINT fk_service_order_item_service_type_id FOREIGN KEY (service_type_id) REFERENCES public.service_type(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
 -- Name: service_order fk_service_order_mechanic_staff_id; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3243,6 +3554,14 @@ ALTER TABLE ONLY public.service_order_status_change
 
 ALTER TABLE ONLY public.service_order_status_change
     ADD CONSTRAINT fk_service_order_status_change_service_order_id FOREIGN KEY (service_order_id) REFERENCES public.service_order(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: service_type fk_service_type_service_category_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_type
+    ADD CONSTRAINT fk_service_type_service_category_id FOREIGN KEY (service_category_id) REFERENCES public.service_category(id) ON UPDATE CASCADE ON DELETE RESTRICT;
 
 
 --

@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { fail } from "~/server/api/errors";
 import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
-import { dayToDate, STAFF_KINDS, todayInManagua, zDay, zId, zOptText, zPositiveMoney, zRate, zText } from "~/server/domain/constants";
+import { dayToDate, STAFF_KINDS, todayInManagua, zDay, zId, zOptText, zPhone, zPositiveMoney, zRate, zText } from "~/server/domain/constants";
 import { totalOf, unpaidCommissions, unsettledAdvances } from "~/server/domain/commission";
 import { D } from "~/server/domain/money";
 
@@ -47,7 +47,7 @@ export const staffRouter = createTRPCRouter({
       z.object({
         id: zId.optional(),
         name: zText(100),
-        phone: zText(20),
+        phone: zPhone,
         kind: z.enum(STAFF_KINDS).default("MECANICO"),
         canRepair: z.boolean().optional(),
         commissionRate: zRate.nullish(),

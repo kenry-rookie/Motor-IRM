@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useState } from "react";
 
-import { Alert, Badge, Button, Card, Dialog, Field, Input, PageTitle, Select, Table } from "~/app/_components/ui";
+import { Alert, BackBar, Badge, Button, Card, Dialog, Field, Input, PageTitle, Select, Table } from "~/app/_components/ui";
 import { errorMessage } from "~/lib/errors";
 import { dec, formatDateTime, formatDay, money } from "~/lib/format";
 import { api } from "~/trpc/react";
@@ -21,6 +21,7 @@ export default function CustomerPage() {
   if (!d) return <p className="text-neutral-400">Cargando…</p>;
   return (
     <>
+      <BackBar crumbs={[{ label: "Clientes", href: "/clientes" }, { label: d.customer.name }]} back={{ href: "/clientes", label: "Volver a clientes" }} />
       <PageTitle
         title={d.customer.name}
         subtitle={`${d.customer.phone}${d.customer.nationalId ? ` · ${d.customer.nationalId}` : ""}${d.customer.address ? ` · ${d.customer.address}` : ""}`}

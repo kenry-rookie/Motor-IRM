@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { normalizePhone } from "~/lib/phone";
+
 /**
  * API-008 — Allowed values of every column with a CHECK ... IN (...).
  * Single source for the API (z.enum in inputs) and the client (selects, labels).
@@ -106,6 +108,39 @@ export const zOptText = (max: number) =>
     .max(max)
     .optional()
     .transform((v) => (v === "" ? undefined : v));
+/** Phone in the shop's format (DEC-047): 8888-1111, +1 305-555-1234, +506 8888-1111… */
+const PHONE_MSG = "Teléfono incompleto: 8 dígitos (8888-1111) o + código del país";
+export const zPhone = z
+  .string()
+  .trim()
+  .transform((v, ctx) => {
+    const n = normalizePhone(v);
+    if (!n) {
+      ctx.addIssue({ code: "custom", message: PHONE_MSG });
+      return z.NEVER;
+    }
+    return n;
+  });
+export const zOptPhone = z
+  .string()
+  .trim()
+  .optional()
+  .transform((v, ctx) => {
+    if (!v) return undefined;
+    const n = normalizePhone(v);
+    if (!n) {
+      ctx.addIssue({ code: "custom", message: PHONE_MSG });
+      return z.NEVER;
+    }
+    return n;
+  });
+/** Chassis (VIN) number: letters, digits and dashes, stored in capitals (ck_motorcycle_chassis_number). */
+export const zOptChassis = z
+  .string()
+  .trim()
+  .optional()
+  .transform((v) => (v ? v.toUpperCase().replace(/\s+/g, "") : undefined))
+  .refine((v) => v === undefined || /^[A-Z0-9-]{5,30}$/.test(v), "Chasis: de 5 a 30 letras o números");
 /** Calendar day "YYYY-MM-DD" (DATE columns). */
 export const zDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida (AAAA-MM-DD)");
 

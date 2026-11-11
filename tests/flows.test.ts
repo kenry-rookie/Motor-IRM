@@ -11,11 +11,15 @@ const ACEITE = "7501234500035"; // stock 30, price 220
 let admin: Awaited<ReturnType<typeof callerAs>>;
 let encargado: Awaited<ReturnType<typeof callerAs>>;
 let cash: number;
+let engrase: number;
+let frenos: number;
 
 beforeAll(async () => {
   admin = await callerAs("admin");
   encargado = await callerAs("encargado");
   cash = await idOf("paymentMethod", "Efectivo");
+  engrase = (await db.serviceType.findFirstOrThrow({ where: { name: "Engrase" } })).id;
+  frenos = (await db.serviceType.findFirstOrThrow({ where: { name: "Cambio de pastillas de freno" } })).id;
 });
 afterAll(async () => {
   // The kardex and the stock column must still agree after everything (DEC-039).
@@ -142,7 +146,7 @@ describe("taller (API-015) y personal (API-018)", () => {
   it("recibir sin factura, falla adicional, cerrar con repuesto, comisión y pago", async () => {
     const moto = await db.motorcycle.findFirstOrThrow({ where: { plate: "M 654-321" } });
     const freddy = await db.staff.findFirstOrThrow({ where: { name: "Mario Taller" } });
-    const order = await encargado.service.receive({ motorcycleId: moto.id, requestedWork: "Engrase completo" });
+    const order = await encargado.service.receive({ motorcycleId: moto.id, items: [{ serviceTypeId: engrase }], requestedWork: "Engrase completo" });
     expect(await db.saleInvoice.count({ where: { serviceOrderId: order.id } })).toBe(0);
 
     await encargado.service.assignMechanic({ serviceOrderId: order.id, mechanicStaffId: freddy.id });
@@ -151,7 +155,7 @@ describe("taller (API-015) y personal (API-018)", () => {
 
     const terms = { paymentTerms: "CONTADO" as const, payment: { paymentMethodId: cash, currency: "NIO" as const } };
     await expect(
-      encargado.service.close({ serviceOrderId: order.id, terms, labor: [{ description: "Engrase", price: "400" }] }),
+      encargado.service.close({ serviceOrderId: order.id, terms, labor: [{ serviceTypeId: engrase, price: "400" }] }),
     ).rejects.toThrow("sin decisión");
     await encargado.service.decideFault({ additionalFaultId: fault.id, decision: "ACEPTADA" });
 
@@ -159,7 +163,7 @@ describe("taller (API-015) y personal (API-018)", () => {
     const bill = await encargado.service.close({
       serviceOrderId: order.id,
       terms,
-      labor: [{ description: "Engrase", price: "400" }],
+      labor: [{ serviceTypeId: engrase, price: "400" }],
       parts: [{ productId: bujia.id, quantity: 1 }],
     });
     expect(bill.total.toString()).toBe("620"); // 400 + 100 + 120
@@ -183,7 +187,7 @@ describe("taller (API-015) y personal (API-018)", () => {
 
   it("cancelar una orden sin cargo no crea factura", async () => {
     const moto = await db.motorcycle.findFirstOrThrow({ where: { plate: "M 123-456" } });
-    const order = await encargado.service.receive({ motorcycleId: moto.id, requestedWork: "Revisión" });
+    const order = await encargado.service.receive({ motorcycleId: moto.id, items: [{ serviceTypeId: engrase }] });
     const r = await encargado.service.cancel({ serviceOrderId: order.id, notes: "El cliente se llevó la moto" });
     expect(r.invoiceId).toBeNull();
   });
@@ -252,7 +256,7 @@ describe("recepción en un solo paso, marca y modelo del catálogo (DEC-044)", (
         color: "Blanca",
         plate: "M 777-000",
       },
-      requestedWork: "Cambio de aceite",
+      items: [{ serviceTypeId: engrase }], odometerKm: 12000,
     });
     const o = await admin.service.get({ id: order.id });
     expect(o.motorcycle.customer.name).toBe("Pedro Gómez");
@@ -262,7 +266,7 @@ describe("recepción en un solo paso, marca y modelo del catálogo (DEC-044)", (
     await expect(
       encargado.service.receive({
         newMotorcycle: { customerId: o.motorcycle.customer.id, motorcycleModelId: xr.id, color: "Roja", plate: "m 777-000" },
-        requestedWork: "Revisión",
+        items: [{ serviceTypeId: engrase }],
       }),
     ).rejects.toThrow("Ya existe una moto con esa placa");
   });
@@ -272,7 +276,7 @@ describe("recepción en un solo paso, marca y modelo del catálogo (DEC-044)", (
     await expect(
       encargado.service.receive({
         newMotorcycle: { customerId: customer.id, motorcycleModelId: 999_999, color: "Azul" },
-        requestedWork: "Revisión",
+        items: [{ serviceTypeId: engrase }],
       }),
     ).rejects.toThrow("no está en el catálogo");
     await expect(encargado.admin.createCatalogItem({ kind: "motorcycleBrand", name: "Bajah" })).rejects.toThrow();
@@ -282,11 +286,11 @@ describe("recepción en un solo paso, marca y modelo del catálogo (DEC-044)", (
 describe("responsable de la orden: mecánico o dueño (DEC-041)", () => {
   const receiveAndClose = async (staffId: number, labor: string) => {
     const moto = await db.motorcycle.findFirstOrThrow({ where: { plate: "M 123-456" } });
-    const order = await encargado.service.receive({ motorcycleId: moto.id, requestedWork: "Frenos", mechanicStaffId: staffId });
+    const order = await encargado.service.receive({ motorcycleId: moto.id, items: [{ serviceTypeId: frenos }], mechanicStaffId: staffId });
     await encargado.service.close({
       serviceOrderId: order.id,
       terms: { paymentTerms: "CONTADO", payment: { paymentMethodId: cash, currency: "NIO" } },
-      labor: [{ description: "Frenos", price: labor }],
+      labor: [{ serviceTypeId: frenos, price: labor }],
     });
     return db.serviceOrder.findUniqueOrThrow({ where: { id: order.id } });
   };
@@ -314,13 +318,13 @@ describe("responsable de la orden: mecánico o dueño (DEC-041)", () => {
     const enc = await db.staff.findFirstOrThrow({ where: { kind: "ENCARGADO" } });
     const moto = await db.motorcycle.findFirstOrThrow({ where: { plate: "M 123-456" } });
     await expect(
-      encargado.service.receive({ motorcycleId: moto.id, requestedWork: "x", mechanicStaffId: enc.id }),
+      encargado.service.receive({ motorcycleId: moto.id, items: [{ serviceTypeId: frenos }], mechanicStaffId: enc.id }),
     ).rejects.toThrow("no repara motos");
     const owner = await db.staff.findFirstOrThrow({ where: { name: "Segundo Dueño" } });
     // Even writing straight to the database (skipping the API) is rejected.
     await expect(
       db.serviceOrder.create({
-        data: { motorcycleId: moto.id, requestedWork: "x", mechanicStaffId: owner.id, appliedCommissionRate: "0.6" },
+        data: { motorcycleId: moto.id, items: { create: [{ serviceTypeId: frenos }] }, mechanicStaffId: owner.id, appliedCommissionRate: "0.6" },
       }),
     ).rejects.toThrow("Un dueño no cobra comisión");
     await expect(
@@ -338,6 +342,77 @@ describe("saldos desde vistas SQL (DEC-042)", () => {
       const sum = open.reduce((a, x) => a.plus(x.balance), new Prisma.Decimal(0));
       expect(sum.toString()).toBe(row.balance.toString());
     }
+  });
+});
+
+describe("trabajos del taller desde el catálogo (DEC-048)", () => {
+  it("una orden necesita al menos un trabajo; la base lo exige aunque se salte la API", async () => {
+    const moto = await db.motorcycle.findFirstOrThrow({ where: { plate: "M 123-456" } });
+    await expect(encargado.service.receive({ motorcycleId: moto.id, items: [] })).rejects.toThrow("al menos un trabajo");
+    await expect(db.serviceOrder.create({ data: { motorcycleId: moto.id } })).rejects.toThrow("al menos un trabajo");
+  });
+
+  it("se pueden cambiar los trabajos de una orden abierta", async () => {
+    const moto = await db.motorcycle.findFirstOrThrow({ where: { plate: "M 123-456" } });
+    const order = await encargado.service.receive({ motorcycleId: moto.id, items: [{ serviceTypeId: engrase }], requestedWork: "suena al frenar" });
+    await encargado.service.setItems({ serviceOrderId: order.id, items: [{ serviceTypeId: frenos }, { serviceTypeId: engrase }] });
+    const o = await admin.service.get({ id: order.id });
+    expect(o.items.map((i) => i.serviceType.id).sort()).toEqual([engrase, frenos].sort());
+    expect(o.requestedWork).toBe("suena al frenar");
+  });
+
+  it("cobrar fuera del rango de precio pide la clave de un dueño", async () => {
+    const moto = await db.motorcycle.findFirstOrThrow({ where: { plate: "M 654-321" } });
+    const mario = await db.staff.findFirstOrThrow({ where: { name: "Mario Taller" } });
+    const order = await encargado.service.receive({ motorcycleId: moto.id, items: [{ serviceTypeId: frenos }], mechanicStaffId: mario.id });
+    const terms = { paymentTerms: "CONTADO" as const, payment: { paymentMethodId: cash, currency: "NIO" as const } };
+    await expect(
+      encargado.service.close({ serviceOrderId: order.id, terms, labor: [{ serviceTypeId: frenos, price: "5000" }] }),
+    ).rejects.toThrow("taller.precio_especial");
+    const bill = await encargado.service.close({
+      serviceOrderId: order.id,
+      terms: { ...terms, authorizer: { username: "admin", password: "admin-pruebas" } },
+      labor: [{ serviceTypeId: frenos, price: "5000" }],
+    });
+    expect(bill.total.toString()).toBe("5000");
+  });
+});
+
+describe("teléfonos con formato (DEC-047)", () => {
+  it("se guardan como 8888-1111 o con código de país, y se rechazan incompletos", async () => {
+    const a = await encargado.customer.create({ name: "Cliente Prueba Uno", phone: "85687080" });
+    expect(a.phone).toBe("8568-7080");
+    const b = await encargado.customer.create({ name: "Cliente Prueba Dos", phone: "+1 3055551234" });
+    expect(b.phone).toBe("+1 305-555-1234");
+    const c = await encargado.customer.create({ name: "Cliente Prueba Tres", phone: "+505 8899 4433" });
+    expect(c.phone).toBe("8899-4433");
+    await expect(encargado.customer.create({ name: "Cliente Prueba Cuatro", phone: "1234" })).rejects.toThrow("Teléfono incompleto");
+    await expect(db.customer.create({ data: { name: "Directo", phone: "88991122" } })).rejects.toThrow("ck_customer_phone_format");
+  });
+});
+
+describe("filtros en la base de datos (DEC-049)", () => {
+  it("productos por categoría y existencias; clientes con deuda", async () => {
+    const cat = await db.productCategory.findFirstOrThrow({ where: { name: "Lubricantes" } });
+    const r = await encargado.search.products({ categoryId: cat.id, stock: "disponible", limit: 50 });
+    expect(r.items.length).toBeGreaterThan(0);
+    expect(r.items.every((p) => p.productCategoryId === cat.id && p.stock > 0)).toBe(true);
+    const debtors = await encargado.search.customers({ debt: "con_deuda", sort: "deuda", limit: 50 });
+    expect(debtors.items.every((c) => Number(c.balance) > 0)).toBe(true);
+    const none = await encargado.search.customers({ debt: "sin_deuda", limit: 50 });
+    expect(none.items.every((c) => Number(c.balance ?? 0) <= 0)).toBe(true);
+  });
+});
+
+describe("permisos con contraseña (DEC-050)", () => {
+  it("guardar un rol pide la contraseña de quien guarda, aunque sea dueño", async () => {
+    const roles = await admin.admin.roles();
+    const enc = roles.find((r) => r.name === "Encargado")!;
+    const ids = enc.permissions.map((p) => p.permissionId);
+    await expect(
+      admin.admin.saveRole({ id: enc.id, name: enc.name, permissionIds: ids, confirmPassword: "otra-clave" }),
+    ).rejects.toThrow("contraseña no es correcta");
+    await admin.admin.saveRole({ id: enc.id, name: enc.name, permissionIds: ids, confirmPassword: "admin-pruebas" });
   });
 });
 

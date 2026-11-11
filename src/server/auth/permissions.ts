@@ -23,6 +23,7 @@ export const PERMISSIONS = {
   "taller.ver": "Ver órdenes de servicio",
   "taller.gestionar": "Recibir motos, asignar mecánico, cambiar estados, fallas adicionales",
   "taller.facturar": "Cerrar y cobrar órdenes de servicio",
+  "taller.precio_especial": "Cobrar un trabajo fuera de su rango de precio",
   "garantias.gestionar": "Registrar reclamos de garantía",
   "compras.ver": "Ver proveedores y compras",
   "compras.gestionar": "Registrar compras, devoluciones y pagos a proveedores",

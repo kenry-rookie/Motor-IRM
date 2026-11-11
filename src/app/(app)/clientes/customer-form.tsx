@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 import { MotorcycleModelSelect } from "~/app/_components/pickers";
-import { Alert, Button, Field, Input } from "~/app/_components/ui";
+import { Alert, Button, Field, Input, PhoneInput } from "~/app/_components/ui";
 import { errorMessage, fieldErrors } from "~/lib/errors";
 import { api } from "~/trpc/react";
 
@@ -25,7 +25,7 @@ export function CustomerForm({ onDone }: { onDone: () => void }) {
         <Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
       </Field>
       <Field label="Teléfono" error={errs.phone}>
-        <Input value={f.phone} onChange={(e) => setF({ ...f, phone: e.target.value })} />
+        <PhoneInput value={f.phone} onValue={(v) => setF({ ...f, phone: v })} />
       </Field>
       <Field label="Cédula (opcional)">
         <Input value={f.nationalId} onChange={(e) => setF({ ...f, nationalId: e.target.value })} />

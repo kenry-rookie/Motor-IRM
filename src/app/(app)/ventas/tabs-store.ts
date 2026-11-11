@@ -30,6 +30,7 @@ export type ProductLine = {
   discountAmount?: string;
 };
 
+/** Labor is always a job of the catalog (DEC-048); serviceTypeId may be missing only in tabs saved before. */
 export type LaborLine = { key: string; serviceTypeId?: number; description: string; price: string };
 export type ChargeLine = { key: string; description: string; price: string };
 
@@ -40,6 +41,8 @@ export type ServiceTab = Base & {
   orderId: number;
   title: string;
   labor: LaborLine[];
+  /** The order's jobs were already copied into `labor` (done once, when the order loads). */
+  laborLoaded?: boolean;
   parts: ProductLine[];
   external: ChargeLine[];
 };

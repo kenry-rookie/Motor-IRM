@@ -15,6 +15,7 @@ import {
   useTabs,
 } from "~/app/(app)/ventas/tabs-store";
 import { CustomerPicker, type Product, ProductPicker, type ProductPickerHandle } from "~/app/_components/pickers";
+import { ServiceCatalogPicker } from "~/app/_components/service-catalog";
 import { cleanTerms, TermsForm } from "~/app/_components/terms-form";
 import { Alert, Badge, Button, Card, cx, EmptyState, Input, Kbd, PageTitle, Select } from "~/app/_components/ui";
 import { errorMessage } from "~/lib/errors";
@@ -476,7 +477,7 @@ function SaleTicket({ tab, perms, discounts, searchRef, chargeRef, update, onCha
         <div>
           <p className="mb-1 text-sm font-medium text-neutral-300">Cliente {tab.terms.paymentTerms === "CONTADO" && <span className="font-normal text-neutral-500">(opcional)</span>}</p>
           <CustomerPicker
-            value={tab.customer ? { ...tab.customer, motorcycles: [], nationalId: null, address: null, exact: true, score: 0 } : null}
+            value={tab.customer}
             onChange={(c) => update({ customer: c ? { id: c.id, name: c.name, phone: c.phone } : null })}
           />
         </div>
@@ -514,16 +515,35 @@ function ServiceTicket({ tab, perms, discounts, searchRef, chargeRef, update, on
     (tab.terms.paymentTerms === "CREDITO" && !perms.includes("ventas.autorizar_credito")) ||
     (manualDiscount(tab.parts) && !perms.includes("ventas.autorizar_descuento"));
   const empty = tab.labor.length + tab.parts.length + tab.external.length + accepted.length === 0;
+  const [addingJob, setAddingJob] = useState(false);
+  const typeById = new Map((types.data ?? []).map((t) => [t.id, t]));
+  const untyped = tab.labor.some((l) => !l.serviceTypeId);
+
+  // The jobs chosen at reception become the labor lines, with their reference price (once).
+  useEffect(() => {
+    if (!order.data || tab.laborLoaded) return;
+    update({
+      laborLoaded: true,
+      labor: tab.labor.length
+        ? tab.labor
+        : order.data.items.map((i) => ({
+            key: newKey(),
+            serviceTypeId: i.serviceType.id,
+            description: i.serviceType.name,
+            price: i.serviceType.referencePrice?.toString() ?? "",
+          })),
+    });
+  }, [order.data, tab.laborLoaded, tab.labor, update]);
 
   const setLabor = (labor: LaborLine[]) => update({ labor });
   const setExternal = (external: ChargeLine[]) => update({ external });
 
   const charge = () => {
-    if (empty || close.isPending || closed) return;
+    if (empty || close.isPending || closed || untyped) return;
     close.mutate({
       serviceOrderId: tab.orderId,
       terms: cleanTerms(tab.terms, tab.customer?.id),
-      labor: tab.labor.filter((l) => l.description && l.price).map(({ serviceTypeId, description, price }) => ({ serviceTypeId, description, price })),
+      labor: tab.labor.flatMap((l) => (l.serviceTypeId && l.price ? [{ serviceTypeId: l.serviceTypeId, description: l.description, price: l.price }] : [])),
       parts: productInput(tab.parts),
       externalCharges: tab.external.filter((x) => x.description && x.price).map(({ description, price }) => ({ description, price })),
     });
@@ -546,7 +566,7 @@ function ServiceTicket({ tab, perms, discounts, searchRef, chargeRef, update, on
                   </span>
                 </p>
                 <p className="text-sm text-neutral-400">
-                  {o.motorcycle.customer.name} · {o.motorcycle.customer.phone} · Mecánico: {o.mechanic?.name ?? "sin asignar"}
+                  {o.motorcycle.customer.name} · {o.motorcycle.customer.phone} · Responsable: {o.mechanic?.name ?? "sin asignar"}
                 </p>
                 <p className="mt-2 text-sm">{o.requestedWork}</p>
                 {o.diagnosis && <p className="mt-1 text-sm text-neutral-400">Diagnóstico: {o.diagnosis}</p>}
@@ -563,52 +583,67 @@ function ServiceTicket({ tab, perms, discounts, searchRef, chargeRef, update, on
           )}
           {closed && <div className="mt-3"><Alert>Esta orden ya está {o?.status === "ENTREGADA" ? "entregada" : "cancelada"}. Cierre la pestaña.</Alert></div>}
           {!o?.mechanicStaffId && o && !closed && (
-            <div className="mt-3"><Alert>Asigne un mecánico en la orden antes de cobrarla.</Alert></div>
+            <div className="mt-3"><Alert>Asigne un responsable (mecánico o dueño) en la orden antes de cobrarla.</Alert></div>
           )}
           {pendingFaults.length > 0 && (
             <div className="mt-3"><Alert>Hay {pendingFaults.length} falla(s) adicional(es) sin respuesta del cliente. Decídalas en la orden antes de cobrar.</Alert></div>
           )}
         </Card>
 
-        <Card title="Mano de obra">
+        <Card
+          title="Mano de obra"
+          actions={
+            <Button variant="ghost" onClick={() => setAddingJob((v) => !v)}>
+              {addingJob ? "Listo" : "+ Agregar trabajo"}
+            </Button>
+          }
+        >
           <ul className="space-y-2">
-            {tab.labor.map((l, i) => (
-              <li key={l.key} className="grid grid-cols-[1fr_120px_auto] gap-2">
-                <Input aria-label="Descripción" value={l.description} onChange={(e) => setLabor(tab.labor.map((x, j) => (j === i ? { ...x, description: e.target.value } : x)))} />
-                <Input aria-label="Precio" inputMode="decimal" placeholder="C$" value={l.price} onChange={(e) => setLabor(tab.labor.map((x, j) => (j === i ? { ...x, price: e.target.value } : x)))} />
-                <Button variant="ghost" aria-label="Quitar" onClick={() => setLabor(tab.labor.filter((_, j) => j !== i))}>
-                  ×
-                </Button>
-              </li>
-            ))}
+            {tab.labor.map((l, i) => {
+              const t = l.serviceTypeId ? typeById.get(l.serviceTypeId) : undefined;
+              const range =
+                t?.minPrice || t?.maxPrice
+                  ? `Rango: ${t.minPrice ? money(t.minPrice) : "—"} a ${t.maxPrice ? money(t.maxPrice) : "—"} (fuera de él pide clave de dueño)`
+                  : null;
+              return (
+                <li key={l.key} className="grid grid-cols-[1fr_130px_auto] items-start gap-2">
+                  <div className="min-h-10 rounded-md border border-neutral-800 bg-neutral-800/30 px-3 py-2 text-sm">
+                    <p className="font-medium">{l.description || "Trabajo sin catálogo"}</p>
+                    {!l.serviceTypeId && <p className="text-bad-fg text-xs">Quítelo y elíjalo de la lista de trabajos.</p>}
+                    {range && <p className="text-xs text-neutral-500">{range}</p>}
+                  </div>
+                  <Input aria-label={`Precio de ${l.description}`} inputMode="decimal" placeholder="C$" value={l.price} onChange={(e) => setLabor(tab.labor.map((x, j) => (j === i ? { ...x, price: e.target.value } : x)))} />
+                  <Button variant="ghost" aria-label={`Quitar ${l.description}`} onClick={() => setLabor(tab.labor.filter((_, j) => j !== i))}>
+                    ×
+                  </Button>
+                </li>
+              );
+            })}
             {accepted.map((f) => (
               <li key={f.id} className="flex items-center justify-between rounded-md bg-neutral-800/40 px-3 py-2 text-sm">
-                <span>
-                  Falla adicional aceptada: {f.description}
-                </span>
+                <span>Falla adicional aceptada: {f.description}</span>
                 <span className="tabular-nums">{money(f.proposedPrice)}</span>
               </li>
             ))}
+            {tab.labor.length === 0 && accepted.length === 0 && (
+              <li className="text-sm text-neutral-500">Sin mano de obra. Use «+ Agregar trabajo».</li>
+            )}
           </ul>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {types.data
-              ?.filter((ty) => ty.active)
-              .map((ty) => (
-                <Button
-                  key={ty.id}
-                  variant="secondary"
-                  className="py-1.5"
-                  onClick={() =>
-                    setLabor([...tab.labor, { key: newKey(), serviceTypeId: ty.id, description: ty.name, price: ty.referencePrice?.toString() ?? "" }])
-                  }
-                >
-                  + {ty.name} {ty.referencePrice ? <span className="text-neutral-500">{money(ty.referencePrice)}</span> : null}
-                </Button>
-              ))}
-            <Button variant="ghost" className="py-1.5" onClick={() => setLabor([...tab.labor, { key: newKey(), description: "", price: "" }])}>
-              + Otro trabajo
-            </Button>
-          </div>
+          {addingJob && (
+            <div className="mt-3">
+              <ServiceCatalogPicker
+                compact
+                selected={tab.labor.flatMap((l) => (l.serviceTypeId ? [l.serviceTypeId] : []))}
+                onToggle={(ty) =>
+                  setLabor(
+                    tab.labor.some((l) => l.serviceTypeId === ty.id)
+                      ? tab.labor.filter((l) => l.serviceTypeId !== ty.id)
+                      : [...tab.labor, { key: newKey(), serviceTypeId: ty.id, description: ty.name, price: ty.referencePrice?.toString() ?? "" }],
+                  )
+                }
+              />
+            </div>
+          )}
         </Card>
 
         <Card title="Repuestos e insumos">
@@ -640,7 +675,7 @@ function ServiceTicket({ tab, perms, discounts, searchRef, chargeRef, update, on
         total={total}
         error={close.error}
         pending={close.isPending}
-        disabled={empty || !!closed}
+        disabled={empty || !!closed || untyped}
         onCharge={charge}
         cta="Cobrar y entregar"
       >

@@ -4,7 +4,7 @@ import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
 import { customerInclude } from "~/server/domain/search";
 import { customerInvoiceBalances, openingBalances } from "~/server/domain/balances";
 import { estimatedInterest } from "~/server/domain/billing";
-import { dayToDate, zDay, zId, zOptText, pageFields, zPositiveMoney, zRate, zText } from "~/server/domain/constants";
+import { dayToDate, zDay, zId, zOptText, pageFields, zPhone, zPositiveMoney, zRate, zText } from "~/server/domain/constants";
 import { sum } from "~/server/domain/money";
 
 /** Customers, motorcycles, opening balances and the account statement (API-014). */
@@ -13,7 +13,7 @@ const manage = permissionProcedure("clientes.gestionar");
 
 const zCustomer = z.object({
   name: zText(100),
-  phone: zText(20),
+  phone: zPhone,
   nationalId: zOptText(20),
   address: zOptText(200),
 });
