@@ -16,6 +16,7 @@
 //   - balance / commission / margin VIEWS (v_*, DEC-042)          4_staff_kind_and_balance_views
 //     Views are read with $queryRaw from src/server/domain/balances.ts.
 //   - cash_session: one open at a time, close complete-or-nothing, no delete  9c_cash_session
+//   - cash_session_change: append-only audit of reopen/correct/delete    9e_cash_session_corrections
 //   - phone format CHECKs, "at least one service per order" (deferred
 //     constraint trigger), filter views v_*_overview      5_workshop_catalog_phones_filters
 // When you change a column covered by one of those, update the SQL migration too.
@@ -121,6 +122,7 @@ model AppUser {
   inventoryMovements           InventoryMovement[]
   cashSessionsOpened           CashSession[]              @relation("CashSessionOpenedBy")
   cashSessionsClosed           CashSession[]              @relation("CashSessionClosedBy")
+  cashSessionChanges           CashSessionChange[]
 
   @@map("app_user")
 }
@@ -401,8 +403,31 @@ model CashSession {
 
   openedBy AppUser  @relation("CashSessionOpenedBy", fields: [openedByUserId], references: [id], onDelete: Restrict, map: "fk_cash_session_opened_by_user_id")
   closedBy AppUser? @relation("CashSessionClosedBy", fields: [closedByUserId], references: [id], onDelete: Restrict, map: "fk_cash_session_closed_by_user_id")
+  changes  CashSessionChange[]
 
   @@map("cash_session")
+}
+
+/// Bitácora de reaperturas, correcciones y eliminaciones de caja (migración 9e).
+/// Solo se agrega (trigger). Si se elimina la caja, la fila queda con
+/// cashSessionId = null (única excepción a onDelete: Restrict) y el día en businessDay.
+model CashSessionChange {
+  id              Int       @id(map: "pk_cash_session_change") @default(autoincrement())
+  cashSessionId   Int?      @map("cash_session_id")
+  businessDay     DateTime  @map("business_day") @db.Date
+  /// REAPERTURA | CORRECCION | ELIMINACION (CHECK en la migración)
+  action          String    @db.VarChar(20)
+  changedAt       DateTime  @default(dbgenerated("CURRENT_TIMESTAMP(0)")) @map("changed_at") @db.Timestamptz(0)
+  changedByUserId Int       @map("changed_by_user_id")
+  reason          String    @db.VarChar(200)
+  before          Json
+  after           Json?
+
+  cashSession CashSession? @relation(fields: [cashSessionId], references: [id], onDelete: SetNull, map: "fk_cash_session_change_cash_session_id")
+  changedBy   AppUser      @relation(fields: [changedByUserId], references: [id], onDelete: Restrict, map: "fk_cash_session_change_changed_by_user_id")
+
+  @@index([cashSessionId], map: "ix_cash_session_change_cash_session_id")
+  @@map("cash_session_change")
 }
 
 // ============================================================

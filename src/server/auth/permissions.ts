@@ -32,6 +32,7 @@ export const PERMISSIONS = {
   "personal.pagos": "Dar adelantos y pagar la semana a los mecánicos",
   "caja.retiros": "Registrar retiros de caja",
   "caja.arqueo": "Abrir y cerrar la caja del día (arqueo)",
+  "caja.corregir": "Reabrir, corregir y eliminar cajas (solo administradores)",
   "reportes.ver": "Ver reportes y cierre de caja",
   "catalogos.gestionar": "Mantener catálogos (marcas, categorías, motivos, métodos de pago…)",
   "admin.usuarios": "Administrar usuarios, roles y permisos",

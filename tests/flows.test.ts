@@ -627,6 +627,8 @@ describe("apertura y cierre de caja (arqueo, migración 9c)", () => {
 
     // Con dinero movido hoy, la apertura ya no se cancela.
     await expect(encargado.cash.cancelOpening({ cashSessionId: id })).rejects.toThrow("no se cancela");
+    expect((await encargado.cash.current())!.cancelBlockedReason).toContain("no se cancela");
+    expect((await admin.cash.current())!.cancelBlockedReason).toBeNull();
 
     // Si no cuadra, la nota es obligatoria.
     const short = after.expected.nio.minus(10).toFixed(2);
@@ -648,12 +650,17 @@ describe("apertura y cierre de caja (arqueo, migración 9c)", () => {
     expect((await productByBarcode(BUJIA)).stock).toBe(stock);
     await expect(admin.staff.withdrawCash({ cashWithdrawalReasonId: reason.id, amount: "50" })).rejects.toThrow("caja");
 
-    // No se abre otra hoy; el encargado no reabre, el dueño sí, y ya se puede cobrar.
+    // No se abre otra hoy; el encargado no reabre, el administrador sí (con motivo), y ya se puede cobrar.
     await expect(encargado.cash.open({ openingNio: "0" })).rejects.toThrow("ya se cerró");
-    await expect(encargado.cash.reopen({ cashSessionId: id })).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await admin.cash.reopen({ cashSessionId: id });
+    await expect(encargado.cash.reopen({ cashSessionId: id, reason: "Se contó mal" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(admin.cash.reopen({ cashSessionId: id, reason: "no" })).rejects.toThrow("motivo");
+    await admin.cash.reopen({ cashSessionId: id, reason: "Se cerró antes de tiempo" });
     await encargado.sales.create(sale);
     const again = (await admin.cash.current())!;
+    // Debería haber dólares (apertura 20): sin decir cuántos se contaron, no cierra.
+    await expect(
+      admin.cash.close({ cashSessionId: id, countedNio: again.expected.nio.toFixed(2) }),
+    ).rejects.toThrow("dólares");
     await admin.cash.close({
       cashSessionId: id,
       countedNio: again.expected.nio.toFixed(2),
@@ -663,7 +670,80 @@ describe("apertura y cierre de caja (arqueo, migración 9c)", () => {
     const hist = await admin.cash.history({ from: today, to: today });
     expect(hist).toHaveLength(1);
     expect(hist[0]!.diffNio!.toString()).toBe("0");
+    expect(hist[0]!.changes).toBe(1);
     // Una caja no se borra.
     await expect(db.cashSession.delete({ where: { id } })).rejects.toThrow();
+
+    // Corregir un cierre: solo administradores, con motivo, y algo tiene que cambiar.
+    const closedNow = (await admin.cash.detail({ cashSessionId: id })).session;
+    const fix = {
+      cashSessionId: id,
+      openingNio: closedNow.openingNio.toFixed(2),
+      openingUsd: closedNow.openingUsd.toFixed(2),
+      countedNio: closedNow.countedNio!.toFixed(2),
+      countedUsd: closedNow.countedUsd!.toFixed(2),
+      reason: "Se contó mal el dinero",
+    };
+    await expect(encargado.cash.correct(fix)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(admin.cash.correct(fix)).rejects.toThrow("No cambió nada");
+    // Se contaron 15 córdobas menos: sin nota no se guarda; con nota sí, y lo esperado se recalcula.
+    const less = { ...fix, countedNio: closedNow.countedNio!.minus(15).toFixed(2) };
+    await expect(admin.cash.correct(less)).rejects.toThrow("escriba una nota");
+    const corrected = await admin.cash.correct({ ...less, closingNotes: "Se perdieron 15 córdobas" });
+    expect(corrected.diffNio.toString()).toBe("-15");
+    // La apertura también se corrige: +50 en la apertura sube 50 lo esperado.
+    const moreOpening = await admin.cash.correct({
+      ...less,
+      openingNio: closedNow.openingNio.plus(50).toFixed(2),
+      closingNotes: "Se perdieron 15 córdobas",
+      reason: "La apertura se escribió mal",
+    });
+    expect(moreOpening.expected.nio.minus(corrected.expected.nio).toString()).toBe("50");
+    const det = await admin.cash.detail({ cashSessionId: id });
+    expect(det.session.closedAt).not.toBeNull();
+    expect(det.session.changes.map((c) => c.action)).toEqual(["CORRECCION", "CORRECCION", "REAPERTURA"]);
+    expect(det.changedAfterClose).toBe(false);
+    // La bitácora no se edita ni se borra, ni saltándose la API.
+    const log = det.session.changes[0]!;
+    await expect(db.cashSessionChange.update({ where: { id: log.id }, data: { reason: "otro motivo" } })).rejects.toThrow();
+    await expect(db.cashSessionChange.delete({ where: { id: log.id } })).rejects.toThrow();
+    // Una caja de otro día no se reabre ni se elimina: se corrige.
+    const old = await db.cashSession.create({
+      data: {
+        businessDay: new Date("2001-01-02T00:00:00Z"),
+        openedByUserId: user.id,
+        openedAt: new Date("2001-01-02T14:00:00Z"),
+        closedAt: new Date("2001-01-02T23:00:00Z"),
+        closedByUserId: user.id,
+        expectedNio: "0",
+        expectedUsd: "0",
+        countedNio: "0",
+        countedUsd: "0",
+      },
+    });
+    await expect(admin.cash.reopen({ cashSessionId: old.id, reason: "Prueba de otro día" })).rejects.toThrow("Solo se puede reabrir la caja de hoy");
+    await expect(admin.cash.discardToday({ cashSessionId: old.id, reason: "Prueba de otro día" })).rejects.toThrow("Solo se puede eliminar");
+    const oldFixed = await admin.cash.correct({
+      cashSessionId: old.id,
+      openingNio: "100",
+      openingUsd: "0",
+      countedNio: "100",
+      countedUsd: "0",
+      reason: "Apertura de otro día mal escrita",
+    });
+    expect(oldFixed.diffNio.toString()).toBe("0");
+
+    // Caja de prueba: solo un administrador la elimina (solo la de hoy, con motivo) y se puede volver a abrir.
+    await expect(encargado.cash.discardToday({ cashSessionId: id, reason: "Era una prueba" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await admin.cash.discardToday({ cashSessionId: id, reason: "Era una prueba" });
+    expect(await admin.cash.history({ from: today, to: today })).toHaveLength(0);
+    expect((await admin.cash.status()).todayClosed).toBe(false);
+    // La bitácora de la caja eliminada se conserva (sin caja, con el día).
+    const orphan = await db.cashSessionChange.findMany({ where: { cashSessionId: null, action: "ELIMINACION" } });
+    expect(orphan.length).toBeGreaterThan(0);
+    const reopened = await encargado.cash.open({ openingNio: "500" });
+    // Lo cobrado antes sigue siendo de hoy: lo esperado lo incluye.
+    expect((await encargado.cash.current())!.summary.cashInNio.count).toBeGreaterThan(0);
+    await admin.cash.cancelOpening({ cashSessionId: reopened.id });
   });
 });

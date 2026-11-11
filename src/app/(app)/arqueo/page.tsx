@@ -38,6 +38,8 @@ export default function CashSessionPage() {
   const status = api.cash.status.useQuery();
   const current = api.cash.current.useQuery();
   const canOperate = me.data?.permissions.includes("caja.arqueo") ?? false;
+  /** Administrador: reabre la caja de hoy, corrige cierres y elimina la de hoy. */
+  const canFix = me.data?.permissions.includes("caja.corregir") ?? false;
 
   return (
     <>
@@ -54,6 +56,8 @@ export default function CashSessionPage() {
             canOperate={canOperate}
             today={status.data?.today}
           />
+        ) : status.data?.todayClosed && status.data.todaySessionId ? (
+          <TodayClosed id={status.data.todaySessionId} canFix={canFix} />
         ) : (
           status.data && (
             <OpenForm status={status.data} canOperate={canOperate} />
@@ -86,12 +90,6 @@ function OpenForm({
       void utils.cash.invalidate();
     },
   });
-  if (status.todayClosed)
-    return (
-      <Alert kind="ok">
-        La caja de hoy ya se cerró. Puede ver el arqueo abajo, en el historial.
-      </Alert>
-    );
   if (!canOperate)
     return (
       <Alert kind="info">
@@ -201,6 +199,11 @@ function SummaryTable({
   );
 }
 
+/** Se muestran dólares si la caja tuvo dólares en algún momento (apertura, esperado o contado). */
+function hasUsd(...values: unknown[]) {
+  return values.some((v) => dec(v as string).gt(0));
+}
+
 function Difference({
   value,
   currency = "NIO",
@@ -235,7 +238,9 @@ function OpenSession({
       void utils.cash.invalidate();
     },
   });
-  const counted = f.nio !== "";
+  /** Si la gaveta debería tener dólares, hay que contarlos (vacío no es 0). */
+  const needsUsd = dec(data.expected.usd).gt(0);
+  const counted = f.nio !== "" && (!needsUsd || f.usd !== "");
   const diffNio = dec(f.nio).minus(dec(data.expected.nio));
   const diffUsd = dec(f.usd || "0").minus(dec(data.expected.usd));
   const hasDiff = counted && (!diffNio.isZero() || !diffUsd.isZero());
@@ -248,6 +253,9 @@ function OpenSession({
           Esta caja es del {formatDay(s.businessDay)} y no se cerró. Ciérrela
           con el conteo del dinero para poder abrir la de hoy.
         </Alert>
+      )}
+      {canOperate && !isOld && (
+        <CancelOpening id={s.id} blockedReason={data.cancelBlockedReason} />
       )}
       <div className="grid gap-3 sm:grid-cols-3">
         <Stat
@@ -295,9 +303,6 @@ function OpenSession({
               Nota de apertura: {s.openingNotes}
             </p>
           )}
-          {canOperate && !isOld && (
-            <CancelOpening id={s.id} summary={data.summary} />
-          )}
         </Card>
         {canOperate ? (
           <Card title="Cerrar caja (arqueo)">
@@ -309,7 +314,14 @@ function OpenSession({
                   onChange={(e) => setF({ ...f, nio: e.target.value })}
                 />
               </Field>
-              <Field label="Dólares contados (US$)" hint="Vacío = 0">
+              <Field
+                label="Dólares contados (US$)"
+                hint={
+                  needsUsd
+                    ? `Debería haber ${money(data.expected.usd, "USD")}: cuéntelos`
+                    : "Vacío = 0"
+                }
+              >
                 <Input
                   inputMode="decimal"
                   value={f.usd}
@@ -320,7 +332,7 @@ function OpenSession({
                 <div className="flex flex-wrap items-center gap-2 text-sm">
                   <span className="text-neutral-400">Resultado:</span>
                   <Difference value={diffNio.toString()} />
-                  {!dec(data.expected.usd).isZero() || dec(f.usd).gt(0) ? (
+                  {hasUsd(data.expected.usd, f.usd) ? (
                     <Difference value={diffUsd.toString()} currency="USD" />
                   ) : null}
                 </div>
@@ -345,15 +357,15 @@ function OpenSession({
                 }
                 onClick={async () => {
                   const ok = await confirmDialog(
-                    `¿Cerrar la caja del ${formatDay(s.businessDay)} con ${money(f.nio)}${dec(f.usd).gt(0) ? ` y ${money(f.usd, "USD")}` : ""} contados? Después de cerrar ya no se puede cambiar el conteo.`,
+                    `¿Cerrar la caja del ${formatDay(s.businessDay)} con ${money(f.nio)}${dec(f.usd).gt(0) ? ` y ${money(f.usd, "USD")}` : ""} contados? Después de cerrar, solo un administrador puede reabrir la caja o corregir el conteo.`,
                     { title: "Cerrar caja", confirmLabel: "Sí, cerrar caja" },
                   );
                   if (ok)
                     close.mutate({
                       cashSessionId: s.id,
                       countedNio: f.nio,
-                      countedUsd: f.usd || "0",
-                      notes: f.notes || undefined,
+                      countedUsd: f.usd === "" ? undefined : f.usd,
+                      notes: f.notes.trim() || undefined,
                     });
                 }}
               >
@@ -378,7 +390,7 @@ function History() {
   });
   const list = api.cash.history.useQuery(range);
   const [detailId, setDetailId] = useState<number | null>(null);
-  const canReopen = me.data?.permissions.includes("ventas.anular") ?? false;
+  const canFix = me.data?.permissions.includes("caja.corregir") ?? false;
   return (
     <Card
       title="Cajas anteriores"
@@ -431,7 +443,7 @@ function History() {
             </td>
             <td className="text-right tabular-nums">
               {s.expectedNio ? money(s.expectedNio) : "—"}
-              {s.expectedUsd && dec(s.expectedUsd).gt(0) && (
+              {s.closedAt && hasUsd(s.expectedUsd, s.countedUsd) && (
                 <span className="block text-xs text-neutral-500">
                   {money(s.expectedUsd, "USD")}
                 </span>
@@ -439,7 +451,7 @@ function History() {
             </td>
             <td className="text-right tabular-nums">
               {s.countedNio ? money(s.countedNio) : "—"}
-              {s.countedUsd && dec(s.countedUsd).gt(0) && (
+              {s.closedAt && hasUsd(s.expectedUsd, s.countedUsd) && (
                 <span className="block text-xs text-neutral-500">
                   {money(s.countedUsd, "USD")}
                 </span>
@@ -451,6 +463,11 @@ function History() {
                   <Difference value={s.diffNio?.toString()} />
                   {s.diffUsd && !dec(s.diffUsd).isZero() && (
                     <Difference value={s.diffUsd.toString()} currency="USD" />
+                  )}
+                  {s.changes > 0 && (
+                    <Badge tone="blue">
+                      Corregida{s.changes > 1 ? ` (${s.changes})` : ""}
+                    </Badge>
                   )}
                 </div>
               ) : (
@@ -479,7 +496,7 @@ function History() {
         {detailId !== null && (
           <Detail
             id={detailId}
-            canReopen={canReopen}
+            canFix={canFix}
             onDone={() => setDetailId(null)}
           />
         )}
@@ -490,21 +507,14 @@ function History() {
 
 function Detail({
   id,
-  canReopen,
+  canFix,
   onDone,
 }: {
   id: number;
-  canReopen: boolean;
+  canFix: boolean;
   onDone: () => void;
 }) {
-  const utils = api.useUtils();
   const q = api.cash.detail.useQuery({ cashSessionId: id });
-  const reopen = api.cash.reopen.useMutation({
-    onSuccess: () => {
-      void utils.cash.invalidate();
-      onDone();
-    },
-  });
   if (q.error) return <Alert>{errorMessage(q.error)}</Alert>;
   if (!q.data) return <p className="text-sm text-neutral-500">Cargando…</p>;
   const { session: s, summary, changedAfterClose, expectedNow } = q.data;
@@ -531,11 +541,15 @@ function Detail({
           <p>
             Esperado al cerrar:{" "}
             <b className="tabular-nums">{money(s.expectedNio)}</b>
-            {dec(s.expectedUsd).gt(0) && <> · {money(s.expectedUsd, "USD")}</>}
+            {hasUsd(s.expectedUsd, s.countedUsd) && (
+              <> · {money(s.expectedUsd, "USD")}</>
+            )}
           </p>
           <p>
             Contado: <b className="tabular-nums">{money(s.countedNio)}</b>
-            {dec(s.countedUsd).gt(0) && <> · {money(s.countedUsd, "USD")}</>}
+            {hasUsd(s.expectedUsd, s.countedUsd) && (
+              <> · {money(s.countedUsd, "USD")}</>
+            )}
           </p>
           <div className="flex flex-wrap gap-1">
             <Difference
@@ -572,42 +586,107 @@ function Detail({
           {dec(expectedNow.usd).gt(0) && (
             <> y {money(expectedNow.usd, "USD")}</>
           )}
-          . Revise los cobros y retiros registrados tarde.
+          . Revise los cobros y retiros registrados tarde
+          {canFix && <>; con «Corregir cierre» se recalcula lo esperado</>}.
         </Alert>
       )}
-      {canReopen && s.closedAt && s.day === todayISO() && (
-        <div>
-          <Button
-            variant="secondary"
-            disabled={reopen.isPending}
-            onClick={async () => {
-              const ok = await confirmDialog(
-                "¿Reabrir la caja de hoy? Se borra el conteo y habrá que cerrarla otra vez.",
-                {
-                  title: "Reabrir caja",
-                  confirmLabel: "Sí, reabrir",
-                  danger: true,
-                },
-              );
-              if (ok) reopen.mutate({ cashSessionId: s.id });
-            }}
-          >
-            Reabrir caja (dueño)
-          </Button>
-          <Alert>{reopen.error && errorMessage(reopen.error)}</Alert>
+      <ChangeLog changes={s.changes} />
+      {canFix && s.closedAt && (
+        <div className="border-t border-neutral-800 pt-3">
+          <FixActions
+            session={s}
+            isToday={s.day === todayISO()}
+            onDone={onDone}
+          />
         </div>
       )}
     </div>
   );
 }
 
-/** Cancelar una apertura hecha por error: solo si todavía no se movió dinero hoy. */
+type DetailData = RouterOutputs["cash"]["detail"];
+
+const ACTION_LABEL: Record<string, string> = {
+  REAPERTURA: "Reabierta",
+  CORRECCION: "Cierre corregido",
+  ELIMINACION: "Eliminada",
+};
+
+/** Bitácora: quién reabrió o corrigió la caja, cuándo, por qué y qué cambió. */
+function ChangeLog({ changes }: { changes: DetailData["session"]["changes"] }) {
+  if (changes.length === 0) return null;
+  const fields: [string, string, "NIO" | "USD"][] = [
+    ["openingNio", "Apertura C$", "NIO"],
+    ["openingUsd", "Apertura US$", "USD"],
+    ["countedNio", "Contado C$", "NIO"],
+    ["countedUsd", "Contado US$", "USD"],
+    ["expectedNio", "Esperado C$", "NIO"],
+    ["expectedUsd", "Esperado US$", "USD"],
+  ];
+  return (
+    <div className="space-y-2">
+      <p className="text-sm font-medium">Cambios hechos por administradores</p>
+      <ul className="space-y-2 text-sm">
+        {changes.map((c) => {
+          const before = (c.before ?? {}) as Record<string, string | null>;
+          const after = (c.after ?? {}) as Record<string, string | null>;
+          const diffs =
+            c.action === "CORRECCION"
+              ? fields.filter(([k]) => before[k] !== after[k])
+              : [];
+          return (
+            <li
+              key={c.id}
+              className="rounded-md border border-neutral-800 px-3 py-2"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone={c.action === "ELIMINACION" ? "red" : "blue"}>
+                  {ACTION_LABEL[c.action] ?? c.action}
+                </Badge>
+                <span className="text-neutral-400">
+                  {formatDateTime(c.changedAt)} por{" "}
+                  {c.changedBy.staff?.name ?? c.changedBy.username}
+                </span>
+              </div>
+              <p className="mt-1">Motivo: {c.reason}</p>
+              {diffs.length > 0 && (
+                <p className="mt-1 text-xs text-neutral-400">
+                  {diffs
+                    .map(
+                      ([k, label, cur]) =>
+                        `${label}: ${money(before[k] ?? "0", cur)} → ${money(after[k] ?? "0", cur)}`,
+                    )
+                    .join(" · ")}
+                </p>
+              )}
+              {c.action === "REAPERTURA" && before.countedNio && (
+                <p className="mt-1 text-xs text-neutral-400">
+                  Cierre que se deshizo: contado {money(before.countedNio)}
+                  {hasUsd(before.countedUsd, before.expectedUsd) &&
+                    ` y ${money(before.countedUsd ?? "0", "USD")}`}
+                  , esperado {money(before.expectedNio ?? "0")}
+                  {before.closingNotes ? ` · nota: ${before.closingNotes}` : ""}
+                </p>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * Cancelar una apertura hecha por error. Dueño: siempre (la caja de hoy).
+ * Encargado: en los primeros 30 minutos y si no se ha cobrado desde que abrió.
+ * No se pierde nada: el arqueo se calcula con todos los movimientos del día.
+ */
 function CancelOpening({
   id,
-  summary,
+  blockedReason,
 }: {
   id: number;
-  summary: Current["summary"];
+  blockedReason: string | null;
 }) {
   const utils = api.useUtils();
   const cancel = api.cash.cancelOpening.useMutation({
@@ -615,48 +694,358 @@ function CancelOpening({
       void utils.cash.invalidate();
     },
   });
-  const moved =
-    summary.cashInNio.count +
-      summary.cashInUsd.count +
-      summary.outflows.reduce((a, o) => a + o.count, 0) +
-      summary.otherMethods.reduce((a, m) => a + m.count, 0) >
-    0;
   return (
-    <div className="mt-4 border-t border-neutral-800 pt-3">
-      {moved ? (
-        <p className="text-xs text-neutral-500">
-          Ya hay cobros o salidas de dinero hoy: la apertura no se puede
-          cancelar. Si el monto de apertura estaba mal, explíquelo en la nota al
-          cerrar.
-        </p>
-      ) : (
-        <div className="flex flex-wrap items-center gap-3">
-          <Button
-            variant="secondary"
-            disabled={cancel.isPending}
-            onClick={async () => {
-              const ok = await confirmDialog(
-                "¿Cancelar la apertura de hoy? Se borra como si no se hubiera abierto y puede abrirla otra vez con el monto correcto.",
-                {
-                  title: "Cancelar apertura",
-                  confirmLabel: "Sí, cancelar apertura",
-                  cancelLabel: "No",
-                  danger: true,
-                },
-              );
-              if (ok) cancel.mutate({ cashSessionId: id });
-            }}
-          >
-            Cancelar apertura
-          </Button>
-          <span className="text-xs text-neutral-500">
-            Solo mientras no se haya cobrado ni sacado dinero.
-          </span>
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-neutral-800 bg-neutral-900 px-4 py-3">
+      <span className="text-sm text-neutral-400">
+        {blockedReason ??
+          "¿Abrió la caja por error o con el monto equivocado? Puede cancelar la apertura y abrirla de nuevo."}
+      </span>
+      {!blockedReason && (
+        <Button
+          variant="danger"
+          disabled={cancel.isPending}
+          onClick={async () => {
+            const ok = await confirmDialog(
+              "¿Cancelar la apertura de hoy? Se borra como si no se hubiera abierto y puede abrirla otra vez con el monto correcto.",
+              {
+                title: "Cancelar apertura",
+                confirmLabel: "Sí, cancelar apertura",
+                cancelLabel: "No",
+                danger: true,
+              },
+            );
+            if (ok) cancel.mutate({ cashSessionId: id });
+          }}
+        >
+          {cancel.isPending ? "Cancelando…" : "Cancelar apertura"}
+        </Button>
+      )}
+      {cancel.error && (
+        <div className="w-full">
+          <Alert>{errorMessage(cancel.error)}</Alert>
         </div>
       )}
-      <div className="mt-2">
-        <Alert>{cancel.error && errorMessage(cancel.error)}</Alert>
+    </div>
+  );
+}
+
+/**
+ * La caja de hoy ya se cerró: muestra el resultado del arqueo y, para un
+ * dueño, cómo deshacerlo. Encargado: solo lo ve.
+ */
+function TodayClosed({ id, canFix }: { id: number; canFix: boolean }) {
+  const q = api.cash.detail.useQuery({ cashSessionId: id });
+  if (q.error) return <Alert>{errorMessage(q.error)}</Alert>;
+  if (!q.data) return null;
+  const s = q.data.session;
+  const diffNio = dec(s.countedNio).minus(dec(s.expectedNio));
+  const diffUsd = dec(s.countedUsd).minus(dec(s.expectedUsd));
+  const usd = hasUsd(s.openingUsd, s.expectedUsd, s.countedUsd);
+  return (
+    <Card
+      title="Caja de hoy cerrada"
+      actions={
+        <div className="flex flex-wrap gap-1">
+          <Difference value={diffNio.toString()} />
+          {!diffUsd.isZero() && (
+            <Difference value={diffUsd.toString()} currency="USD" />
+          )}
+        </div>
+      }
+    >
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Stat
+          label="Apertura"
+          value={money(s.openingNio)}
+          detail={usd ? money(s.openingUsd, "USD") : undefined}
+        />
+        <Stat
+          label="Debía haber"
+          value={money(s.expectedNio)}
+          detail={usd ? money(s.expectedUsd, "USD") : undefined}
+        />
+        <Stat
+          label="Se contó"
+          value={money(s.countedNio)}
+          detail={usd ? money(s.countedUsd, "USD") : undefined}
+        />
       </div>
+      <p className="mt-3 text-sm text-neutral-400">
+        Cerrada {formatDateTime(s.closedAt)} por{" "}
+        {s.closedBy?.staff?.name ?? s.closedBy?.username}
+        {s.closingNotes && <> · Nota: {s.closingNotes}</>}
+      </p>
+      <div className="mt-3">
+        <ChangeLog changes={s.changes} />
+      </div>
+      {q.data.changedAfterClose && (
+        <div className="mt-3">
+          <Alert>
+            Después del cierre se registró dinero de hoy: ahora debería haber{" "}
+            {money(q.data.expectedNow.nio)}
+            {canFix
+              ? ". Reabra la caja y vuelva a contar, o corrija el cierre."
+              : ". Avise a un administrador para que corrija el cierre."}
+          </Alert>
+        </div>
+      )}
+      <div className="mt-4 border-t border-neutral-800 pt-4">
+        {canFix ? (
+          <FixActions session={s} isToday />
+        ) : (
+          <p className="text-sm text-neutral-400">
+            Mientras la caja esté cerrada no se puede cobrar ni sacar dinero. Si
+            se cerró por error, un administrador puede reabrirla o corregir el
+            conteo.
+          </p>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+/**
+ * Lo que un ADMINISTRADOR puede hacer con una caja ya cerrada:
+ *  - Corregir cierre (cualquier día): apertura, conteo y nota; lo esperado se
+ *    recalcula. Queda en la bitácora con el motivo.
+ *  - Reabrir (solo hoy): deshace el cierre y la caja vuelve a quedar abierta.
+ *  - Eliminar (solo hoy): borra la caja, como si no se hubiera abierto; los
+ *    cobros y salidas del día no se tocan y se suman a la próxima caja de hoy.
+ * Todo pide un motivo (mínimo 5 letras). Los formularios van dentro de la
+ * misma tarjeta (no en otra ventana) para que funcionen también desde el detalle.
+ */
+function FixActions({
+  session: s,
+  isToday,
+  onDone,
+}: {
+  session: DetailData["session"];
+  isToday: boolean;
+  onDone?: () => void;
+}) {
+  const utils = api.useUtils();
+  const [mode, setMode] = useState<null | "reopen" | "correct" | "discard">(
+    null,
+  );
+  const [reason, setReason] = useState("");
+  const [f, setF] = useState({
+    openingNio: dec(s.openingNio).toFixed(2),
+    openingUsd: dec(s.openingUsd).toFixed(2),
+    countedNio: dec(s.countedNio).toFixed(2),
+    countedUsd: dec(s.countedUsd).toFixed(2),
+    notes: s.closingNotes ?? "",
+  });
+  const done = () => {
+    setMode(null);
+    setReason("");
+    void utils.cash.invalidate();
+    onDone?.();
+  };
+  const reopen = api.cash.reopen.useMutation({ onSuccess: done });
+  const correct = api.cash.correct.useMutation({ onSuccess: done });
+  const discard = api.cash.discardToday.useMutation({ onSuccess: done });
+  const busy = reopen.isPending || correct.isPending || discard.isPending;
+  const error = reopen.error ?? correct.error ?? discard.error;
+  const reasonOk = reason.trim().length >= 5;
+  const choose = (m: typeof mode) => {
+    reopen.reset();
+    correct.reset();
+    discard.reset();
+    setMode(mode === m ? null : m);
+  };
+
+  const reasonField = (
+    <Field label="Motivo (obligatorio, queda registrado)">
+      <Input
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        maxLength={200}
+        placeholder="Ej.: se contó mal el dinero / faltó registrar un cobro"
+      />
+    </Field>
+  );
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <Button
+          variant="secondary"
+          disabled={busy}
+          onClick={() => choose("correct")}
+        >
+          Corregir cierre
+        </Button>
+        {isToday && (
+          <Button
+            variant="secondary"
+            disabled={busy}
+            onClick={() => choose("reopen")}
+          >
+            Reabrir caja
+          </Button>
+        )}
+        {isToday && (
+          <Button
+            variant="danger"
+            disabled={busy}
+            onClick={() => choose("discard")}
+          >
+            Eliminar caja de hoy
+          </Button>
+        )}
+      </div>
+
+      {mode === null && (
+        <p className="text-xs text-neutral-500">
+          Corregir: se contó mal o se puso mal la apertura (cualquier día).
+          {isToday &&
+            " Reabrir: se cerró antes de tiempo y hay que seguir cobrando. Eliminar: fue una prueba o se abrió por error."}{" "}
+          Solo administradores; todo queda registrado con el motivo.
+        </p>
+      )}
+
+      {mode === "correct" && (
+        <div className="space-y-3 rounded-md border border-neutral-800 p-3">
+          <p className="text-sm text-neutral-400">
+            Corrija lo que se puso mal. Lo esperado se vuelve a calcular con los
+            movimientos registrados de ese día.
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Apertura en córdobas (C$)">
+              <Input
+                inputMode="decimal"
+                value={f.openingNio}
+                onChange={(e) => setF({ ...f, openingNio: e.target.value })}
+              />
+            </Field>
+            <Field label="Apertura en dólares (US$)">
+              <Input
+                inputMode="decimal"
+                value={f.openingUsd}
+                onChange={(e) => setF({ ...f, openingUsd: e.target.value })}
+              />
+            </Field>
+            <Field label="Córdobas contados (C$)">
+              <Input
+                inputMode="decimal"
+                value={f.countedNio}
+                onChange={(e) => setF({ ...f, countedNio: e.target.value })}
+              />
+            </Field>
+            <Field label="Dólares contados (US$)">
+              <Input
+                inputMode="decimal"
+                value={f.countedUsd}
+                onChange={(e) => setF({ ...f, countedUsd: e.target.value })}
+              />
+            </Field>
+          </div>
+          <Field label="Nota del cierre (obligatoria si no cuadra)">
+            <Input
+              value={f.notes}
+              onChange={(e) => setF({ ...f, notes: e.target.value })}
+              maxLength={200}
+            />
+          </Field>
+          {reasonField}
+          <div className="flex gap-2">
+            <Button
+              disabled={
+                busy ||
+                !reasonOk ||
+                [f.openingNio, f.openingUsd, f.countedNio, f.countedUsd].some(
+                  (v) => v.trim() === "",
+                )
+              }
+              onClick={async () => {
+                const ok = await confirmDialog(
+                  `¿Guardar la corrección de la caja del ${formatDay(s.businessDay)}? Queda registrada con su usuario y el motivo.`,
+                  { title: "Corregir cierre", confirmLabel: "Sí, corregir" },
+                );
+                if (ok)
+                  correct.mutate({
+                    cashSessionId: s.id,
+                    openingNio: f.openingNio,
+                    openingUsd: f.openingUsd,
+                    countedNio: f.countedNio,
+                    countedUsd: f.countedUsd,
+                    closingNotes: f.notes.trim() || undefined,
+                    reason: reason.trim(),
+                  });
+              }}
+            >
+              {correct.isPending ? "Guardando…" : "Guardar corrección"}
+            </Button>
+            <Button variant="ghost" onClick={() => setMode(null)}>
+              Cancelar
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {mode === "reopen" && (
+        <div className="space-y-3 rounded-md border border-neutral-800 p-3">
+          <p className="text-sm text-neutral-400">
+            Se borra el conteo del cierre y la caja vuelve a quedar abierta con
+            la misma apertura. Después hay que cerrarla otra vez. El cierre
+            anterior queda en la bitácora.
+          </p>
+          {reasonField}
+          <div className="flex gap-2">
+            <Button
+              disabled={busy || !reasonOk}
+              onClick={() =>
+                reopen.mutate({ cashSessionId: s.id, reason: reason.trim() })
+              }
+            >
+              {reopen.isPending ? "Reabriendo…" : "Sí, reabrir caja"}
+            </Button>
+            <Button variant="ghost" onClick={() => setMode(null)}>
+              Cancelar
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {mode === "discard" && (
+        <div className="space-y-3 rounded-md border border-neutral-800 p-3">
+          <p className="text-sm text-neutral-400">
+            Se borran la apertura y el cierre, como si no se hubiera abierto.
+            Los cobros y retiros de hoy NO se borran: se suman cuando vuelva a
+            abrir la caja.
+          </p>
+          {reasonField}
+          <div className="flex gap-2">
+            <Button
+              variant="danger"
+              disabled={busy || !reasonOk}
+              onClick={async () => {
+                const ok = await confirmDialog(
+                  "¿Eliminar la caja de hoy? Esta acción no se puede deshacer.",
+                  {
+                    title: "Eliminar caja de hoy",
+                    confirmLabel: "Sí, eliminar",
+                    cancelLabel: "No",
+                    danger: true,
+                  },
+                );
+                if (ok)
+                  discard.mutate({
+                    cashSessionId: s.id,
+                    reason: reason.trim(),
+                  });
+              }}
+            >
+              {discard.isPending ? "Eliminando…" : "Sí, eliminar"}
+            </Button>
+            <Button variant="ghost" onClick={() => setMode(null)}>
+              Cancelar
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {error && <Alert>{errorMessage(error)}</Alert>}
     </div>
   );
 }
