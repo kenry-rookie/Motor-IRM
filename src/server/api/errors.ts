@@ -144,6 +144,12 @@ export function mapDatabaseError(error: unknown): TRPCError | null {
       cause: error,
     });
   }
+  // Our own triggers raise a message already written in Spanish (RAISE … USING ERRCODE
+  // 'check_violation'), but Prisma does not pass the CONSTRAINT name along. Reuse it.
+  const triggerMessage = /code: "23514", message: "([^"]+)"/.exec(`${err.message ?? ""} ${JSON.stringify(err.meta ?? {})}`)?.[1];
+  if (!name && triggerMessage) {
+    return new TRPCError({ code: "BAD_REQUEST", message: triggerMessage, cause: error });
+  }
   if (name?.startsWith("ck_") || name?.startsWith("tg_")) {
     return new TRPCError({ code: "BAD_REQUEST", message: `Dato no permitido por la regla ${name}.`, cause: error });
   }

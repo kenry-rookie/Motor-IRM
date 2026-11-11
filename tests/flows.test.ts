@@ -322,7 +322,7 @@ describe("responsable de la orden: mecánico o dueño (DEC-041)", () => {
       db.serviceOrder.create({
         data: { motorcycleId: moto.id, requestedWork: "x", mechanicStaffId: owner.id, appliedCommissionRate: "0.6" },
       }),
-    ).rejects.toThrow("tg_service_order_owner_no_commission");
+    ).rejects.toThrow("Un dueño no cobra comisión");
     await expect(
       admin.staff.save({ id: owner.id, name: owner.name, phone: owner.phone, kind: "DUENO", commissionRate: "0.5" }),
     ).rejects.toThrow("Un dueño no cobra comisión");
