@@ -10,7 +10,15 @@ const usd = new Intl.NumberFormat("es-NI", { style: "currency", currency: "USD",
 
 type Amount = Decimal | string | number | { toString(): string } | null | undefined;
 
-export const dec = (v: Amount) => new Decimal(v?.toString() ?? 0);
+/**
+ * Never throws: what someone is still typing ("", "-", "12,5", "abc") counts as 0
+ * in previews. The server validates the real value (the client never sends totals).
+ */
+export const dec = (v: Amount) => {
+  const t = v?.toString().trim() ?? "";
+  if (!/^-?\d+(\.\d+)?(e[+-]?\d+)?$/i.test(t)) return new Decimal(0);
+  return new Decimal(t);
+};
 
 export function money(v: Amount, currency: "NIO" | "USD" = "NIO") {
   const n = Number(dec(v).toFixed(2));

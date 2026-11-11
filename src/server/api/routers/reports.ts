@@ -2,7 +2,6 @@ import { z } from "zod";
 
 import { fail } from "~/server/api/errors";
 import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
-import { Prisma } from "~/server/db";
 import { zDay } from "~/server/domain/constants";
 
 /**
@@ -31,8 +30,10 @@ export const reportsRouter = createTRPCRouter({
       if (input.to < input.from) throw fail("La fecha final es antes de la inicial.");
       const days = (Date.parse(input.to) - Date.parse(input.from)) / 86_400_000 + 1;
       if (days > 731) throw fail("El rango máximo es de dos años.");
-      const g = Prisma.raw(`'${input.granularity}'`);
-      const step = Prisma.raw(`'1 ${input.granularity}'`);
+      // Plain parameters only (DEC-046): a Prisma.raw fragment here reached
+      // PostgreSQL as jsonb under Next.js ("date_trunc(jsonb, date)").
+      const g = input.granularity;
+      const step = `1 ${input.granularity}`;
       const from = input.from;
       const to = input.to;
 
@@ -40,10 +41,10 @@ export const reportsRouter = createTRPCRouter({
         { bucket: Date; cash: string; credit: string; invoices: number; received: string; delivered: number }[]
       >`
         WITH b AS (
-          SELECT generate_series(date_trunc(${g}, ${from}::date), date_trunc(${g}, ${to}::date), ${step}::interval)::date AS bucket
+          SELECT generate_series(date_trunc(${g}::text, ${from}::date), date_trunc(${g}::text, ${to}::date), ${step}::interval)::date AS bucket
         ),
         sales AS (
-          SELECT date_trunc(${g}, (si.created_at AT TIME ZONE 'America/Managua'))::date AS bucket,
+          SELECT date_trunc(${g}::text, (si.created_at AT TIME ZONE 'America/Managua'))::date AS bucket,
                  sum(CASE WHEN si.payment_terms = 'CONTADO' THEN l.quantity * l.unit_price - l.discount_amount ELSE 0 END) AS cash,
                  sum(CASE WHEN si.payment_terms = 'CREDITO' THEN l.quantity * l.unit_price - l.discount_amount ELSE 0 END) AS credit,
                  count(DISTINCT si.id)::int AS invoices
@@ -52,14 +53,14 @@ export const reportsRouter = createTRPCRouter({
            GROUP BY 1
         ),
         pay AS (
-          SELECT date_trunc(${g}, (cp.paid_at AT TIME ZONE 'America/Managua'))::date AS bucket,
+          SELECT date_trunc(${g}::text, (cp.paid_at AT TIME ZONE 'America/Managua'))::date AS bucket,
                  sum(CASE WHEN cp.currency = 'USD' THEN round(cp.amount * cp.exchange_rate, 2) ELSE cp.amount END) AS received
             FROM customer_payment cp
            WHERE (cp.paid_at AT TIME ZONE 'America/Managua')::date BETWEEN ${from}::date AND ${to}::date
            GROUP BY 1
         ),
         delivered AS (
-          SELECT date_trunc(${g}, (sc.changed_at AT TIME ZONE 'America/Managua'))::date AS bucket, count(*)::int AS delivered
+          SELECT date_trunc(${g}::text, (sc.changed_at AT TIME ZONE 'America/Managua'))::date AS bucket, count(*)::int AS delivered
             FROM service_order_status_change sc
            WHERE sc.status = 'ENTREGADA'
              AND (sc.changed_at AT TIME ZONE 'America/Managua')::date BETWEEN ${from}::date AND ${to}::date

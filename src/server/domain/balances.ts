@@ -1,10 +1,12 @@
-import { type DbClient, Prisma } from "~/server/db";
+import { type DbClient, type Prisma } from "~/server/db";
+import { intList, Sql } from "~/server/domain/sql";
 
 /**
  * DEC-042 — Balances, commissions and margins come from SQL VIEWS
  * (migration 4_staff_kind_and_balance_views), not from TypeScript loops.
  * There is ONE definition of "how much is owed": the view. This module only
- * reads it. Everything is in córdobas (DEC-025).
+ * reads it. Everything is in córdobas (DEC-025). Raw SQL follows DEC-046
+ * (no nested Prisma.sql fragments: they break under Next.js).
  *
  *   v_invoice_balance             sale invoice: total − returned − paid
  *   v_opening_balance_remaining   customer debt from before the system
@@ -17,8 +19,6 @@ import { type DbClient, Prisma } from "~/server/db";
 type Db = DbClient | Prisma.TransactionClient;
 type Dec = Prisma.Decimal;
 
-const none = Prisma.sql`(NULL)`;
-const idList = (ids: number[]) => (ids.length ? Prisma.sql`(${Prisma.join(ids)})` : none);
 
 // ---------------------------------------------------------------------------
 //  Customers
@@ -66,8 +66,7 @@ const toInvoice = (r: InvoiceRow): InvoiceBalance => ({
 /** Balances of the given invoices, keyed by id. */
 export async function invoiceBalances(db: Db, ids: number[]) {
   if (!ids.length) return new Map<number, InvoiceBalance>();
-  const rows = await db.$queryRaw<InvoiceRow[]>`
-    SELECT * FROM v_invoice_balance WHERE sale_invoice_id IN ${idList(ids)}`;
+  const rows = await new Sql().run<InvoiceRow[]>(db, `SELECT * FROM v_invoice_balance WHERE sale_invoice_id IN (${intList(ids)})`);
   return new Map(rows.map((r) => [r.sale_invoice_id, toInvoice(r)]));
 }
 
@@ -79,10 +78,13 @@ export async function invoiceBalance(db: Db, id: number) {
 
 /** Every invoice of a customer (newest first); `openOnly` = balance > 0. */
 export async function customerInvoiceBalances(db: Db, customerId: number, openOnly = false) {
-  const rows = await db.$queryRaw<InvoiceRow[]>`
-    SELECT * FROM v_invoice_balance
-     WHERE customer_id = ${customerId} AND (${!openOnly} OR balance > 0)
-     ORDER BY created_at DESC, sale_invoice_id DESC`;
+  const q = new Sql();
+  const rows = await q.run<InvoiceRow[]>(
+    db,
+    `SELECT * FROM v_invoice_balance
+      WHERE customer_id = ${q.p(customerId, "int")} ${openOnly ? "AND balance > 0" : ""}
+      ORDER BY created_at DESC, sale_invoice_id DESC`,
+  );
   return rows.map(toInvoice);
 }
 
@@ -120,12 +122,16 @@ const toOpening = (r: OpeningRow): OpeningBalance => ({
 });
 
 export async function openingBalances(db: Db, where: { customerId?: number; ids?: number[] }, openOnly = false) {
-  const byCustomer = where.customerId !== undefined ? Prisma.sql`customer_id = ${where.customerId}` : Prisma.sql`true`;
-  const byIds = where.ids ? Prisma.sql`customer_opening_balance_id IN ${idList(where.ids)}` : Prisma.sql`true`;
-  const rows = await db.$queryRaw<OpeningRow[]>`
-    SELECT * FROM v_opening_balance_remaining
-     WHERE ${byCustomer} AND ${byIds} AND (${!openOnly} OR balance > 0)
-     ORDER BY as_of_date DESC, customer_opening_balance_id DESC`;
+  const q = new Sql();
+  const conds = ["true"];
+  if (where.customerId !== undefined) conds.push(`customer_id = ${q.p(where.customerId, "int")}`);
+  if (where.ids) conds.push(`customer_opening_balance_id IN (${intList(where.ids)})`);
+  if (openOnly) conds.push("balance > 0");
+  const rows = await q.run<OpeningRow[]>(
+    db,
+    `SELECT * FROM v_opening_balance_remaining WHERE ${conds.join(" AND ")}
+      ORDER BY as_of_date DESC, customer_opening_balance_id DESC`,
+  );
   return rows.map(toOpening);
 }
 
@@ -142,8 +148,11 @@ export type CustomerBalance = {
 
 /** Receivables: customers who owe something, most overdue first. */
 export async function customerBalances(db: Db, opts: { onlyOverdue?: boolean; customerId?: number } = {}) {
-  const byCustomer = opts.customerId !== undefined ? Prisma.sql`b.customer_id = ${opts.customerId}` : Prisma.sql`true`;
-  const rows = await db.$queryRaw<
+  const q = new Sql();
+  const conds = ["true"];
+  if (opts.customerId !== undefined) conds.push(`b.customer_id = ${q.p(opts.customerId, "int")}`);
+  if (opts.onlyOverdue) conds.push("b.overdue > 0");
+  const rows = await q.run<
     {
       customer_id: number;
       name: string;
@@ -154,12 +163,14 @@ export async function customerBalances(db: Db, opts: { onlyOverdue?: boolean; cu
       max_days_overdue: number | null;
       open_items: number;
     }[]
-  >`
-    SELECT b.*, c.name, c.phone
-      FROM v_customer_balance b
-      JOIN customer c ON c.id = b.customer_id
-     WHERE ${byCustomer} AND (${!opts.onlyOverdue} OR b.overdue > 0)
-     ORDER BY b.overdue DESC, b.balance DESC, c.name`;
+  >(
+    db,
+    `SELECT b.*, c.name, c.phone
+       FROM v_customer_balance b
+       JOIN customer c ON c.id = b.customer_id
+      WHERE ${conds.join(" AND ")}
+      ORDER BY b.overdue DESC, b.balance DESC, c.name`,
+  );
   return rows.map(
     (r): CustomerBalance => ({
       customerId: r.customer_id,
@@ -218,19 +229,22 @@ const toPurchase = (r: PurchaseRow): PurchaseBalance => ({
 });
 
 export async function purchaseBalances(db: Db, where: { ids?: number[]; supplierId?: number }) {
-  const byIds = where.ids ? Prisma.sql`purchase_invoice_id IN ${idList(where.ids)}` : Prisma.sql`true`;
-  const bySupplier = where.supplierId !== undefined ? Prisma.sql`supplier_id = ${where.supplierId}` : Prisma.sql`true`;
-  const rows = await db.$queryRaw<PurchaseRow[]>`
-    SELECT * FROM v_purchase_invoice_balance
-     WHERE ${byIds} AND ${bySupplier}
-     ORDER BY purchase_date DESC, purchase_invoice_id DESC`;
+  const q = new Sql();
+  const conds = ["true"];
+  if (where.ids) conds.push(`purchase_invoice_id IN (${intList(where.ids)})`);
+  if (where.supplierId !== undefined) conds.push(`supplier_id = ${q.p(where.supplierId, "int")}`);
+  const rows = await q.run<PurchaseRow[]>(
+    db,
+    `SELECT * FROM v_purchase_invoice_balance WHERE ${conds.join(" AND ")}
+      ORDER BY purchase_date DESC, purchase_invoice_id DESC`,
+  );
   return rows.map(toPurchase);
 }
 
 export async function supplierBalance(db: Db, supplierId: number) {
   const [r] = await db.$queryRaw<
     { opening_balance: Dec; purchases_balance: Dec; balance: Dec; overdue: Dec }[]
-  >`SELECT opening_balance, purchases_balance, balance, overdue FROM v_supplier_balance WHERE supplier_id = ${supplierId}`;
+  >`SELECT opening_balance, purchases_balance, balance, overdue FROM v_supplier_balance WHERE supplier_id = ${supplierId}::int`;
   if (!r) throw new Error(`v_supplier_balance: supplier ${supplierId} not found`);
   return { openingBalance: r.opening_balance, purchasesBalance: r.purchases_balance, balance: r.balance, overdue: r.overdue };
 }
@@ -254,17 +268,21 @@ export type UnpaidCommission = {
  * (BR-104). Orders of an owner, or without a rate, are not in the view.
  */
 export async function unpaidCommissions(db: Db, staffId: number, deliveredBefore?: Date) {
-  const until = deliveredBefore ? Prisma.sql`v.delivered_at < ${deliveredBefore}` : Prisma.sql`true`;
-  const rows = await db.$queryRaw<
+  const q = new Sql();
+  const staff = q.p(staffId, "int");
+  const until = deliveredBefore ? `AND v.delivered_at < ${q.p(deliveredBefore, "timestamptz")}` : "";
+  const rows = await q.run<
     { service_order_id: number; delivered_at: Date; customer: string; labor: Dec; rate: Dec; commission: Dec }[]
-  >`
-    SELECT v.service_order_id, v.delivered_at, c.name AS customer, v.labor, v.rate, v.commission
-      FROM v_mechanic_unpaid_commission v
-      JOIN service_order so ON so.id = v.service_order_id
-      JOIN motorcycle m ON m.id = so.motorcycle_id
-      JOIN customer c ON c.id = m.customer_id
-     WHERE v.staff_id = ${staffId} AND ${until}
-     ORDER BY v.service_order_id`;
+  >(
+    db,
+    `SELECT v.service_order_id, v.delivered_at, c.name AS customer, v.labor, v.rate, v.commission
+       FROM v_mechanic_unpaid_commission v
+       JOIN service_order so ON so.id = v.service_order_id
+       JOIN motorcycle m ON m.id = so.motorcycle_id
+       JOIN customer c ON c.id = m.customer_id
+      WHERE v.staff_id = ${staff} ${until}
+      ORDER BY v.service_order_id`,
+  );
   return rows.map(
     (r): UnpaidCommission => ({
       serviceOrderId: r.service_order_id,
@@ -285,9 +303,9 @@ export type ProductMargin = { productId: number; lastCost: Dec | null; margin: D
 
 export async function productMargins(db: Db, ids: number[]) {
   if (!ids.length) return new Map<number, ProductMargin>();
-  const rows = await db.$queryRaw<
+  const rows = await new Sql().run<
     { product_id: number; last_cost: Dec | null; margin: Dec | null; margin_pct: Dec | null }[]
-  >`SELECT product_id, last_cost, margin, margin_pct FROM v_product_margin WHERE product_id IN ${idList(ids)}`;
+  >(db, `SELECT product_id, last_cost, margin, margin_pct FROM v_product_margin WHERE product_id IN (${intList(ids)})`);
   return new Map(
     rows.map((r) => [
       r.product_id,

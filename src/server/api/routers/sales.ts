@@ -2,7 +2,6 @@ import { z } from "zod";
 
 import { fail } from "~/server/api/errors";
 import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
-import { Prisma } from "~/server/db";
 import { resolveAuthorizer, zAuthorizer } from "~/server/domain/authorize";
 import {
   customerBalances,
@@ -24,6 +23,7 @@ import {
   zQty,
 } from "~/server/domain/constants";
 import { recordMovement } from "~/server/domain/inventory";
+import { lockRows } from "~/server/domain/sql";
 import { D, round2, sum, toNio } from "~/server/domain/money";
 
 /**
@@ -267,12 +267,8 @@ export const salesRouter = createTRPCRouter({
         if (new Set(invoiceIds).size !== invoiceIds.length || new Set(openingIds).size !== openingIds.length) {
           throw fail("Cada deuda aparece una sola vez en el reparto.");
         }
-        if (invoiceIds.length) {
-          await tx.$queryRaw`SELECT id FROM sale_invoice WHERE id IN (${Prisma.join(invoiceIds)}) FOR UPDATE`;
-        }
-        if (openingIds.length) {
-          await tx.$queryRaw`SELECT id FROM customer_opening_balance WHERE id IN (${Prisma.join(openingIds)}) FOR UPDATE`;
-        }
+        await lockRows(tx, "sale_invoice", invoiceIds);
+        await lockRows(tx, "customer_opening_balance", openingIds);
         // Read AFTER the locks, so the balances can't change under us.
         const invoices = await invoiceBalances(tx, invoiceIds);
         const openings = openingIds.length ? await openingBalances(tx, { ids: openingIds }) : [];

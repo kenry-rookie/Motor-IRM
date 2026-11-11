@@ -355,7 +355,11 @@ export function Dialog({
   return (
     <dialog
       ref={ref}
-      onClose={onClose}
+      // React passes a nested dialog's "close" up to this one; only react to our own.
+      onClose={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      onCancel={(e) => e.stopPropagation()}
       className={cx(
         "m-auto rounded-xl border border-neutral-800 bg-neutral-900 p-0 text-neutral-100 shadow-2xl shadow-neutral-50/15 backdrop:bg-neutral-50/30 backdrop:backdrop-blur-[2px]",
         size === "lg" ? "w-[min(880px,calc(100vw-2rem))]" : "w-[min(640px,calc(100vw-2rem))]",
