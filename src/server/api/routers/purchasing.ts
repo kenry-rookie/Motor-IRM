@@ -10,6 +10,7 @@ import {
   dayToDate,
   PAYMENT_TERMS,
   SUPPLIER_RETURN_RESOLUTIONS,
+  SUPPLIER_PAYMENT_SOURCES,
   todayInManagua,
   zDay,
   zExchangeRate,
@@ -22,8 +23,10 @@ import {
   zText,
   zOptPhone,
 } from "~/server/domain/constants";
+import { requireOpenCash } from "~/server/domain/cash";
 import { recordMovement } from "~/server/domain/inventory";
 import { D, sum, toNio } from "~/server/domain/money";
+import { lockOpenTrip } from "~/server/domain/trips";
 
 /** API-017 — suppliers, purchases (COMPRA entries), supplier returns and payments. */
 const view = permissionProcedure("compras.ver");
@@ -56,7 +59,70 @@ async function supplierAccount(db: Prisma.TransactionClient | DbClient, supplier
     balance: p.balance,
     daysOverdue: p.daysOverdue,
   }));
-  return { supplier, openingBalance: balance.openingBalance, purchases: rows, totalBalance: balance.balance, overdue: balance.overdue };
+  const payments = await db.supplierPayment.findMany({
+    where: { supplierId },
+    orderBy: [{ paidAt: "desc" }, { id: "desc" }],
+    take: 100,
+    include: { purchaseInvoice: { select: { id: true, invoiceNumber: true } }, registeredBy: userName },
+  });
+  return {
+    supplier,
+    openingBalance: balance.openingBalance,
+    purchases: rows,
+    totalBalance: balance.balance,
+    overdue: balance.overdue,
+    payments,
+  };
+}
+
+const userName = { select: { username: true, staff: { select: { name: true } } } } as const;
+
+/**
+ * DEC-058 — Writes a supplier payment saying where the money came from:
+ *   CAJA          cash from the drawer → needs today's cash open; counts in the arqueo.
+ *   FUERA_DE_CAJA owner's money, bank transfer → does not touch the drawer.
+ *   VIAJE         money of an open purchase trip → the drawer already let it go
+ *                 as «Dinero llevado al viaje».
+ */
+async function writeSupplierPayment(
+  tx: Prisma.TransactionClient,
+  userId: number,
+  p: {
+    supplierId: number;
+    purchaseInvoiceId: number | null;
+    amount: Prisma.Decimal.Value;
+    currency?: "NIO" | "USD";
+    exchangeRate?: string | null;
+    source: (typeof SUPPLIER_PAYMENT_SOURCES)[number];
+    purchaseTripId?: number | null;
+    /** Day the debt was paid; CAJA is always today (the money left today's drawer). */
+    paidOn: string;
+    notes?: string | null;
+  },
+) {
+  if (p.source === "CAJA") {
+    if (p.paidOn !== todayInManagua()) throw fail("Un pago con efectivo de la caja es de hoy: no se le pone otra fecha.");
+    await requireOpenCash(tx);
+  }
+  if (p.source === "VIAJE") {
+    if (!p.purchaseTripId) throw fail("Elija el viaje de compras con cuyo dinero se pagó.");
+    await lockOpenTrip(tx, p.purchaseTripId);
+  }
+  const currency = p.currency ?? "NIO";
+  return tx.supplierPayment.create({
+    data: {
+      supplierId: p.supplierId,
+      purchaseInvoiceId: p.purchaseInvoiceId,
+      amount: p.amount,
+      currency,
+      exchangeRate: currency === "USD" ? p.exchangeRate : null,
+      paidOn: dayToDate(p.paidOn),
+      source: p.source,
+      purchaseTripId: p.source === "VIAJE" ? p.purchaseTripId : null,
+      registeredByUserId: userId,
+      notes: p.notes ?? null,
+    },
+  });
 }
 
 const pick = (b: PurchaseBalance) => ({ total: b.total, returned: b.returned, paid: b.paid, balance: b.balance });
@@ -212,6 +278,7 @@ export const purchasingRouter = createTRPCRouter({
           purchaseDate: p.purchaseDate,
           paymentTerms: p.paymentTerms,
           dueDate: p.dueDate,
+          purchaseTripId: p.purchaseTripId,
           ...pick(balances.get(p.id)!),
         })),
         nextCursor: items.length > limit ? items[limit - 1]!.id : null,
@@ -222,9 +289,10 @@ export const purchasingRouter = createTRPCRouter({
     const p = await ctx.db.purchaseInvoice.findUniqueOrThrow({
       where: { id: input.id },
       include: {
-        payments: { orderBy: { paidOn: "asc" } },
+        payments: { orderBy: [{ paidAt: "asc" }, { id: "asc" }], include: { registeredBy: userName, purchaseTrip: { select: { id: true, destination: true } } } },
         supplier: true,
-        receivedBy: { select: { username: true } },
+        receivedBy: userName,
+        purchaseTrip: { select: { id: true, destination: true, tripDate: true, status: true } },
         lines: { orderBy: { lineNo: "asc" }, include: { product: true, returnLines: { include: { supplierReturn: true } } } },
         returns: { include: { lines: true, returnReason: true } },
       },
@@ -233,7 +301,12 @@ export const purchasingRouter = createTRPCRouter({
     return { ...p, ...pick(b!) };
   }),
 
-  /** Purchase invoice + lines + COMPRA entries (stock goes up via the trigger). */
+  /**
+   * Ingreso de mercadería: purchase invoice + lines + COMPRA entries (stock goes
+   * up via the trigger). A cash purchase is paid in the same operation, saying
+   * where the money came from (DEC-058). Inside a purchase trip (DEC-059) a cash
+   * purchase is paid with the trip money.
+   */
   createInvoice: manage
     .input(
       z
@@ -244,6 +317,11 @@ export const purchasingRouter = createTRPCRouter({
           paymentTerms: z.enum(PAYMENT_TERMS),
           dueDate: zDay.optional(),
           discountAmount: zMoney.default("0"),
+          /** Part of this purchase trip (its cash purchases are paid with the trip money). */
+          purchaseTripId: zId.optional(),
+          /** Cash purchase outside a trip: paid with drawer cash or with money from outside the drawer. */
+          paidFrom: z.enum(["CAJA", "FUERA_DE_CAJA"]).optional(),
+          notes: zOptText(200),
           lines: z
             .array(
               z.object({
@@ -259,21 +337,29 @@ export const purchasingRouter = createTRPCRouter({
         .refine((v) => v.paymentTerms === "CONTADO" || !!v.dueDate, {
           path: ["dueDate"],
           message: "Una compra al crédito necesita vencimiento",
+        })
+        .refine((v) => v.paymentTerms === "CREDITO" || !!v.purchaseTripId || !!v.paidFrom, {
+          path: ["paidFrom"],
+          message: "Diga con qué dinero se pagó: de la caja o de fuera de la caja",
         }),
     )
     .mutation(({ ctx, input }) =>
       ctx.db.$transaction(async (tx) => {
         const gross = sum(input.lines.map((l) => D(l.unitCost).times(l.quantity)));
         if (D(input.discountAmount).gt(gross)) throw fail("El descuento es mayor que el total de la compra.");
+        const trip = input.purchaseTripId ? await lockOpenTrip(tx, input.purchaseTripId) : null;
+        const purchaseDay = input.purchaseDate ?? (trip ? trip.tripDate.toISOString().slice(0, 10) : todayInManagua());
         const invoice = await tx.purchaseInvoice.create({
           data: {
             supplierId: input.supplierId,
             invoiceNumber: input.invoiceNumber,
-            purchaseDate: dayToDate(input.purchaseDate ?? todayInManagua()),
+            purchaseDate: dayToDate(purchaseDay),
             paymentTerms: input.paymentTerms,
             dueDate: input.paymentTerms === "CREDITO" ? dayToDate(input.dueDate!) : null,
             discountAmount: input.discountAmount,
             receivedByUserId: ctx.user.id,
+            purchaseTripId: trip?.id ?? null,
+            notes: input.notes ?? null,
           },
         });
         for (const [i, l] of input.lines.entries()) {
@@ -287,6 +373,7 @@ export const purchasingRouter = createTRPCRouter({
             unitCost: l.unitCost,
             userId: ctx.user.id,
             purchaseInvoiceLineId: line.id,
+            notes: trip ? `Viaje de compras V-${String(trip.id).padStart(6, "0")}` : null,
           });
           if (l.newListPrice) {
             if (!ctx.user.permissions.has("inventario.precios")) throw fail("No tiene permiso para cambiar precios de venta.", "FORBIDDEN");
@@ -300,11 +387,18 @@ export const purchasingRouter = createTRPCRouter({
           }
         }
         // A cash purchase is paid when it is bought: register that payment, so it
-        // doesn't show up as a debt with the supplier (migration 9a fixed the old ones).
+        // doesn't show up as a debt with the supplier (migration 9a fixed the old ones),
+        // and say where the money came from (DEC-058).
         const total = gross.minus(input.discountAmount);
         if (input.paymentTerms === "CONTADO" && total.gt(0)) {
-          await tx.supplierPayment.create({
-            data: { supplierId: input.supplierId, purchaseInvoiceId: invoice.id, amount: total, paidOn: invoice.purchaseDate },
+          const source = trip ? "VIAJE" : input.paidFrom!;
+          await writeSupplierPayment(tx, ctx.user.id, {
+            supplierId: input.supplierId,
+            purchaseInvoiceId: invoice.id,
+            amount: total,
+            source,
+            purchaseTripId: trip?.id ?? null,
+            paidOn: source === "CAJA" ? todayInManagua() : purchaseDay,
           });
         }
         return invoice;
@@ -370,7 +464,10 @@ export const purchasingRouter = createTRPCRouter({
       }),
     ),
 
-  /** Payment to a supplier: to one purchase, or (no purchase) to the opening balance. */
+  /**
+   * Payment to a supplier: to one purchase, or (no purchase) to the opening
+   * balance — saying where the money came from (DEC-058).
+   */
   registerPayment: manage
     .input(
       z.object({
@@ -380,6 +477,9 @@ export const purchasingRouter = createTRPCRouter({
         currency: z.enum(CURRENCIES).default("NIO"),
         exchangeRate: zExchangeRate.optional(),
         paidOn: zDay.refine((d) => d <= todayInManagua(), "El pago no puede tener fecha futura").optional(),
+        source: z.enum(SUPPLIER_PAYMENT_SOURCES),
+        purchaseTripId: zId.optional(),
+        notes: zOptText(200),
       }),
     )
     .mutation(({ ctx, input }) =>
@@ -393,17 +493,70 @@ export const purchasingRouter = createTRPCRouter({
           : account.openingBalance;
         if (owed === undefined) throw fail("Esa compra no es de este proveedor.");
         if (amountNio.gt(owed)) throw fail(`Solo se deben C$ ${owed.toFixed(2)}.`);
-        return tx.supplierPayment.create({
-          data: {
-            supplierId: input.supplierId,
-            purchaseInvoiceId: input.purchaseInvoiceId ?? null,
-            amount: input.amount,
-            currency: input.currency,
-            exchangeRate: input.currency === "USD" ? input.exchangeRate : null,
-            paidOn: dayToDate(input.paidOn ?? todayInManagua()),
-          },
+        return writeSupplierPayment(tx, ctx.user.id, {
+          supplierId: input.supplierId,
+          purchaseInvoiceId: input.purchaseInvoiceId ?? null,
+          amount: input.amount,
+          currency: input.currency,
+          exchangeRate: input.exchangeRate,
+          source: input.source,
+          purchaseTripId: input.purchaseTripId ?? null,
+          paidOn: input.source === "CAJA" ? todayInManagua() : (input.paidOn ?? todayInManagua()),
+          notes: input.notes,
         });
       }),
     ),
+
+  /**
+   * Every payment to suppliers (newest first): what was paid, to whom, for
+   * which invoice, where the money came from and who registered it.
+   */
+  listPayments: view
+    .input(
+      z
+        .object({
+          supplierId: zId.optional(),
+          from: zDay.optional(),
+          to: zDay.optional(),
+          source: z.enum(SUPPLIER_PAYMENT_SOURCES).optional(),
+          ...pageFields,
+        })
+        .default({}),
+    )
+    .query(async ({ ctx, input }) => {
+      const { cursor, limit } = input;
+      const items = await ctx.db.supplierPayment.findMany({
+        where: {
+          supplierId: input.supplierId,
+          source: input.source,
+          paidOn: { gte: input.from ? dayToDate(input.from) : undefined, lte: input.to ? dayToDate(input.to) : undefined },
+        },
+        orderBy: { id: "desc" },
+        include: {
+          supplier: { select: { id: true, name: true } },
+          purchaseInvoice: { select: { id: true, invoiceNumber: true } },
+          purchaseTrip: { select: { id: true, destination: true } },
+          registeredBy: userName,
+        },
+        take: limit + 1,
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      });
+      return { items: items.slice(0, limit), nextCursor: items.length > limit ? items[limit - 1]!.id : null };
+    }),
+
+  /** One supplier payment, for its detail window (Comprobantes). */
+  getPayment: view.input(z.object({ id: zId })).query(async ({ ctx, input }) => {
+    const p = await ctx.db.supplierPayment.findUnique({
+      where: { id: input.id },
+      include: {
+        supplier: true,
+        purchaseInvoice: { select: { id: true, invoiceNumber: true, purchaseDate: true, paymentTerms: true } },
+        purchaseTrip: { select: { id: true, destination: true, tripDate: true } },
+        registeredBy: userName,
+      },
+    });
+    if (!p) throw fail("Ese pago no existe.", "NOT_FOUND");
+    return { ...p, amountNio: toNio(p.amount, p.currency, p.exchangeRate) };
+  }),
 });
 

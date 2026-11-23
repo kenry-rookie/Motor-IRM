@@ -1,14 +1,15 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 
 import { confirmDialog } from "~/app/_components/confirm";
-import { SupplierForm } from "~/app/(app)/compras/supplier-form";
+import { type MoneySource, MoneySourcePicker, SupplierForm } from "~/app/(app)/compras/supplier-form";
 import { type CatalogProduct, ProductCatalogDialog } from "~/app/_components/catalog";
 import { ProductPicker } from "~/app/_components/pickers";
 import { Alert, BackBar, Badge, Button, Card, cx, Dialog, Field, Input, PageTitle, Select } from "~/app/_components/ui";
 import { errorMessage } from "~/lib/errors";
+import { docNo } from "~/lib/business";
 import { addDaysISO, dec, formatDay, money, todayISO } from "~/lib/format";
 import { api } from "~/trpc/react";
 
@@ -20,6 +21,9 @@ import { api } from "~/trpc/react";
  *  - the sale price can be updated from the same line, seeing the new margin;
  *  - totals, invoice discount and cash/credit in a fixed panel, like Caja;
  *  - what is filled in is kept as a draft until it is registered.
+ * «Ingreso de mercadería» (Kenry, 23-nov): with ?viaje=ID the invoice belongs to
+ * that purchase trip and a cash invoice is paid with the trip money; outside a
+ * trip, a cash invoice says with what money it was paid (drawer or outside).
  */
 type Line = { productId: number; name: string; stock: number; listPrice: string; quantity: string; unitCost: string; newListPrice: string };
 type Draft = {
@@ -30,6 +34,8 @@ type Draft = {
   dueDate: string;
   discountAmount: string;
   lines: Line[];
+  paidFrom: MoneySource | null;
+  notes: string;
 };
 const DRAFT_KEY = "motor-irm.compra.borrador.v1";
 const empty = (): Draft => ({
@@ -40,10 +46,26 @@ const empty = (): Draft => ({
   dueDate: addDaysISO(todayISO(), 30),
   discountAmount: "",
   lines: [],
+  paidFrom: null,
+  notes: "",
 });
 
 export default function NewPurchasePage() {
+  return (
+    <Suspense>
+      <NewPurchase />
+    </Suspense>
+  );
+}
+
+function NewPurchase() {
   const router = useRouter();
+  const params = useSearchParams();
+  const tripId = Number(params.get("viaje")) || 0;
+  const trip = api.trips.get.useQuery({ id: tripId }, { enabled: tripId > 0 });
+  // Each trip keeps its own draft, so a half-filled invoice of the trip doesn't mix with a normal one.
+  const draftKey = tripId ? `${DRAFT_KEY}.viaje-${tripId}` : DRAFT_KEY;
+  const backHref = tripId ? `/compras/viajes/${tripId}` : "/compras";
   const utils = api.useUtils();
   const me = api.auth.me.useQuery();
   const suppliers = api.purchasing.suppliers.useQuery();
@@ -56,21 +78,21 @@ export default function NewPurchasePage() {
 
   useEffect(() => {
     try {
-      const raw = window.localStorage.getItem(DRAFT_KEY);
+      const raw = window.localStorage.getItem(draftKey);
       if (raw) setD({ ...empty(), ...(JSON.parse(raw) as Partial<Draft>) });
     } catch {
       /* no draft */
     }
     setLoaded(true);
-  }, []);
+  }, [draftKey]);
   useEffect(() => {
     if (!loaded) return;
     try {
-      window.localStorage.setItem(DRAFT_KEY, JSON.stringify(d));
+      window.localStorage.setItem(draftKey, JSON.stringify(d));
     } catch {
       /* without storage it still works */
     }
-  }, [d, loaded]);
+  }, [d, loaded, draftKey]);
 
   const last = api.purchasing.lastCosts.useQuery(
     { supplierId: d.supplierId, productIds: d.lines.map((l) => l.productId) },
@@ -81,14 +103,16 @@ export default function NewPurchasePage() {
   const create = api.purchasing.createInvoice.useMutation({
     onSuccess: () => {
       try {
-        window.localStorage.removeItem(DRAFT_KEY);
+        window.localStorage.removeItem(draftKey);
       } catch {
         /* nothing to clear */
       }
       void utils.purchasing.invalidate();
       void utils.inventory.invalidate();
       void utils.search.invalidate();
-      router.push("/compras?registrada=1");
+      void utils.trips.invalidate();
+      void utils.cash.invalidate();
+      router.push(tripId ? `/compras/viajes/${tripId}` : "/compras?registrada=1");
     },
   });
 
@@ -117,7 +141,18 @@ export default function NewPurchasePage() {
   const subtotal = d.lines.reduce((a, l) => a.plus(dec(l.unitCost).times(dec(l.quantity))), dec(0));
   const total = subtotal.minus(dec(d.discountAmount));
   const units = d.lines.reduce((a, l) => a + (Number(l.quantity) || 0), 0);
-  const missing = !d.supplierId ? "Elija el proveedor" : !d.invoiceNumber.trim() ? "Escriba el número de factura" : d.lines.length === 0 ? "Agregue productos" : null;
+  const tripClosed = tripId > 0 && trip.data?.status === "CERRADO";
+  const missing = !d.supplierId
+    ? "Elija el proveedor"
+    : !d.invoiceNumber.trim()
+      ? "Escriba el número de factura"
+      : d.lines.length === 0
+        ? "Agregue productos"
+        : d.paymentTerms === "CONTADO" && !tripId && !d.paidFrom
+          ? "Diga con qué dinero se pagó"
+          : tripClosed
+            ? "El viaje ya está cerrado"
+            : null;
 
   const submit = () => {
     if (missing || create.isPending) return;
@@ -128,6 +163,9 @@ export default function NewPurchasePage() {
       paymentTerms: d.paymentTerms,
       dueDate: d.paymentTerms === "CREDITO" && d.dueDate ? d.dueDate : undefined,
       discountAmount: d.discountAmount || "0",
+      purchaseTripId: tripId || undefined,
+      paidFrom: d.paymentTerms === "CONTADO" && !tripId && d.paidFrom !== "VIAJE" ? (d.paidFrom ?? undefined) : undefined,
+      notes: d.notes.trim() || undefined,
       lines: d.lines.map((l) => ({
         productId: l.productId,
         quantity: Number(l.quantity),
@@ -139,8 +177,27 @@ export default function NewPurchasePage() {
 
   return (
     <>
-      <BackBar crumbs={[{ label: "Compras", href: "/compras" }, { label: "Registrar compra" }]} back={{ href: "/compras", label: "Volver a compras" }} />
-      <PageTitle title="Registrar compra" subtitle="Lo que llega del proveedor entra al inventario al registrar" />
+      <BackBar
+        crumbs={[
+          { label: "Compras", href: "/compras" },
+          ...(tripId ? [{ label: `Viaje ${docNo("viaje", tripId)}`, href: backHref }] : []),
+          { label: "Ingreso de mercadería" },
+        ]}
+        back={{ href: backHref, label: tripId ? "Volver al viaje" : "Volver a compras" }}
+      />
+      <PageTitle
+        title={tripId ? `Factura del viaje ${docNo("viaje", tripId)}` : "Ingreso de mercadería"}
+        subtitle={
+          tripId
+            ? `${trip.data ? `${trip.data.destination} · ${formatDay(trip.data.tripDate)} · ` : ""}Lo que se compró en el viaje entra al inventario al registrar`
+            : "Lo que llega del proveedor entra al inventario al registrar"
+        }
+      />
+      {tripClosed && (
+        <div className="mb-4">
+          <Alert>Ese viaje ya está cerrado: no se le agregan facturas.</Alert>
+        </div>
+      )}
       <div className="grid items-start gap-4 xl:grid-cols-[1fr_380px]">
         <div className="space-y-4">
           <Card title="Factura del proveedor">
@@ -169,6 +226,11 @@ export default function NewPurchasePage() {
               <Field label="Descuento de la factura (C$)">
                 <Input inputMode="decimal" value={d.discountAmount} onChange={(e) => set({ discountAmount: e.target.value })} />
               </Field>
+              <div className="sm:col-span-2 lg:col-span-4">
+                <Field label="Nota (opcional)">
+                  <Input value={d.notes} maxLength={200} placeholder="Ej.: llegó con el camión de la distribuidora" onChange={(e) => set({ notes: e.target.value })} />
+                </Field>
+              </div>
             </div>
           </Card>
 
@@ -326,6 +388,15 @@ export default function NewPurchasePage() {
               </button>
             ))}
           </div>
+          {d.paymentTerms === "CONTADO" &&
+            (tripId ? (
+              <p className="mt-3 text-sm text-neutral-400">Se paga con el dinero del viaje {docNo("viaje", tripId)}.</p>
+            ) : (
+              <div className="mt-3">
+                <MoneySourcePicker value={d.paidFrom} onChange={(v) => set({ paidFrom: v })} allowTrip={false} />
+                {d.paidFrom === "CAJA" && <p className="mt-1 text-xs text-neutral-500">Sale de la gaveta hoy: necesita la caja abierta.</p>}
+              </div>
+            ))}
           {d.paymentTerms === "CREDITO" && (
             <div className="mt-3">
               <Field label="Vence">
@@ -339,7 +410,7 @@ export default function NewPurchasePage() {
             </div>
           )}
           <Button className="mt-4 h-12 w-full text-base" disabled={!!missing || create.isPending} onClick={submit}>
-            {create.isPending ? "Registrando…" : "Registrar compra (entra al inventario)"}
+            {create.isPending ? "Registrando…" : "Registrar ingreso (entra al inventario)"}
           </Button>
           {missing && <p className="mt-2 text-center text-xs text-neutral-500">{missing}</p>}
           {d.lines.length > 0 && (
@@ -347,7 +418,7 @@ export default function NewPurchasePage() {
               variant="ghost"
               className="mt-2 w-full"
               onClick={async () => {
-                if (await confirmDialog("¿Borrar esta compra sin registrarla?", { title: "Empezar de nuevo", confirmLabel: "Sí, borrar", danger: true })) setD(empty());
+                if (await confirmDialog("¿Borrar este ingreso sin registrarlo?", { title: "Empezar de nuevo", confirmLabel: "Sí, borrar", danger: true })) setD(empty());
               }}
             >
               Empezar de nuevo

@@ -71,7 +71,8 @@ async function base() {
   await ensureNamed(
     (n) => db.cashWithdrawalReason.findFirst({ where: ci(n) }),
     (name) => db.cashWithdrawalReason.create({ data: { name } }),
-    ["Viaje a Managua (compras)", "Gastos del negocio", "Retiro de dueño"],
+    // The trip to Managua is a «Viaje de compras» now (DEC-059), not a withdrawal.
+    ["Gastos del negocio", "Pago de servicios (luz, agua, internet)", "Retiro de dueño", "Otro"],
   );
   await ensureNamed((n) => db.productCategory.findFirst({ where: ci(n) }), (name) => db.productCategory.create({ data: { name } }), [
     "Repuestos",
@@ -85,6 +86,16 @@ async function base() {
     "Genérico",
   ]);
   await workshopCatalog();
+  // Trip expense types (migration 9f also inserts them; this keeps a re-seeded database complete).
+  await ensureNamed((n) => db.tripExpenseType.findFirst({ where: ci(n) }), (name) => db.tripExpenseType.create({ data: { name } }), [
+    "Pasaje / transporte",
+    "Combustible",
+    "Comida",
+    "Flete o encomienda",
+    "Hospedaje",
+    "Parqueo / peaje",
+    "Otro",
+  ]);
 
   // First administrator
   const username = process.env.SEED_ADMIN_USERNAME ?? "admin";

@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { parseDocNo } from "~/lib/business";
 import { fail } from "~/server/api/errors";
 import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
 import { requireOpenCash } from "~/server/domain/cash";
@@ -21,6 +22,7 @@ import {
   zId,
   zOptText,
   pageFields,
+  zMoney,
   zPositiveMoney,
   zQty,
 } from "~/server/domain/constants";
@@ -191,7 +193,9 @@ export const salesRouter = createTRPCRouter({
       if (input.origin === "TALLER") conds.push("si.service_order_id IS NOT NULL");
       if (input.origin === "MOSTRADOR") conds.push("si.service_order_id IS NULL");
       if (input.text) {
-        const digits = /^#?0*(\d{1,9})$/.exec(input.text)?.[1];
+        // "F-000123", "f123", "#123" or "123" (Kenry: numbers carry their prefix now).
+        const doc = parseDocNo(input.text);
+        const digits = doc && (!doc.kind || doc.kind === "factura") ? String(doc.id) : undefined;
         const byName = `mirm_norm(coalesce(c.name, 'Cliente de contado')) LIKE '%' || mirm_norm(${q.p(input.text)}) || '%'`;
         conds.push(
           digits
@@ -312,13 +316,15 @@ export const salesRouter = createTRPCRouter({
         }
         // Read before the void row: after it, the view says balance 0.
         const b = await invoiceBalance(tx, inv.id);
-        if (b.paid.gt(0)) await requireOpenCash(tx); // se devuelve efectivo al cliente
+        // What the customer really paid: what a return already gave back doesn't go back twice (DEC-057).
+        const refund = b.paid.minus(b.refunded);
+        if (refund.gt(0)) await requireOpenCash(tx); // se devuelve efectivo al cliente
         return tx.saleInvoiceVoid.create({
           data: {
             saleInvoiceId: inv.id,
             voidedByUserId: ctx.user.id,
             reason: input.reason,
-            refundAmount: b.paid,
+            refundAmount: refund.gt(0) ? refund : 0,
             customerReturnId,
           },
         });
@@ -357,6 +363,7 @@ export const salesRouter = createTRPCRouter({
         total: b.total,
         returned: b.returned,
         paid: b.paid,
+        refunded: b.refunded,
         balance: b.balance,
       };
     }),
@@ -393,8 +400,14 @@ export const salesRouter = createTRPCRouter({
     }),
 
   // ---------------------------------------------------------------------------
-  //  API-016 — Customer returns
+  //  API-016 — Customer returns (with the cash given back, DEC-057)
   // ---------------------------------------------------------------------------
+  /**
+   * Products come back. If the customer had paid more than what they now owe,
+   * the cash given back (refundAmount) is part of the return itself — not a
+   * cash withdrawal — so the arqueo shows it as «Reembolsos por devoluciones».
+   * It can't be more than what was paid in excess after the return.
+   */
   createReturn: permissionProcedure("ventas.devoluciones")
     .input(
       z.object({
@@ -403,6 +416,8 @@ export const salesRouter = createTRPCRouter({
         creditNoteNumber: zOptText(20),
         notes: zOptText(200),
         lines: z.array(z.object({ saleInvoiceLineId: zId, quantity: zQty })).min(1),
+        /** Cash given back now (C$). 0 = nothing is given back (credit stays as a lower balance). */
+        refundAmount: zMoney.default("0"),
       }),
     )
     .mutation(({ ctx, input }) =>
@@ -412,7 +427,24 @@ export const salesRouter = createTRPCRouter({
         if (reason?.name.trim().toLowerCase() === VOID_REASON.toLowerCase()) {
           throw fail("Para anular la factura use el botón «Anular factura», no una devolución.");
         }
-        return createCustomerReturn(tx, ctx.user.id, input);
+        const { refundAmount, ...rest } = input;
+        const ret = await createCustomerReturn(tx, ctx.user.id, rest);
+        const refund = D(refundAmount);
+        if (refund.gt(0)) {
+          // After the return (still without this refund): a negative balance is money in the customer's favor.
+          const b = await invoiceBalance(tx, input.saleInvoiceId);
+          const owedToCustomer = b.balance.lt(0) ? b.balance.neg() : D(0);
+          if (refund.gt(owedToCustomer)) {
+            throw fail(
+              owedToCustomer.isZero()
+                ? "No hay dinero que devolver: lo devuelto solo baja lo que el cliente debe."
+                : `Solo se le pueden devolver C$ ${owedToCustomer.toFixed(2)}: es lo que pagó de más después de la devolución.`,
+            );
+          }
+          await requireOpenCash(tx); // el efectivo sale de la gaveta
+          return tx.customerReturn.update({ where: { id: ret.id }, data: { refundAmount: refund } });
+        }
+        return ret;
       }),
     ),
 

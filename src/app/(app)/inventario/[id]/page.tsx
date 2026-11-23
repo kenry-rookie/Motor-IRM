@@ -193,7 +193,7 @@ function EditProductForm({ product, onDone }: { product: Product; onDone: () => 
       </Field>
       <Field label="Categoría">
         <Select value={f.productCategoryId} onChange={(e) => setF({ ...f, productCategoryId: Number(e.target.value) })}>
-          {categories.data?.map((c) => (
+          {categories.data?.filter((c) => c.active || c.id === f.productCategoryId).map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
             </option>
@@ -202,7 +202,7 @@ function EditProductForm({ product, onDone }: { product: Product; onDone: () => 
       </Field>
       <Field label="Marca">
         <Select value={f.productBrandId} onChange={(e) => setF({ ...f, productBrandId: Number(e.target.value) })}>
-          {brands.data?.map((b) => (
+          {brands.data?.filter((b) => b.active || b.id === f.productBrandId).map((b) => (
             <option key={b.id} value={b.id}>
               {b.name}
             </option>

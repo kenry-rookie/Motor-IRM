@@ -69,19 +69,25 @@ cd "$DIR" || fail "No encuentro la carpeta del proyecto: $DIR"
 echo "[$(date '+%F %T')] Iniciando desde $DIR" >>"$LOG"
 
 command -v node >/dev/null 2>&1 || fail "No encuentro Node.js. Vuelve a correr: npm run app:install"
-command -v docker >/dev/null 2>&1 || fail "No encuentro Docker. Instala y abre Docker Desktop."
 
+# Sin Docker (23-nov): si el .env NO apunta al PostgreSQL de Docker (puerto 5433),
+# la base es un PostgreSQL instalado en la Mac (Postgres.app o Homebrew) y se usa tal cual.
+uses_docker() { grep -Eq '^DATABASE_URL=.*localhost:5433/' "$DIR/.env" 2>/dev/null; }
 
-# 1) Docker Desktop
-if ! docker info >/dev/null 2>&1; then
-  open -ga Docker
-  for _ in $(seq 1 90); do docker info >/dev/null 2>&1 && break; sleep 2; done
-  docker info >/dev/null 2>&1 || fail "Docker Desktop no arrancó. Ábrelo a mano y vuelve a intentar."
+if uses_docker; then
+  command -v docker >/dev/null 2>&1 || fail "No encuentro Docker. Instala y abre Docker Desktop (o usa PostgreSQL sin Docker: ver README)."
+  # 1) Docker Desktop
+  if ! docker info >/dev/null 2>&1; then
+    open -ga Docker
+    for _ in $(seq 1 90); do docker info >/dev/null 2>&1 && break; sleep 2; done
+    docker info >/dev/null 2>&1 || fail "Docker Desktop no arrancó. Ábrelo a mano y vuelve a intentar."
+  fi
+  # 2) Base de datos
+  docker compose up -d --wait db >>"$LOG" 2>&1 \
+    || fail "No se pudo iniciar la base de datos. Revisa ~/Library/Logs/MotorIRM/servidor.log"
+else
+  echo "[$(date '+%F %T')] Sin Docker: PostgreSQL local según DATABASE_URL" >>"$LOG"
 fi
-
-# 2) Base de datos
-docker compose up -d --wait db >>"$LOG" 2>&1 \
-  || fail "No se pudo iniciar la base de datos. Revisa ~/Library/Logs/MotorIRM/servidor.log"
 
 # Servidor ya corriendo (y la base ya revisada arriba): solo abrir la ventana.
 if is_up; then

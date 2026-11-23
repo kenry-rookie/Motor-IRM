@@ -1,5 +1,6 @@
 "use client";
 
+import { docNo } from "~/lib/business";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
@@ -72,7 +73,7 @@ export function PendingSummary({ p, error, title = "Lo que tiene ganado sin cobr
           <tr key={o.serviceOrderId}>
             <td>
               <Link className="hover:text-brand-600" href={`/taller/${o.serviceOrderId}`}>
-                #{o.serviceOrderId}
+                {docNo("orden", o.serviceOrderId)}
               </Link>
             </td>
             <td>{o.customer}</td>

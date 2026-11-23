@@ -216,7 +216,7 @@ describe("compras (API-017)", () => {
     });
     expect((await productByBarcode(CADENA)).stock).toBe(p.stock + 8);
     await expect(
-      encargado.purchasing.registerPayment({ supplierId: supplier.id, purchaseInvoiceId: purchase.id, amount: "3000" }),
+      encargado.purchasing.registerPayment({ supplierId: supplier.id, purchaseInvoiceId: purchase.id, amount: "3000", source: "FUERA_DE_CAJA" }),
     ).rejects.toThrow("Solo se deben C$ 2400.00");
   });
 
@@ -227,6 +227,7 @@ describe("compras (API-017)", () => {
       supplierId: supplier.id,
       invoiceNumber: "FAC-CONTADO-1",
       paymentTerms: "CONTADO",
+      paidFrom: "FUERA_DE_CAJA",
       lines: [{ productId: p.id, quantity: 2, unitCost: "300" }],
     });
     const detail = await admin.purchasing.getInvoice({ id: purchase.id });
@@ -743,7 +744,8 @@ describe("apertura y cierre de caja (arqueo, migración 9c)", () => {
     expect(orphan.length).toBeGreaterThan(0);
     const reopened = await encargado.cash.open({ openingNio: "500" });
     // Lo cobrado antes sigue siendo de hoy: lo esperado lo incluye.
-    expect((await encargado.cash.current())!.summary.cashInNio.count).toBeGreaterThan(0);
+    const todaySummary = (await encargado.cash.current())!.summary;
+    expect(todaySummary.inflows.reduce((a, l) => a + l.count, 0)).toBeGreaterThan(0);
     await admin.cash.cancelOpening({ cashSessionId: reopened.id });
   });
 });

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 
 import { confirmDialog } from "~/app/_components/confirm";
@@ -12,15 +13,18 @@ import {
   Field,
   Input,
   PageTitle,
+  Segmented,
   Stat,
   Table,
 } from "~/app/_components/ui";
+import { docNo, REF_DOC } from "~/lib/business";
 import { errorMessage } from "~/lib/errors";
 import {
   addDaysISO,
   dec,
   formatDateTime,
   formatDay,
+  formatTime,
   money,
   todayISO,
 } from "~/lib/format";
@@ -152,6 +156,11 @@ function OpenForm({
   );
 }
 
+/**
+ * Lo que entró y salió de la gaveta, POR MOTIVO (migración 9f, DEC-058):
+ * ventas, taller, abonos, retiros, proveedores, viajes, reembolsos… Así se ve
+ * de qué fue cada córdoba y no solo «entradas en efectivo».
+ */
 function SummaryTable({
   data,
   opening,
@@ -159,43 +168,137 @@ function SummaryTable({
   data: Current["summary"];
   opening: { nio: unknown; usd: unknown };
 }) {
+  const usd = hasUsd(opening.usd, data.totalIn.usd, data.totalOut.usd);
+  const amount = (v: unknown, tone: "in" | "out", currency: "NIO" | "USD" = "NIO") => (
+    <td
+      className={`text-right tabular-nums ${
+        dec(v as string).gt(0) ? (tone === "in" ? "text-ok-fg" : "text-bad-fg") : "text-neutral-500"
+      }`}
+    >
+      {money(v as string, currency)}
+    </td>
+  );
   return (
-    <Table head={["Concepto", "Movimientos", "C$", "US$"]}>
+    <Table head={usd ? ["Concepto", "Movimientos", "C$", "US$"] : ["Concepto", "Movimientos", "C$"]}>
       <tr>
         <td className="font-medium">Apertura</td>
         <td />
-        <td className="text-right tabular-nums">
-          {money(opening.nio as string)}
-        </td>
-        <td className="text-right tabular-nums">
-          {money(opening.usd as string, "USD")}
-        </td>
+        <td className="text-right tabular-nums">{money(opening.nio as string)}</td>
+        {usd && <td className="text-right tabular-nums">{money(opening.usd as string, "USD")}</td>}
       </tr>
       <tr>
-        <td>(+) Cobros en efectivo</td>
-        <td className="text-neutral-400">
-          {data.cashInNio.count + data.cashInUsd.count}
+        <td colSpan={usd ? 4 : 3} className="pt-3 text-xs font-semibold tracking-wide text-neutral-400 uppercase">
+          Entró a la gaveta
         </td>
-        <td className="text-ok-fg text-right tabular-nums">
-          {money(data.cashInNio.amount)}
-        </td>
-        <td className="text-ok-fg text-right tabular-nums">
-          {money(data.cashInUsd.amount, "USD")}
+      </tr>
+      {data.inflows.map((o) => (
+        <tr key={o.key}>
+          <td>(+) {o.label}</td>
+          <td className="text-neutral-400">{o.count}</td>
+          {amount(o.nio, "in")}
+          {usd && amount(o.usd, "in", "USD")}
+        </tr>
+      ))}
+      <tr>
+        <td colSpan={usd ? 4 : 3} className="pt-3 text-xs font-semibold tracking-wide text-neutral-400 uppercase">
+          Salió de la gaveta
         </td>
       </tr>
       {data.outflows.map((o) => (
         <tr key={o.key}>
           <td>(−) {o.label}</td>
           <td className="text-neutral-400">{o.count}</td>
-          <td
-            className={`text-right tabular-nums ${dec(o.amount).gt(0) ? "text-bad-fg" : "text-neutral-500"}`}
-          >
-            {money(o.amount)}
-          </td>
-          <td />
+          {amount(o.nio, "out")}
+          {usd && amount(o.usd, "out", "USD")}
         </tr>
       ))}
     </Table>
+  );
+}
+
+/**
+ * Cada movimiento de dinero del día: qué fue, de quién, quién lo registró.
+ * Lo que no toca la gaveta (transferencias, dinero del viaje) va marcado.
+ */
+function DayMovements({ day }: { day: string }) {
+  const [onlyDrawer, setOnlyDrawer] = useState(true);
+  const q = api.cash.movements.useQuery({ day, onlyDrawer });
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-neutral-400">De qué fue cada entrada y salida de dinero del día.</p>
+        <Segmented
+          label="Qué movimientos ver"
+          value={onlyDrawer ? "caja" : "todo"}
+          onChange={(v) => setOnlyDrawer(v === "caja")}
+          options={[
+            { value: "caja", label: "Solo la gaveta" },
+            { value: "todo", label: "Todo el dinero" },
+          ]}
+        />
+      </div>
+      {q.error && <Alert>{errorMessage(q.error)}</Alert>}
+      <Table head={["Hora", "Qué fue", "Detalle", "Registró", "Entró", "Salió"]} empty={!q.isLoading && q.data?.length === 0}>
+        {q.data?.map((m, i) => {
+          const value = money(m.amount, m.currency);
+          return (
+            <tr key={`${m.refTable}-${m.refId}-${m.kind}-${i}`}>
+              <td className="whitespace-nowrap text-neutral-400">{m.occurredAt ? formatTime(m.occurredAt) : "—"}</td>
+              <td>
+                {m.label}
+                {!m.inDrawer && (
+                  <span className="ml-1">
+                    <Badge tone="blue">{m.method}</Badge>
+                  </span>
+                )}
+              </td>
+              <td className="text-neutral-400">
+                <MovementRef m={m} />
+              </td>
+              <td className="text-neutral-400">{m.user ?? "—"}</td>
+              <td className="text-ok-fg text-right tabular-nums">{m.direction === "ENTRADA" ? value : ""}</td>
+              <td className="text-bad-fg text-right tabular-nums">{m.direction === "SALIDA" ? value : ""}</td>
+            </tr>
+          );
+        })}
+      </Table>
+    </div>
+  );
+}
+
+type Movement = RouterOutputs["cash"]["movements"][number];
+
+/** El documento de un movimiento, con su número y enlace (factura, recibo, retiro, viaje…). */
+function MovementRef({ m }: { m: Movement }) {
+  const who = m.customerName ?? m.supplierName;
+  const kind = REF_DOC[m.refTable];
+  const number =
+    m.refTable === "customer_payment" && m.saleInvoiceId
+      ? `${docNo("recibo", m.refId)} · ${docNo("factura", m.saleInvoiceId)}`
+      : m.refTable === "purchase_trip_expense"
+        ? null
+        : kind
+          ? docNo(kind, m.refId)
+          : null;
+  const href =
+    m.saleInvoiceId != null
+      ? `/ventas/${m.saleInvoiceId}`
+      : m.refTable === "purchase_trip"
+        ? `/compras/viajes/${m.refId}`
+        : m.refTable === "supplier_payment" && m.supplierId
+          ? `/compras/proveedores/${m.supplierId}`
+          : m.customerId
+            ? `/clientes/${m.customerId}`
+            : m.refTable === "cash_withdrawal"
+              ? "/retiros"
+              : null;
+  const text = [number, who, m.detail].filter(Boolean).join(" · ");
+  return href ? (
+    <Link href={href} className="hover:text-brand-600 hover:underline">
+      {text}
+    </Link>
+  ) : (
+    <>{text}</>
   );
 }
 
@@ -293,10 +396,12 @@ function OpenSession({
             data={data.summary}
             opening={{ nio: s.openingNio, usd: s.openingUsd }}
           />
+          <OffDrawer summary={data.summary} />
           <p className="mt-3 text-xs text-neutral-500">
-            Los pagos a proveedores no se restan aquí: las compras de contado
-            salen del retiro «Viaje a Managua». Si sale efectivo por otra razón,
-            regístrelo en Retiros de caja para que el arqueo cuadre.
+            Solo cuenta el efectivo de la gaveta. Los pagos a proveedores con
+            dinero de fuera de la caja y lo que se paga con el dinero de un
+            viaje de compras aparecen aparte, sin restar. Si sale efectivo por
+            otra razón, regístrelo en Retiros de caja para que el arqueo cuadre.
           </p>
           {s.openingNotes && (
             <p className="mt-2 text-xs text-neutral-400">
@@ -378,7 +483,30 @@ function OpenSession({
           <Alert kind="info">Su rol puede ver la caja pero no cerrarla.</Alert>
         )}
       </div>
+      <Card title="Movimientos del día" collapsible defaultOpen={false}>
+        <DayMovements day={s.day} />
+      </Card>
     </>
+  );
+}
+
+/** Dinero que se movió sin tocar la gaveta: se muestra para que nada quede escondido. */
+function OffDrawer({ summary }: { summary: Current["summary"] }) {
+  if (summary.offDrawerOut.length === 0) return null;
+  return (
+    <div className="mt-3 rounded-md border border-neutral-800 px-3 py-2 text-sm">
+      <p className="font-medium text-neutral-300">Pagado sin tocar la gaveta (no se resta)</p>
+      <ul className="mt-1 space-y-0.5 text-neutral-400">
+        {summary.offDrawerOut.map((o) => (
+          <li key={`${o.kind}-${o.method}`} className="flex justify-between gap-3">
+            <span>
+              {o.label} · {o.method} ({o.count})
+            </span>
+            <span className="tabular-nums">{money(o.amountNio)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -536,6 +664,10 @@ function Detail({
         data={summary}
         opening={{ nio: s.openingNio, usd: s.openingUsd }}
       />
+      <OffDrawer summary={summary} />
+      <Card title="Movimientos del día" collapsible defaultOpen={false}>
+        <DayMovements day={s.day} />
+      </Card>
       {s.closedAt ? (
         <div className="grid gap-2 text-sm sm:grid-cols-3">
           <p>

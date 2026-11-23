@@ -1,5 +1,6 @@
 "use client";
 
+import { docNo } from "~/lib/business";
 import Link from "next/link";
 import { useState } from "react";
 
@@ -144,7 +145,7 @@ export default function WorkshopPage() {
                   >
                     <Link href={`/taller/${o.id}`} className="block rounded hover:opacity-80">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="font-display text-base font-semibold text-neutral-50">#{o.id}</span>
+                        <span className="font-display text-base font-semibold text-neutral-50">{docNo("orden", o.id)}</span>
                         <span className="rounded border border-neutral-700 px-1.5 text-xs font-medium tracking-wide text-neutral-300">
                           {o.motorcycle.plate ?? "sin placa"}
                         </span>

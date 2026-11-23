@@ -204,11 +204,11 @@ export async function demoMore(db: Db, adminId: number) {
       }
       // Cash purchase = paid when bought (like the app does, migration 9a).
       if (terms === "CONTADO") {
-        await db.supplierPayment.create({ data: { supplierId: s.id, purchaseInvoiceId: inv.id, amount: total, paidOn: day(at) } });
+        await db.supplierPayment.create({ data: { supplierId: s.id, purchaseInvoiceId: inv.id, amount: total, paidOn: day(at), paidAt: at, registeredByUserId: adminId } });
       }
       if (terms === "CREDITO" && name === "Repuestos El Pistón") {
         await db.supplierPayment.create({
-          data: { supplierId: s.id, purchaseInvoiceId: inv.id, amount: "1000", paidOn: day(daysAgo(8)) },
+          data: { supplierId: s.id, purchaseInvoiceId: inv.id, amount: "1000", paidOn: day(daysAgo(8)), paidAt: daysAgo(8), registeredByUserId: adminId },
         });
       }
     }

@@ -19,9 +19,13 @@ echo "→ Guardando el PATH de esta Terminal…"
 echo "$PATH" >"$HERE/.path"
 chmod +x "$HERE/motor-irm.sh" "$HERE/detener.sh"
 
-echo "→ Revisando Docker y la base de datos…"
-docker info >/dev/null 2>&1 || { echo "✗ Abre Docker Desktop y vuelve a correr este comando."; exit 1; }
-docker compose up -d --wait db
+if grep -Eq '^DATABASE_URL=.*localhost:5433/' .env 2>/dev/null; then
+  echo "→ Revisando Docker y la base de datos…"
+  docker info >/dev/null 2>&1 || { echo "✗ Abre Docker Desktop y vuelve a correr este comando."; exit 1; }
+  docker compose up -d --wait db
+else
+  echo "→ Sin Docker: se usa el PostgreSQL de DATABASE_URL (.env)"
+fi
 
 echo "→ Aplicando migraciones pendientes (no borra datos)…"
 npx prisma migrate deploy

@@ -3,7 +3,7 @@
 import { useParams } from "next/navigation";
 
 import { InfoGrid, PrintToolbar, Sheet, SheetFooter, SheetHeader, Signatures, useAutoPrint } from "~/app/imprimir/print-kit";
-import { docNumber } from "~/lib/business";
+import { docNo } from "~/lib/business";
 import { errorMessage } from "~/lib/errors";
 import { dec, formatDateTime, money } from "~/lib/format";
 import { api } from "~/trpc/react";
@@ -28,7 +28,7 @@ export default function PrintPaymentPage() {
       <Sheet>
         <SheetHeader
           title="Recibo de abono"
-          number={docNumber(d.id)}
+          number={docNo("recibo", d.id)}
           rows={[
             ["Fecha", formatDateTime(d.paidAt)],
             ["Forma de pago", d.method],
@@ -65,7 +65,7 @@ export default function PrintPaymentPage() {
           <tbody>
             {d.allocations.map((a) => (
               <tr key={a.id} className="border-b border-[#dde1e6]">
-                <td className="py-1.5">{a.saleInvoiceId ? `Factura N.º ${docNumber(a.saleInvoiceId)}` : "Saldo anterior"}</td>
+                <td className="py-1.5">{a.saleInvoiceId ? `Factura ${docNo("factura", a.saleInvoiceId)}` : "Saldo anterior"}</td>
                 <td className="py-1.5 text-right tabular-nums">{money(a.amount)}</td>
                 <td className="py-1.5 text-right tabular-nums">{a.balanceNow != null ? money(a.balanceNow) : "—"}</td>
               </tr>

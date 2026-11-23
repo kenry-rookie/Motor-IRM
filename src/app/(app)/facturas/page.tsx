@@ -5,7 +5,7 @@ import { useState } from "react";
 
 import { PrintLink } from "~/app/_components/print-link";
 import { Badge, Button, Card, Field, Input, PageTitle, SearchField, Segmented, Select, Stat, Table } from "~/app/_components/ui";
-import { docNumber } from "~/lib/business";
+import { docNo, invoiceNo } from "~/lib/business";
 import { addDaysISO, formatDateTime, formatDay, money, todayISO } from "~/lib/format";
 import { useDebounced } from "~/lib/use-debounced";
 import { api } from "~/trpc/react";
@@ -138,7 +138,7 @@ export default function InvoicesPage() {
               <tr key={i.id} className={i.voided ? "text-neutral-500" : undefined}>
                 <td className="font-medium tabular-nums">
                   <Link className="hover:text-brand-600 hover:underline" href={`/ventas/${i.id}`}>
-                    {i.invoiceNumber ?? docNumber(i.id)}
+                    {invoiceNo(i)}
                   </Link>
                 </td>
                 <td className="whitespace-nowrap">{formatDateTime(i.createdAt)}</td>
@@ -151,7 +151,7 @@ export default function InvoicesPage() {
                     <span className="text-neutral-500">Cliente de contado</span>
                   )}
                 </td>
-                <td>{i.serviceOrderId ? <Badge tone="blue">Orden #{i.serviceOrderId}</Badge> : "Mostrador"}</td>
+                <td>{i.serviceOrderId ? <Badge tone="blue">Taller {docNo("orden", i.serviceOrderId)}</Badge> : "Mostrador"}</td>
                 <td>
                   {i.paymentTerms === "CREDITO" ? (
                     <span>

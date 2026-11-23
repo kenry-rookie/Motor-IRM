@@ -43,11 +43,11 @@ El estado vive en las **propiedades** de esta nota (`stage`, `next`) y el detall
 - **tRPC** — contrato tipado de extremo a extremo entre cliente y API (sin escribir tipos a mano).
 - **Prisma ORM** — acceso a datos y migraciones.
 
-### Por definir
+### Despliegue
 
-- Autenticación (las tablas `app_user`, `role`, `permission` ya existen).
-- Herramientas de despliegue.
-- Infraestructura y alojamiento.
+- **En el negocio: PC Windows, sin Docker** (DEC-062) → [`scripts/windows/LEEME.md`](scripts/windows/LEEME.md).
+  PostgreSQL 17 como servicio, arranque automático, ícono en el Escritorio, respaldo diario.
+- Autenticación propia: usuario y contraseña (scrypt), sesión en `app_session`, permisos por rol.
 
 ---
 ## Desarrollo
@@ -55,7 +55,9 @@ El estado vive en las **propiedades** de esta nota (`stage`, `next`) y el detall
 ### Requisitos
 
 - **Node.js 20+** y npm.
-- **Docker Desktop** abierto (la base de datos corre en un contenedor; no hace falta instalar PostgreSQL).
+- PostgreSQL de una de estas dos formas:
+  - **Docker Desktop** abierto (la base corre en un contenedor, puerto 5433), o
+  - **sin Docker**: PostgreSQL 17 instalado (Postgres.app en la Mac, el instalador oficial en Windows). En `.env`, `DATABASE_URL` apunta a ese PostgreSQL (puerto 5432); el lanzador y `db:dump-schema` usan Docker solo si la URL dice `localhost:5433`.
 
 ### Primera vez
 
@@ -118,7 +120,7 @@ Para verla con DBeaver, pgAdmin o TablePlus usa esos mismos datos.
 docker-compose.yml              # PostgreSQL local
 docker/postgres/init/           # scripts del primer arranque (crea la base de pruebas)
 prisma/
-  schema.prisma                 # modelo de datos (40 tablas)
+  schema.prisma                 # modelo de datos
   migrations/0_init/            # SQL inicial + CHECKs + índices lower()/upper()
   migrations/1_decisions_…/     # DEC-037 (orden con id propio), DEC-038 (zona horaria), DEC-039 (trigger de stock)
   migrations/2_app_session/     # sesiones de inicio de sesión
@@ -139,6 +141,8 @@ src/
   trpc/                         # cliente tRPC (React y llamadas desde el servidor)
   lib/                          # transformer (Decimal), formato de dinero/fechas, errores
 tests/                          # pruebas de integración (Vitest + PostgreSQL real)
+  sql/                          # pruebas en SQL puro (psql -f …, terminan en ROLLBACK)
+scripts/windows/                # instalación y mantenimiento en la PC Windows del negocio
 Documentation/                  # análisis y diseño
 ```
 
@@ -163,3 +167,10 @@ Después: **doble clic en "Motor IRM"**. El lanzador (`scripts/desktop/motor-irm
 - Corre en `http://localhost:3100`; el puerto 3000 queda para `npm run dev`. Las dos versiones usan carpetas distintas (`.next` y `.next-prod`) y no se pisan.
 - Registro de errores: `~/Library/Logs/MotorIRM/servidor.log`.
 - Si `schema.prisma` cambia (nuevo `git pull`, otra rama): `npm run db:migrate && npx prisma generate`. Sin eso aparecen errores como *Unknown field* o *relation … does not exist*.
+
+---
+## Windows (la PC del negocio)
+
+Ver [`scripts/windows/LEEME.md`](scripts/windows/LEEME.md): Node.js 22 + PostgreSQL 17 instalados, la carpeta en `C:\MotorIRM`,
+y doble clic en `scripts\windows\INSTALAR.cmd`. Después, `ACTUALIZAR.cmd`, `RESPALDAR.cmd` y `RESTAURAR.cmd`.
+(En Windows `npm run app:build` no sirve: usa la sintaxis `VAR=valor` de bash; los scripts de Windows compilan por su cuenta.)

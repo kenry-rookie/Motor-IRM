@@ -160,6 +160,17 @@ const AREAS: {
     ),
   },
   {
+    href: "/comprobantes",
+    label: "Comprobantes",
+    permission: ["caja.arqueo", "reportes.ver", "caja.retiros"],
+    icon: (
+      <Icon>
+        <path d="M6 2h12v20l-3-2-3 2-3-2-3 2z" />
+        <path d="M9 7h6M9 11h6M9 15h4" />
+      </Icon>
+    ),
+  },
+  {
     href: "/pagos",
     label: "Pago a mecánicos",
     permission: "personal.ver",

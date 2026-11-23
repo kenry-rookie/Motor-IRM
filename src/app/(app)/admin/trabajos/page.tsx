@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { CatalogTable } from "~/app/(app)/admin/catalog-table";
 import { type ServiceType } from "~/app/_components/service-catalog";
 import { Alert, Badge, Button, Card, Dialog, Field, Input, PageTitle, SearchField, Select, Table } from "~/app/_components/ui";
 import { errorMessage, fieldErrors } from "~/lib/errors";
@@ -20,9 +21,15 @@ export default function JobsPage() {
   const [category, setCategory] = useState(0);
   const [editing, setEditing] = useState<ServiceType | "new" | null>(null);
   const [catDialog, setCatDialog] = useState(false);
+  const [showInactive, setShowInactive] = useState(false);
   const q = text.trim().toLowerCase();
+  const inactive = (types.data ?? []).filter((t) => !t.active).length;
+  // Deactivated jobs are not mixed with the active ones (Kenry, 23-nov): «Ver desactivados».
   const rows = (types.data ?? []).filter(
-    (t) => (!category || t.serviceCategoryId === category) && (!q || `${t.name} ${t.category.name}`.toLowerCase().includes(q)),
+    (t) =>
+      t.active !== showInactive &&
+      (!category || t.serviceCategoryId === category) &&
+      (!q || `${t.name} ${t.category.name}`.toLowerCase().includes(q)),
   );
 
   return (
@@ -50,6 +57,9 @@ export default function JobsPage() {
               </option>
             ))}
           </Select>
+          <Button variant={showInactive ? "primary" : "secondary"} className="h-11" onClick={() => setShowInactive((v) => !v)}>
+            {showInactive ? "← Volver a los activos" : `Ver desactivados (${inactive})`}
+          </Button>
         </div>
         <Table head={["Trabajo", "Categoría", "Precio de referencia", "Rango permitido", "Veces pedido", "Estado", ""]} empty={!types.isLoading && rows.length === 0}>
           {rows.map((t) => (
@@ -108,11 +118,13 @@ function JobForm({ job, onDone }: { job: ServiceType | null; onDone: () => void 
       <Field label="Categoría" error={errs.serviceCategoryId}>
         <Select value={f.serviceCategoryId} onChange={(e) => setF({ ...f, serviceCategoryId: Number(e.target.value) })}>
           <option value={0}>Elegir…</option>
-          {categories.data?.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
+          {categories.data
+            ?.filter((c) => c.active || c.id === f.serviceCategoryId)
+            .map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
         </Select>
       </Field>
       <Field label="Precio de referencia (C$)" error={errs.referencePrice} hint="Se propone al cobrar; se puede cambiar">
@@ -153,33 +165,48 @@ function JobForm({ job, onDone }: { job: ServiceType | null; onDone: () => void 
   );
 }
 
+/** Categories of the workshop catalog: add, rename, deactivate, delete if empty. */
 function Categories() {
   const utils = api.useUtils();
   const categories = api.admin.serviceCategories.useQuery();
   const [name, setName] = useState("");
+  const refresh = () => {
+    void utils.admin.serviceCategories.invalidate();
+    void utils.admin.serviceTypes.invalidate();
+  };
   const save = api.admin.saveServiceCategory.useMutation({
     onSuccess: () => {
       setName("");
-      void utils.admin.serviceCategories.invalidate();
-      void utils.admin.serviceTypes.invalidate();
+      refresh();
     },
   });
+  const toggle = api.admin.setServiceCategoryActive.useMutation({ onSuccess: refresh });
+  const remove = api.admin.deleteServiceCategory.useMutation({ onSuccess: refresh });
+  const rows = categories.data ?? [];
   return (
     <div className="space-y-3">
-      <ul className="grid gap-1 sm:grid-cols-2">
-        {categories.data?.map((c) => (
-          <li key={c.id} className="rounded-md border border-neutral-800 px-3 py-2 text-sm">
-            {c.name}
-          </li>
-        ))}
-      </ul>
-      <div className="flex gap-2">
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (name.trim()) save.mutate({ name, sortOrder: 150 });
+        }}
+      >
         <Input placeholder="Nueva categoría" value={name} onChange={(e) => setName(e.target.value)} />
-        <Button disabled={!name.trim() || save.isPending} onClick={() => save.mutate({ name, sortOrder: 150 })}>
+        <Button type="submit" disabled={!name.trim() || save.isPending}>
           Agregar
         </Button>
-      </div>
-      {save.error && <Alert>{errorMessage(save.error)}</Alert>}
+      </form>
+      <CatalogTable
+        rows={rows}
+        loading={categories.isLoading}
+        usesLabel="Trabajos"
+        error={save.error ?? toggle.error ?? remove.error}
+        pending={save.isPending || toggle.isPending || remove.isPending}
+        onRename={(id, n) => save.mutate({ id, name: n, sortOrder: rows.find((r) => r.id === id)?.sortOrder ?? 100 })}
+        onToggle={(id, active) => toggle.mutate({ id, active })}
+        onDelete={(id) => remove.mutate({ id })}
+      />
     </div>
   );
 }

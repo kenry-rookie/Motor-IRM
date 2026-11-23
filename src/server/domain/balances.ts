@@ -8,7 +8,7 @@ import { intList, Sql } from "~/server/domain/sql";
  * reads it. Everything is in córdobas (DEC-025). Raw SQL follows DEC-046
  * (no nested Prisma.sql fragments: they break under Next.js).
  *
- *   v_invoice_balance             sale invoice: total − returned − paid
+ *   v_invoice_balance             sale invoice: total − returned − (paid − refunded)  (9f, DEC-057)
  *   v_opening_balance_remaining   customer debt from before the system
  *   v_customer_balance            what each customer owes (open items only)
  *   v_purchase_invoice_balance    purchase: total − returned (money/discount) − paid
@@ -33,6 +33,8 @@ export type InvoiceBalance = {
   total: Dec;
   returned: Dec;
   paid: Dec;
+  /** Cash given back with returns (migration 9f). Paid − refunded = what the customer really paid. */
+  refunded: Dec;
   balance: Dec;
   daysOverdue: number | null;
 };
@@ -46,6 +48,7 @@ type InvoiceRow = {
   total: Dec;
   returned: Dec;
   paid: Dec;
+  refunded: Dec;
   balance: Dec;
   days_overdue: number | null;
 };
@@ -59,6 +62,7 @@ const toInvoice = (r: InvoiceRow): InvoiceBalance => ({
   total: r.total,
   returned: r.returned,
   paid: r.paid,
+  refunded: r.refunded,
   balance: r.balance,
   daysOverdue: r.days_overdue,
 });

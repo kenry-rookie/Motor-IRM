@@ -40,3 +40,7 @@ export const formatDay = (d: Date | string | null | undefined) => (d ? dayFmt.fo
 export const todayISO = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Managua" }).format(new Date());
 export const addDaysISO = (day: string, n: number) =>
   new Date(new Date(`${day}T00:00:00Z`).getTime() + n * 86_400_000).toISOString().slice(0, 10);
+
+const timeFmt = new Intl.DateTimeFormat("es-NI", { timeZone: "America/Managua", timeStyle: "short" });
+/** Only the hour of an instant, in Managua time (e.g. "2:35 p. m."). */
+export const formatTime = (d: Date | string | null | undefined) => (d ? timeFmt.format(new Date(d)) : "—");

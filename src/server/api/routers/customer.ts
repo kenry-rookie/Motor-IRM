@@ -6,6 +6,7 @@ import { customerInvoiceBalances, openingBalances } from "~/server/domain/balanc
 import { estimatedInterest } from "~/server/domain/billing";
 import { dayToDate, zDay, zId, zOptText, pageFields, zPhone, zPositiveMoney, zRate, zText } from "~/server/domain/constants";
 import { sum } from "~/server/domain/money";
+import { Sql } from "~/server/domain/sql";
 
 /** Customers, motorcycles, opening balances and the account statement (API-014). */
 const view = permissionProcedure("clientes.ver");
@@ -136,12 +137,32 @@ export const customerRouter = createTRPCRouter({
         })
       ).map((o) => [o.id, o]),
     );
+    // What each invoice had (products and jobs), so the customer page can search by it.
+    const q = new Sql();
+    const itemRows = await q.run<{ sale_invoice_id: number; items: string; service_order_id: number | null; voided: boolean }[]>(
+      ctx.db,
+      `SELECT si.id AS sale_invoice_id, si.service_order_id,
+              EXISTS (SELECT 1 FROM sale_invoice_void v WHERE v.sale_invoice_id = si.id) AS voided,
+              coalesce(string_agg(coalesce(p.name, st.name, l.description, ''), ', ' ORDER BY l.line_no), '') AS items
+         FROM sale_invoice si
+         LEFT JOIN sale_invoice_line l ON l.sale_invoice_id = si.id
+         LEFT JOIN product p ON p.id = l.product_id
+         LEFT JOIN service_type st ON st.id = l.service_type_id
+        WHERE si.customer_id = ${q.p(input.customerId, "int")}
+        GROUP BY si.id`,
+    );
+    const itemsBy = new Map(itemRows.map((r) => [r.sale_invoice_id, r]));
     const invoiceRows = balances.map((b) => {
       const inv = invoices.get(b.saleInvoiceId)!;
+      const extra = itemsBy.get(b.saleInvoiceId);
       return {
         kind: "FACTURA" as const,
         id: b.saleInvoiceId,
         invoiceNumber: inv.invoiceNumber,
+        items: extra?.items ?? "",
+        serviceOrderId: extra?.service_order_id ?? null,
+        voided: extra?.voided ?? false,
+        refunded: b.refunded,
         createdAt: b.createdAt,
         paymentTerms: b.paymentTerms,
         dueDate: b.dueDate,
@@ -179,7 +200,7 @@ export const customerRouter = createTRPCRouter({
         },
       },
       orderBy: { id: "desc" },
-      take: 50,
+      take: 300,
       include: { paymentMethod: { select: { name: true } }, allocations: { select: { saleInvoiceId: true, customerOpeningBalanceId: true } } },
     });
     // Contado payments are made with the invoice itself; only list the ones of credit debts.
@@ -188,9 +209,48 @@ export const customerRouter = createTRPCRouter({
       .filter((p) =>
         p.allocations.some((a) => a.customerOpeningBalanceId != null || (a.saleInvoiceId != null && creditInvoiceIds.has(a.saleInvoiceId))),
       )
-      .map((p) => ({ id: p.id, paidAt: p.paidAt, amount: p.amount, currency: p.currency, method: p.paymentMethod.name }));
+      .map((p) => ({
+        id: p.id,
+        paidAt: p.paidAt,
+        amount: p.amount,
+        currency: p.currency,
+        method: p.paymentMethod.name,
+        invoiceIds: p.allocations.flatMap((a) => (a.saleInvoiceId ? [a.saleInvoiceId] : [])),
+        toOpeningBalance: p.allocations.some((a) => a.customerOpeningBalanceId != null),
+      }));
+    const motorcycles = await ctx.db.motorcycle.findMany({
+      where: { customerId: input.customerId },
+      include: { model: { include: { brand: true } } },
+      orderBy: { id: "asc" },
+    });
+    const q2 = new Sql();
+    const orders = await q2.run<
+      { id: number; motorcycle_id: number; status: string | null; received_at: Date | null; jobs: string | null; sale_invoice_id: number | null }[]
+    >(
+      ctx.db,
+      `SELECT so.id, so.motorcycle_id, st.status,
+              (SELECT min(sc.changed_at) FROM service_order_status_change sc WHERE sc.service_order_id = so.id) AS received_at,
+              (SELECT string_agg(t.name, ', ' ORDER BY t.name) FROM service_order_item i JOIN service_type t ON t.id = i.service_type_id
+                WHERE i.service_order_id = so.id) AS jobs,
+              (SELECT si.id FROM sale_invoice si WHERE si.service_order_id = so.id) AS sale_invoice_id
+         FROM service_order so
+         JOIN motorcycle m ON m.id = so.motorcycle_id
+         LEFT JOIN v_service_order_status st ON st.service_order_id = so.id
+        WHERE m.customer_id = ${q2.p(input.customerId, "int")}
+        ORDER BY so.id DESC
+        LIMIT 200`,
+    );
     return {
       customer,
+      motorcycles,
+      orders: orders.map((o) => ({
+        id: o.id,
+        motorcycleId: o.motorcycle_id,
+        status: o.status,
+        receivedAt: o.received_at,
+        jobs: o.jobs ?? "",
+        saleInvoiceId: o.sale_invoice_id,
+      })),
       invoices: invoiceRows,
       openingBalances: openingRows,
       payments: paymentRows,

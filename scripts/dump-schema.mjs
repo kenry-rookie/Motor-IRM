@@ -5,11 +5,16 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 
-const dump = execFileSync(
-  "docker",
-  ["compose", "exec", "-T", "db", "pg_dump", "-U", "motor_irm", "--schema-only", "--no-owner", "--no-privileges", "motor_irm"],
-  { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
-);
+// With Docker (DATABASE_URL on localhost:5433) pg_dump runs inside the container;
+// without Docker (Postgres.app, Windows) the pg_dump of this computer is used.
+const url = process.env.DATABASE_URL ?? /^DATABASE_URL="?([^"\n]+)"?/m.exec(readFileSync(".env", "utf8"))?.[1] ?? "";
+const flags = ["--schema-only", "--no-owner", "--no-privileges"];
+const dump = /localhost:5433\//.test(url)
+  ? execFileSync("docker", ["compose", "exec", "-T", "db", "pg_dump", "-U", "motor_irm", ...flags, "motor_irm"], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    })
+  : execFileSync("pg_dump", [...flags, url.replace(/\?.*$/, "")], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 
 const body = dump
   .split("\n")

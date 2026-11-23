@@ -1,157 +1,108 @@
 import { fail } from "~/server/api/errors";
 import { type DbClient, type Prisma } from "~/server/db";
-import { dayToDate, todayInManagua } from "~/server/domain/constants";
+import { dayToDate, LABELS, MONEY_IN_KINDS, MONEY_OUT_KINDS, type MoneyKind, todayInManagua } from "~/server/domain/constants";
 import { D, type Dec, ZERO } from "~/server/domain/money";
 import { Sql } from "~/server/domain/sql";
 
 /**
- * Arqueo de caja (migración 9c) — cuánto dinero DEBERÍA haber en la gaveta.
+ * Arqueo de caja (migraciones 9c y 9f) — cuánto dinero DEBERÍA haber en la gaveta.
  *
- *   esperado C$ = apertura C$ + cobros en EFECTIVO en córdobas
- *                 − retiros − adelantos − pagos de periodo a mecánicos
- *                 − reembolsos por anulación − reembolsos de garantía
- *   esperado US$ = apertura US$ + cobros en EFECTIVO en dólares
+ *   esperado C$  = apertura C$  + entradas en efectivo C$  − salidas en efectivo C$
+ *   esperado US$ = apertura US$ + entradas en efectivo US$ − salidas en efectivo US$
  *
+ * Todo sale de la vista v_money_movement (DEC-058): una fila por cada motivo
+ * de dinero (venta, taller, abono, retiro, pago a proveedor, viaje,
+ * reembolso…). Solo cuenta lo que es efectivo de la gaveta (in_drawer):
+ * transferencias, tarjeta, dinero del viaje o del dueño se muestran aparte.
  * Todo es del DÍA de negocio de la caja, en hora de Managua (DEC-038).
- * Los cobros por transferencia o tarjeta NO entran a la gaveta: se muestran
- * aparte, solo como información. Los pagos a proveedores tampoco se restan:
- * las compras de contado se pagan con el retiro «Viaje a Managua» (DEC-005),
- * restarlos contaría dos veces la misma salida.
- * Las salidas se registran en córdobas (DEC-025), por eso solo restan a C$.
- * Solo se leen tablas que ya existían: el arqueo no cambia ningún flujo.
  */
 type Db = DbClient | Prisma.TransactionClient;
 
 export type CashLine = {
-  key: string;
+  key: MoneyKind;
   label: string;
-  amount: Dec;
+  /** Efectivo en córdobas y en dólares (los dólares en dólares, sin convertir). */
+  nio: Dec;
+  usd: Dec;
   count: number;
 };
 
 export type CashSummary = {
   day: string;
-  /** Entradas en efectivo, por moneda (dólares en dólares, sin convertir). */
-  cashInNio: CashLine;
-  cashInUsd: CashLine;
-  /** Salidas de efectivo (córdobas). */
+  /** Entradas de efectivo a la gaveta, por motivo (ventas, taller, abonos, vuelto de viaje). */
+  inflows: CashLine[];
+  /** Salidas de efectivo de la gaveta, por motivo. */
   outflows: CashLine[];
-  totalOut: Dec;
-  /** Cobrado por otros métodos: no está en la gaveta. */
+  totalIn: { nio: Dec; usd: Dec };
+  totalOut: { nio: Dec; usd: Dec };
+  /** Cobrado por otros métodos (transferencia, tarjeta): no está en la gaveta. */
   otherMethods: { method: string; amountNio: Dec; count: number }[];
+  /** Pagado sin tocar la gaveta (proveedores fuera de caja, gastos y pagos con dinero del viaje). */
+  offDrawerOut: { kind: MoneyKind; label: string; method: string; amountNio: Dec; count: number }[];
 };
 
-const isCash = `lower(pm.name) = 'efectivo'`;
+type SumRow = { kind: MoneyKind; direction: "ENTRADA" | "SALIDA"; currency: "NIO" | "USD"; amount: string; n: number };
 
 export async function cashSummary(db: Db, day: string): Promise<CashSummary> {
   const q = new Sql();
   const d = q.p(day, "date");
-  const [r] = await q.run<
-    {
-      in_nio: string;
-      in_nio_n: number;
-      in_usd: string;
-      in_usd_n: number;
-      withdrawals: string;
-      withdrawals_n: number;
-      advances: string;
-      advances_n: number;
-      payouts: string;
-      payouts_n: number;
-      voids: string;
-      voids_n: number;
-      warranty: string;
-      warranty_n: number;
-    }[]
-  >(
+  const rows = await q.run<SumRow[]>(
     db,
-    `WITH pay AS (
-       SELECT cp.amount, cp.currency
-         FROM customer_payment cp JOIN payment_method pm ON pm.id = cp.payment_method_id
-        WHERE ${isCash} AND (cp.paid_at AT TIME ZONE 'America/Managua')::date = ${d}
-     ),
-     payout AS (
-       SELECT greatest(
-                (SELECT coalesce(sum(round(lab.labor * so.applied_commission_rate, 2)), 0)
-                   FROM service_order so
-                  CROSS JOIN LATERAL (
-                        SELECT coalesce(sum(l.quantity * l.unit_price - l.discount_amount), 0) AS labor
-                          FROM sale_invoice si JOIN sale_invoice_line l ON l.sale_invoice_id = si.id
-                         WHERE si.service_order_id = so.id AND l.line_type = 'MANO_OBRA') lab
-                  WHERE so.staff_payout_id = sp.id AND so.applied_commission_rate IS NOT NULL)
-              - (SELECT coalesce(sum(a.amount), 0) FROM staff_advance a WHERE a.staff_payout_id = sp.id),
-              0) AS net
-         FROM staff_payout sp
-        WHERE sp.paid_on = ${d}
-     )
-     SELECT
-       (SELECT coalesce(sum(amount), 0) FROM pay WHERE currency = 'NIO')::text AS in_nio,
-       (SELECT count(*) FROM pay WHERE currency = 'NIO')::int AS in_nio_n,
-       (SELECT coalesce(sum(amount), 0) FROM pay WHERE currency = 'USD')::text AS in_usd,
-       (SELECT count(*) FROM pay WHERE currency = 'USD')::int AS in_usd_n,
-       (SELECT coalesce(sum(amount), 0) FROM cash_withdrawal WHERE withdrawn_on = ${d})::text AS withdrawals,
-       (SELECT count(*) FROM cash_withdrawal WHERE withdrawn_on = ${d})::int AS withdrawals_n,
-       (SELECT coalesce(sum(amount), 0) FROM staff_advance WHERE given_on = ${d})::text AS advances,
-       (SELECT count(*) FROM staff_advance WHERE given_on = ${d})::int AS advances_n,
-       (SELECT coalesce(sum(net), 0) FROM payout)::text AS payouts,
-       (SELECT count(*) FROM payout WHERE net > 0)::int AS payouts_n,
-       (SELECT coalesce(sum(refund_amount), 0) FROM sale_invoice_void
-         WHERE refund_amount > 0 AND (voided_at AT TIME ZONE 'America/Managua')::date = ${d})::text AS voids,
-       (SELECT count(*) FROM sale_invoice_void
-         WHERE refund_amount > 0 AND (voided_at AT TIME ZONE 'America/Managua')::date = ${d})::int AS voids_n,
-       (SELECT coalesce(sum(refund_amount), 0) FROM warranty_claim
-         WHERE outcome = 'REEMBOLSO' AND claimed_on = ${d})::text AS warranty,
-       (SELECT count(*) FROM warranty_claim WHERE outcome = 'REEMBOLSO' AND claimed_on = ${d})::int AS warranty_n`,
+    `SELECT kind, direction, currency, sum(amount)::text AS amount, count(DISTINCT (ref_table, ref_id))::int AS n
+       FROM v_money_movement
+      WHERE in_drawer AND business_day = ${d}
+      GROUP BY kind, direction, currency`,
   );
-
   const q2 = new Sql();
   const d2 = q2.p(day, "date");
   const other = await q2.run<{ method: string; amount: string; n: number }[]>(
     db,
-    `SELECT pm.name AS method,
-            sum(CASE WHEN cp.currency = 'USD' THEN round(cp.amount * cp.exchange_rate, 2) ELSE cp.amount END)::text AS amount,
-            count(*)::int AS n
-       FROM customer_payment cp JOIN payment_method pm ON pm.id = cp.payment_method_id
-      WHERE NOT (${isCash}) AND (cp.paid_at AT TIME ZONE 'America/Managua')::date = ${d2}
-      GROUP BY pm.name
-      ORDER BY 2 DESC`,
+    `SELECT method, sum(amount_nio)::text AS amount, count(DISTINCT ref_id)::int AS n
+       FROM v_money_movement
+      WHERE NOT in_drawer AND direction = 'ENTRADA' AND business_day = ${d2}
+      GROUP BY method ORDER BY 2 DESC`,
+  );
+  const q3 = new Sql();
+  const d3 = q3.p(day, "date");
+  const offOut = await q3.run<{ kind: MoneyKind; method: string; amount: string; n: number }[]>(
+    db,
+    `SELECT kind, method, sum(amount_nio)::text AS amount, count(DISTINCT (ref_table, ref_id))::int AS n
+       FROM v_money_movement
+      WHERE NOT in_drawer AND direction = 'SALIDA' AND business_day = ${d3}
+      GROUP BY kind, method ORDER BY 3 DESC`,
   );
 
-  const line = (
-    key: string,
-    label: string,
-    amount: string,
-    count: number,
-  ): CashLine => ({
-    key,
-    label,
-    amount: D(amount),
-    count: Number(count),
+  const lines = (kinds: readonly MoneyKind[], direction: "ENTRADA" | "SALIDA") =>
+    kinds
+      .map((kind): CashLine => {
+        const mine = rows.filter((r) => r.kind === kind && r.direction === direction);
+        const of = (c: "NIO" | "USD") => D(mine.find((r) => r.currency === c)?.amount ?? 0);
+        return {
+          key: kind,
+          label: LABELS.moneyKind[kind],
+          nio: of("NIO"),
+          usd: of("USD"),
+          count: mine.reduce((a, r) => a + Number(r.n), 0),
+        };
+      })
+      // Los motivos que casi nunca pasan solo se muestran si pasaron.
+      .filter((l) => l.count > 0 || ALWAYS_SHOWN.has(l.key));
+  const inflows = lines(MONEY_IN_KINDS, "ENTRADA");
+  const outflows = lines(MONEY_OUT_KINDS, "SALIDA");
+  const total = (ls: CashLine[]) => ({
+    nio: ls.reduce<Dec>((a, l) => a.plus(l.nio), ZERO),
+    usd: ls.reduce<Dec>((a, l) => a.plus(l.usd), ZERO),
   });
-  const outflows = [
-    line("withdrawals", "Retiros de caja", r!.withdrawals, r!.withdrawals_n),
-    line("advances", "Adelantos a mecánicos", r!.advances, r!.advances_n),
-    line("payouts", "Pago de periodo a mecánicos", r!.payouts, r!.payouts_n),
-    line("voids", "Reembolsos por facturas anuladas", r!.voids, r!.voids_n),
-    line("warranty", "Reembolsos de garantía", r!.warranty, r!.warranty_n),
-  ];
   return {
     day,
-    cashInNio: line(
-      "in_nio",
-      "Cobros en efectivo (córdobas)",
-      r!.in_nio,
-      r!.in_nio_n,
-    ),
-    cashInUsd: line(
-      "in_usd",
-      "Cobros en efectivo (dólares)",
-      r!.in_usd,
-      r!.in_usd_n,
-    ),
+    inflows,
     outflows,
-    totalOut: outflows.reduce<Dec>((a, o) => a.plus(o.amount), ZERO),
-    otherMethods: other.map((o) => ({
+    totalIn: total(inflows),
+    totalOut: total(outflows),
+    otherMethods: other.map((o) => ({ method: o.method, amountNio: D(o.amount), count: Number(o.n) })),
+    offDrawerOut: offOut.map((o) => ({
+      kind: o.kind,
+      label: LABELS.moneyKind[o.kind],
       method: o.method,
       amountNio: D(o.amount),
       count: Number(o.n),
@@ -159,19 +110,99 @@ export async function cashSummary(db: Db, day: string): Promise<CashSummary> {
   };
 }
 
+/** Lo que el dueño mira todos los días: siempre en la tabla, aunque sea 0. */
+const ALWAYS_SHOWN = new Set<MoneyKind>(["COBRO_VENTA", "COBRO_TALLER", "ABONO_CLIENTE", "RETIRO", "PAGO_PROVEEDOR"]);
+
+export type CashMovement = {
+  kind: MoneyKind;
+  label: string;
+  direction: "ENTRADA" | "SALIDA";
+  inDrawer: boolean;
+  method: string;
+  currency: "NIO" | "USD";
+  amount: Dec;
+  amountNio: Dec;
+  occurredAt: Date | null;
+  refTable: string;
+  refId: number;
+  saleInvoiceId: number | null;
+  customerId: number | null;
+  customerName: string | null;
+  supplierId: number | null;
+  supplierName: string | null;
+  detail: string;
+  user: string | null;
+};
+
+/** Cada movimiento de dinero de un día (el detalle del arqueo: «¿de qué fue ese efectivo?»). */
+export async function cashMovements(db: Db, day: string, opts: { onlyDrawer?: boolean } = {}): Promise<CashMovement[]> {
+  const q = new Sql();
+  const rows = await q.run<
+    {
+      kind: MoneyKind;
+      direction: "ENTRADA" | "SALIDA";
+      in_drawer: boolean;
+      method: string;
+      currency: "NIO" | "USD";
+      amount: Dec;
+      amount_nio: Dec;
+      occurred_at: Date | null;
+      ref_table: string;
+      ref_id: number;
+      sale_invoice_id: number | null;
+      customer_id: number | null;
+      customer_name: string | null;
+      supplier_id: number | null;
+      supplier_name: string | null;
+      detail: string;
+      username: string | null;
+      staff_name: string | null;
+    }[]
+  >(
+    db,
+    `SELECT m.*, c.name AS customer_name, s.name AS supplier_name, u.username, st.name AS staff_name
+       FROM v_money_movement m
+       LEFT JOIN customer c ON c.id = m.customer_id
+       LEFT JOIN supplier s ON s.id = m.supplier_id
+       LEFT JOIN app_user u ON u.id = m.user_id
+       LEFT JOIN staff st ON st.id = u.staff_id
+      WHERE m.business_day = ${q.p(day, "date")} ${opts.onlyDrawer ? "AND m.in_drawer" : ""}
+      ORDER BY m.occurred_at NULLS LAST, m.ref_table, m.ref_id`,
+  );
+  return rows.map((r) => ({
+    kind: r.kind,
+    label: LABELS.moneyKind[r.kind] ?? r.kind,
+    direction: r.direction,
+    inDrawer: r.in_drawer,
+    method: r.method,
+    currency: r.currency,
+    amount: D(r.amount),
+    amountNio: D(r.amount_nio),
+    occurredAt: r.occurred_at,
+    refTable: r.ref_table,
+    refId: r.ref_id,
+    saleInvoiceId: r.sale_invoice_id,
+    customerId: r.customer_id,
+    customerName: r.customer_name,
+    supplierId: r.supplier_id,
+    supplierName: r.supplier_name,
+    detail: r.detail,
+    user: r.staff_name ?? r.username,
+  }));
+}
+
 /** ¿Se movió dinero ese día (cualquier cobro o salida)? */
 export const hasMovements = (s: CashSummary) =>
-  s.cashInNio.count +
-    s.cashInUsd.count +
-    s.outflows.reduce((a, o) => a + o.count, 0) +
-    s.otherMethods.reduce((a, m) => a + m.count, 0) >
+  [...s.inflows, ...s.outflows].reduce((a, o) => a + o.count, 0) +
+    s.otherMethods.reduce((a, m) => a + m.count, 0) +
+    s.offDrawerOut.reduce((a, m) => a + m.count, 0) >
   0;
 
 /** Lo que debería haber en la gaveta, dada la apertura y el resumen del día. */
 export function expectedCash(opening: { nio: Dec; usd: Dec }, s: CashSummary) {
   return {
-    nio: opening.nio.plus(s.cashInNio.amount).minus(s.totalOut),
-    usd: opening.usd.plus(s.cashInUsd.amount),
+    nio: opening.nio.plus(s.totalIn.nio).minus(s.totalOut.nio),
+    usd: opening.usd.plus(s.totalIn.usd).minus(s.totalOut.usd),
   };
 }
 
@@ -212,13 +243,13 @@ export async function requireOpenCash(db: Db) {
 export const CANCEL_OPENING_MINUTES = 30;
 
 /**
- * Cobros (cualquier método) y reembolsos por anulación registrados DESDE que se
- * abrió la caja. Lo de antes de abrir no cuenta: no lo hizo esta apertura.
+ * Movimientos de dinero (cobros de cualquier método, retiros, reembolsos,
+ * pagos a proveedor, viajes) registrados DESDE que se abrió la caja. Lo de
+ * antes de abrir no cuenta: no lo hizo esta apertura.
  */
 export async function movementsSince(db: Db, since: Date) {
   const [r] = await db.$queryRaw<{ n: number }[]>`
-    SELECT ((SELECT count(*) FROM customer_payment WHERE paid_at >= ${since})
-          + (SELECT count(*) FROM sale_invoice_void WHERE refund_amount > 0 AND voided_at >= ${since}))::int AS n`;
+    SELECT count(DISTINCT (ref_table, ref_id))::int AS n FROM v_money_movement WHERE occurred_at >= ${since}`;
   return Number(r?.n ?? 0);
 }
 

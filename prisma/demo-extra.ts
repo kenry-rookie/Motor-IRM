@@ -255,7 +255,7 @@ async function load(db: Tx, adminId: number) {
       }
       // Cash purchase = paid when bought (like the app does, migration 9a).
       if (terms === "CONTADO") {
-        await db.supplierPayment.create({ data: { supplierId: s.id, purchaseInvoiceId: inv.id, amount: total, paidOn: day(at) } });
+        await db.supplierPayment.create({ data: { supplierId: s.id, purchaseInvoiceId: inv.id, amount: total, paidOn: day(at), paidAt: at, registeredByUserId: adminId } });
       }
     }
   }

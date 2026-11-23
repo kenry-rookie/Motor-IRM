@@ -20,6 +20,9 @@ export default function UsersPage() {
   const users = api.admin.users.useQuery();
   const [creating, setCreating] = useState(false);
   const [resetting, setResetting] = useState<User | null>(null);
+  const [showInactive, setShowInactive] = useState(false);
+  const rows = users.data?.filter((u) => u.active !== showInactive);
+  const inactive = users.data?.filter((u) => !u.active).length ?? 0;
   const update = api.admin.updateUser.useMutation({ onSuccess: () => void utils.admin.users.invalidate() });
 
   return (
@@ -27,12 +30,19 @@ export default function UsersPage() {
       <PageTitle
         title="Usuarios"
         subtitle="Quién entra al sistema y con qué perfil"
-        actions={<Button onClick={() => setCreating(true)}>+ Nuevo usuario</Button>}
+        actions={
+          <div className="flex gap-2">
+            <Button variant={showInactive ? "primary" : "secondary"} onClick={() => setShowInactive((v) => !v)}>
+              {showInactive ? "← Volver a los activos" : `Ver desactivados (${inactive})`}
+            </Button>
+            <Button onClick={() => setCreating(true)}>+ Nuevo usuario</Button>
+          </div>
+        }
       />
       <Card>
         {update.error && <Alert>{errorMessage(update.error)}</Alert>}
-        <Table head={["Usuario", "Persona", "Perfil", "Último ingreso", "Estado", ""]} empty={users.data?.length === 0}>
-          {users.data?.map((u) => (
+        <Table head={["Usuario", "Persona", "Perfil", "Último ingreso", "Estado", ""]} empty={rows?.length === 0}>
+          {rows?.map((u) => (
             <tr key={u.id}>
               <td className="font-medium">
                 {u.username}

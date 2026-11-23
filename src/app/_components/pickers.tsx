@@ -351,10 +351,12 @@ export function MotorcycleModelSelect({
   error?: string;
 }) {
   const me = api.auth.me.useQuery();
-  const models = api.admin.motorcycleModels.useQuery();
+  const all = api.admin.motorcycleModels.useQuery();
   const [brandId, setBrandId] = useState(0);
   const [registering, setRegistering] = useState(false);
-  const selected = models.data?.find((m) => m.id === value);
+  const selected = all.data?.find((m) => m.id === value);
+  // Deactivated brands/models are not offered (DEC-061), except the one already chosen.
+  const models = { data: all.data?.filter((m) => (m.active && m.brand.active) || m.id === value) };
   const currentBrand = brandId !== 0 ? brandId : (selected?.motorcycleBrandId ?? 0);
   const brands = [...new Map((models.data ?? []).map((m) => [m.brand.id, m.brand])).values()].sort((a, b) =>
     a.name.localeCompare(b.name),
@@ -423,7 +425,7 @@ function RegisterModelForm({
   onDone: (m: { id: number; motorcycleBrandId: number }) => void;
 }) {
   const utils = api.useUtils();
-  const brands = api.admin.catalog.useQuery({ kind: "motorcycleBrand" });
+  const brands = api.admin.catalog.useQuery({ kind: "motorcycleBrand", onlyActive: true });
   const [brandId, setBrandId] = useState(initialBrandId);
   const [newBrand, setNewBrand] = useState("");
   const [model, setModel] = useState("");

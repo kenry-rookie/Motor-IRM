@@ -168,7 +168,7 @@ function NewServiceType({
         <Field label="Categoría" error={errs.serviceCategoryId}>
           <Select value={f.serviceCategoryId} onChange={(e) => setF({ ...f, serviceCategoryId: Number(e.target.value) })}>
             <option value={0}>Elegir…</option>
-            {categories.data?.map((c) => (
+            {categories.data?.filter((c) => c.active).map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
               </option>

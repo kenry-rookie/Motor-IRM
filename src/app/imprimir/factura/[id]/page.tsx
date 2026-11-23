@@ -3,7 +3,7 @@
 import { useParams } from "next/navigation";
 
 import { InfoGrid, PrintToolbar, Sheet, SheetFooter, SheetHeader, Signatures, useAutoPrint } from "~/app/imprimir/print-kit";
-import { BUSINESS, docNumber } from "~/lib/business";
+import { BUSINESS, invoiceNo } from "~/lib/business";
 import { errorMessage } from "~/lib/errors";
 import { dec, formatDateTime, formatDay, money } from "~/lib/format";
 import { api } from "~/trpc/react";
@@ -43,7 +43,7 @@ export default function PrintInvoicePage() {
         )}
         <SheetHeader
           title="Factura"
-          number={d.invoiceNumber ?? docNumber(d.id)}
+          number={invoiceNo(d)}
           rows={[
             ["Fecha", formatDateTime(d.createdAt)],
             ["Condición", credit ? "CRÉDITO" : "CONTADO"],

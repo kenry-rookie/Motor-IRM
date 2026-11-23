@@ -212,14 +212,25 @@ export default function HomePage() {
                   <dd className="tabular-nums">−{money(t.withdrawals)}</dd>
                 </div>
                 <div className="flex justify-between">
-                  <dt className="text-neutral-400">Adelantos</dt>
+                  <dt className="text-neutral-400">Adelantos y pagos a mecánicos</dt>
                   <dd className="tabular-nums">−{money(t.advances)}</dd>
                 </div>
+                <div className="flex justify-between">
+                  <dt className="text-neutral-400">Proveedores, viajes y reembolsos</dt>
+                  <dd className="tabular-nums">−{money(t.otherOut)}</dd>
+                </div>
                 <div className="flex justify-between border-t border-neutral-800 pt-1.5 font-semibold">
-                  <dt>{preset === "hoy" ? "Debe haber en caja" : "Neto del periodo"}</dt>
+                  <dt>{preset === "hoy" ? "Efectivo que entró − salió hoy" : "Efectivo neto del periodo"}</dt>
                   <dd className="tabular-nums">{money(t.cashNet)}</dd>
                 </div>
               </dl>
+              <p className="mt-2 text-xs text-neutral-500">
+                Solo el efectivo de la gaveta, sin la apertura. Lo que debe haber en la caja está en{" "}
+                <Link href="/arqueo" className="text-brand-600 hover:underline">
+                  Apertura y cierre
+                </Link>
+                .
+              </p>
             </Card>
             <Card title="Taller" actions={<Link href="/taller" className="text-sm text-brand-600 hover:underline">Abrir tablero</Link>}>
               <p className="font-display text-4xl font-semibold text-neutral-50">{t.openOrders}</p>

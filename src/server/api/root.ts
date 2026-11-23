@@ -9,6 +9,8 @@ import { searchRouter } from "~/server/api/routers/search";
 import { salesRouter } from "~/server/api/routers/sales";
 import { serviceRouter } from "~/server/api/routers/service";
 import { staffRouter } from "~/server/api/routers/staff";
+import { tripsRouter } from "~/server/api/routers/trips";
+import { moneyRouter } from "~/server/api/routers/money";
 import { createCallerFactory, createTRPCRouter } from "~/server/api/trpc";
 
 /**
@@ -24,6 +26,8 @@ export const appRouter = createTRPCRouter({
   cash: cashRouter,
   service: serviceRouter,
   purchasing: purchasingRouter,
+  trips: tripsRouter,
+  money: moneyRouter,
   staff: staffRouter,
   reports: reportsRouter,
   search: searchRouter,

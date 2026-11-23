@@ -1,5 +1,6 @@
 "use client";
 
+import { docNo, invoiceNo } from "~/lib/business";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
@@ -58,7 +59,7 @@ export default function OrderPage() {
             <Badge tone={open ? "amber" : o.status === "ENTREGADA" ? "green" : "red"}>{LABELS.serviceStatus[o.status]}</Badge>
             {o.saleInvoice && (
               <a className="text-sm text-brand-600" href={`/ventas/${o.saleInvoice.id}`}>
-                Factura #{o.saleInvoice.id} →
+                Factura {invoiceNo(o.saleInvoice)} →
               </a>
             )}
           </div>
@@ -283,7 +284,7 @@ function MotorcycleHistory({ motorcycleId, currentOrderId }: { motorcycleId: num
             <tr key={h.id}>
               <td>
                 <Link href={`/taller/${h.id}`} className="hover:text-brand-600">
-                  #{h.id}
+                  {docNo("orden", h.id)}
                 </Link>
               </td>
               <td>{formatDateTime(h.date)}</td>

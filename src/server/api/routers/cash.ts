@@ -11,6 +11,7 @@ import { type PermissionCode } from "~/server/auth/permissions";
 import { type Prisma } from "~/server/db";
 import {
   canCancelOpening,
+  cashMovements,
   cashSnapshot,
   cashSummary,
   expectedCash,
@@ -38,6 +39,7 @@ import { D, ZERO } from "~/server/domain/money";
  *   discardToday → ADMIN: elimina la caja de hoy (prueba / abierta por error)
  *   history      → cajas de un rango con su sobrante / faltante
  *   detail       → una caja, con su bitácora de cambios
+ *   movements    → cada movimiento de dinero de un día (de qué fue cada córdoba)
  * Reabrir, corregir y eliminar quedan en la bitácora cash_session_change
  * (quién, cuándo, por qué, antes y después). No cambia ventas, cobros ni
  * retiros: el arqueo solo lee lo que ya se registra.
@@ -457,6 +459,15 @@ export const cashRouter = createTRPCRouter({
             : null,
       }));
     }),
+
+  /**
+   * Cada movimiento de dinero de un día, para ver de qué fue cada entrada y
+   * salida (venta, taller, abono, retiro, proveedor, viaje…). Con onlyDrawer
+   * solo lo que toca la gaveta; sin él, también transferencias y dinero de viaje.
+   */
+  movements: viewProcedure
+    .input(z.object({ day: zDay, onlyDrawer: z.boolean().default(false) }))
+    .query(({ ctx, input }) => cashMovements(ctx.db, input.day, { onlyDrawer: input.onlyDrawer })),
 
   /**
    * Detalle de una caja con su bitácora. Si está cerrada, recalcula y avisa

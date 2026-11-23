@@ -47,6 +47,65 @@ COMMENT ON EXTENSION unaccent IS 'text search dictionary that removes accents';
 
 
 --
+-- Name: fn_cash_session_change_append_only(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.fn_cash_session_change_append_only() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'UPDATE'
+     AND NEW."cash_session_id" IS NULL AND OLD."cash_session_id" IS NOT NULL
+     AND NEW."id" = OLD."id" AND NEW."business_day" = OLD."business_day"
+     AND NEW."action" = OLD."action" AND NEW."changed_at" = OLD."changed_at"
+     AND NEW."changed_by_user_id" = OLD."changed_by_user_id" AND NEW."reason" = OLD."reason"
+     AND NEW."before" = OLD."before" AND NEW."after" IS NOT DISTINCT FROM OLD."after" THEN
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'La bitácora de caja no se modifica ni se borra.' USING ERRCODE = 'check_violation';
+END $$;
+
+
+--
+-- Name: fn_cash_session_no_delete(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.fn_cash_session_no_delete() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD."closed_at" IS NOT NULL THEN
+    RAISE EXCEPTION 'Una caja cerrada no se borra: queda como registro del arqueo.' USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN OLD;
+END $$;
+
+
+--
+-- Name: fn_cash_withdrawal_change_append_only(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.fn_cash_withdrawal_change_append_only() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'La bitácora de retiros no se modifica ni se borra.' USING ERRCODE = 'check_violation';
+END $$;
+
+
+--
+-- Name: fn_cash_withdrawal_no_delete(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.fn_cash_withdrawal_no_delete() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'Un retiro de caja no se borra: se anula con un motivo.' USING ERRCODE = 'check_violation';
+END $$;
+
+
+--
 -- Name: fn_inventory_movement_append_only(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -103,6 +162,115 @@ $$;
 
 
 --
+-- Name: fn_purchase_trip_open_check(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.fn_purchase_trip_open_check() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW."purchase_trip_id" IS NOT NULL
+     AND (TG_OP = 'INSERT' OR NEW."purchase_trip_id" IS DISTINCT FROM OLD."purchase_trip_id")
+     AND EXISTS (SELECT 1 FROM "purchase_trip" t WHERE t."id" = NEW."purchase_trip_id" AND t."status" <> 'ABIERTO') THEN
+    RAISE EXCEPTION 'El viaje de compras ya está cerrado: no se le agregan facturas ni gastos.'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NEW;
+END $$;
+
+
+--
+-- Name: fn_sale_invoice_line_min_price(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.fn_sale_invoice_line_min_price() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_cost numeric(12, 2);
+BEGIN
+    IF NEW."line_type" <> 'PRODUCTO' OR NEW."discount_amount" <= 0 THEN
+        RETURN NEW;
+    END IF;
+
+    SELECT m."unit_cost" INTO v_cost
+      FROM "inventory_movement" m
+     WHERE m."product_id" = NEW."product_id"
+       AND m."movement_type" IN ('COMPRA', 'DEVOLUCION_CLIENTE', 'INVENTARIO_INICIAL', 'AJUSTE_ENTRADA')
+     ORDER BY m."moved_at" DESC, m."id" DESC
+     LIMIT 1;
+
+    IF v_cost IS NOT NULL
+       AND NEW."quantity" * NEW."unit_price" - NEW."discount_amount" < NEW."quantity" * v_cost THEN
+        RAISE EXCEPTION 'El producto % no se puede rebajar por debajo de su costo', NEW."product_id"
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'tg_sale_invoice_line_min_price';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+
+--
+-- Name: fn_sale_invoice_not_voided(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.fn_sale_invoice_not_voided() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF NEW."sale_invoice_id" IS NOT NULL
+       AND EXISTS (SELECT 1 FROM "sale_invoice_void" v WHERE v."sale_invoice_id" = NEW."sale_invoice_id") THEN
+        RAISE EXCEPTION 'La factura % está anulada', NEW."sale_invoice_id"
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'tg_sale_invoice_voided';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+
+--
+-- Name: fn_sale_invoice_void_check(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.fn_sale_invoice_void_check() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_created timestamptz;
+    v_order   integer;
+BEGIN
+    IF TG_OP <> 'INSERT' THEN
+        RAISE EXCEPTION 'Una anulación no se edita ni se borra'
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'tg_sale_invoice_void_append_only';
+    END IF;
+
+    SELECT si."created_at", si."service_order_id" INTO v_created, v_order
+      FROM "sale_invoice" si WHERE si."id" = NEW."sale_invoice_id";
+
+    IF v_created < now() - interval '3 days' THEN
+        RAISE EXCEPTION 'La factura % tiene más de 3 días: ya no se puede anular', NEW."sale_invoice_id"
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'tg_sale_invoice_void_deadline';
+    END IF;
+
+    IF NOT EXISTS (SELECT 1
+                     FROM "app_user" u
+                     JOIN "staff" s ON s."id" = u."staff_id"
+                    WHERE u."id" = NEW."voided_by_user_id" AND u."active" AND s."active" AND s."kind" = 'DUENO') THEN
+        RAISE EXCEPTION 'Solo un dueño puede anular facturas'
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'tg_sale_invoice_void_owner';
+    END IF;
+
+    IF v_order IS NOT NULL AND EXISTS (SELECT 1 FROM "service_order"
+                                        WHERE "id" = v_order AND "staff_payout_id" IS NOT NULL) THEN
+        RAISE EXCEPTION 'La comisión de esta orden ya se pagó: no se puede anular la factura'
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'tg_sale_invoice_void_commission_paid';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+
+--
 -- Name: fn_service_order_check_responsible(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -152,6 +320,36 @@ BEGIN
             USING ERRCODE = 'check_violation', CONSTRAINT = 'tg_service_order_has_items';
     END IF;
     RETURN NULL;
+END
+$$;
+
+
+--
+-- Name: fn_service_order_status_guard(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.fn_service_order_status_guard() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_current varchar(20);
+BEGIN
+    SELECT sc."status" INTO v_current
+      FROM "service_order_status_change" sc
+     WHERE sc."service_order_id" = NEW."service_order_id"
+     ORDER BY sc."changed_at" DESC, sc."id" DESC
+     LIMIT 1;
+
+    IF v_current IN ('ENTREGADA', 'CANCELADA') THEN
+        RAISE EXCEPTION 'La orden % ya está cerrada (%): no cambia de estado', NEW."service_order_id", v_current
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'tg_service_order_status_closed';
+    END IF;
+
+    IF NEW."status" = 'CANCELADA' AND v_current IN ('TERMINADA', 'EN_PRUEBA') THEN
+        RAISE EXCEPTION 'La orden % ya está terminada: no se puede cancelar', NEW."service_order_id"
+            USING ERRCODE = 'check_violation', CONSTRAINT = 'tg_service_order_cancel_finished';
+    END IF;
+    RETURN NEW;
 END
 $$;
 
@@ -311,6 +509,91 @@ ALTER SEQUENCE public.app_user_id_seq OWNED BY public.app_user.id;
 
 
 --
+-- Name: cash_session; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cash_session (
+    id integer NOT NULL,
+    business_day date NOT NULL,
+    opened_at timestamp(0) with time zone DEFAULT CURRENT_TIMESTAMP(0) NOT NULL,
+    opened_by_user_id integer NOT NULL,
+    opening_nio numeric(12,2) DEFAULT 0 NOT NULL,
+    opening_usd numeric(12,2) DEFAULT 0 NOT NULL,
+    opening_notes character varying(200),
+    closed_at timestamp(0) with time zone,
+    closed_by_user_id integer,
+    expected_nio numeric(12,2),
+    expected_usd numeric(12,2),
+    counted_nio numeric(12,2),
+    counted_usd numeric(12,2),
+    closing_notes character varying(200),
+    CONSTRAINT ck_cash_session_closed_after_opened CHECK (((closed_at IS NULL) OR (closed_at >= opened_at))),
+    CONSTRAINT ck_cash_session_closed_complete CHECK ((((closed_at IS NULL) AND (closed_by_user_id IS NULL) AND (expected_nio IS NULL) AND (expected_usd IS NULL) AND (counted_nio IS NULL) AND (counted_usd IS NULL)) OR ((closed_at IS NOT NULL) AND (closed_by_user_id IS NOT NULL) AND (expected_nio IS NOT NULL) AND (expected_usd IS NOT NULL) AND (counted_nio IS NOT NULL) AND (counted_usd IS NOT NULL)))),
+    CONSTRAINT ck_cash_session_counted CHECK ((((counted_nio IS NULL) OR (counted_nio >= (0)::numeric)) AND ((counted_usd IS NULL) OR (counted_usd >= (0)::numeric)))),
+    CONSTRAINT ck_cash_session_opening CHECK (((opening_nio >= (0)::numeric) AND (opening_usd >= (0)::numeric)))
+);
+
+
+--
+-- Name: cash_session_change; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cash_session_change (
+    id integer NOT NULL,
+    cash_session_id integer,
+    business_day date NOT NULL,
+    action character varying(20) NOT NULL,
+    changed_at timestamp(0) with time zone DEFAULT CURRENT_TIMESTAMP(0) NOT NULL,
+    changed_by_user_id integer NOT NULL,
+    reason character varying(200) NOT NULL,
+    before jsonb NOT NULL,
+    after jsonb,
+    CONSTRAINT ck_cash_session_change_action CHECK (((action)::text = ANY ((ARRAY['REAPERTURA'::character varying, 'CORRECCION'::character varying, 'ELIMINACION'::character varying])::text[]))),
+    CONSTRAINT ck_cash_session_change_reason CHECK ((length(btrim((reason)::text)) >= 5))
+);
+
+
+--
+-- Name: cash_session_change_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.cash_session_change_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: cash_session_change_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.cash_session_change_id_seq OWNED BY public.cash_session_change.id;
+
+
+--
+-- Name: cash_session_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.cash_session_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: cash_session_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.cash_session_id_seq OWNED BY public.cash_session.id;
+
+
+--
 -- Name: cash_withdrawal; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -321,9 +604,52 @@ CREATE TABLE public.cash_withdrawal (
     withdrawn_on date DEFAULT CURRENT_DATE NOT NULL,
     amount numeric(12,2) NOT NULL,
     description character varying(200),
+    created_at timestamp(0) with time zone DEFAULT CURRENT_TIMESTAMP(0) NOT NULL,
+    voided_at timestamp(0) with time zone,
+    voided_by_user_id integer,
+    void_reason character varying(200),
     CONSTRAINT ck_cash_withdrawal_amount CHECK ((amount > (0)::numeric)),
-    CONSTRAINT ck_cash_withdrawal_description CHECK (((description IS NULL) OR (btrim((description)::text) <> ''::text)))
+    CONSTRAINT ck_cash_withdrawal_description CHECK (((description IS NULL) OR (btrim((description)::text) <> ''::text))),
+    CONSTRAINT ck_cash_withdrawal_void_complete CHECK ((((voided_at IS NULL) AND (voided_by_user_id IS NULL) AND (void_reason IS NULL)) OR ((voided_at IS NOT NULL) AND (voided_by_user_id IS NOT NULL) AND (length(btrim((void_reason)::text)) >= 5))))
 );
+
+
+--
+-- Name: cash_withdrawal_change; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.cash_withdrawal_change (
+    id integer NOT NULL,
+    cash_withdrawal_id integer NOT NULL,
+    action character varying(20) NOT NULL,
+    changed_at timestamp(0) with time zone DEFAULT CURRENT_TIMESTAMP(0) NOT NULL,
+    changed_by_user_id integer NOT NULL,
+    reason character varying(200) NOT NULL,
+    before jsonb NOT NULL,
+    after jsonb NOT NULL,
+    CONSTRAINT ck_cash_withdrawal_change_action CHECK (((action)::text = ANY ((ARRAY['EDICION'::character varying, 'ANULACION'::character varying])::text[]))),
+    CONSTRAINT ck_cash_withdrawal_change_reason CHECK ((length(btrim((reason)::text)) >= 5))
+);
+
+
+--
+-- Name: cash_withdrawal_change_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.cash_withdrawal_change_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: cash_withdrawal_change_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.cash_withdrawal_change_id_seq OWNED BY public.cash_withdrawal_change.id;
 
 
 --
@@ -540,8 +866,10 @@ CREATE TABLE public.customer_return (
     return_reason_id integer NOT NULL,
     registered_by_user_id integer NOT NULL,
     notes character varying(200),
+    refund_amount numeric(12,2) DEFAULT 0 NOT NULL,
     CONSTRAINT ck_customer_return_credit_note_number CHECK (((credit_note_number IS NULL) OR (btrim((credit_note_number)::text) <> ''::text))),
-    CONSTRAINT ck_customer_return_notes CHECK (((notes IS NULL) OR (btrim((notes)::text) <> ''::text)))
+    CONSTRAINT ck_customer_return_notes CHECK (((notes IS NULL) OR (btrim((notes)::text) <> ''::text))),
+    CONSTRAINT ck_customer_return_refund_amount CHECK ((refund_amount >= (0)::numeric))
 );
 
 
@@ -713,6 +1041,7 @@ CREATE TABLE public.motorcycle (
 CREATE TABLE public.motorcycle_brand (
     id integer NOT NULL,
     name character varying(50) NOT NULL,
+    active boolean DEFAULT true NOT NULL,
     CONSTRAINT ck_motorcycle_brand_name CHECK ((btrim((name)::text) <> ''::text))
 );
 
@@ -765,6 +1094,7 @@ CREATE TABLE public.motorcycle_model (
     id integer NOT NULL,
     motorcycle_brand_id integer NOT NULL,
     name character varying(50) NOT NULL,
+    active boolean DEFAULT true NOT NULL,
     CONSTRAINT ck_motorcycle_model_name CHECK ((btrim((name)::text) <> ''::text))
 );
 
@@ -866,7 +1196,8 @@ CREATE TABLE public.product (
     quality_tier character varying(20) NOT NULL,
     list_price numeric(12,2) NOT NULL,
     stock integer DEFAULT 0 NOT NULL,
-    CONSTRAINT ck_product_barcode CHECK (((barcode IS NULL) OR (btrim((barcode)::text) <> ''::text))),
+    active boolean DEFAULT true NOT NULL,
+    CONSTRAINT ck_product_barcode CHECK (((barcode IS NULL) OR ((barcode)::text ~ '^[0-9]{8,14}$'::text))),
     CONSTRAINT ck_product_list_price CHECK ((list_price >= (0)::numeric)),
     CONSTRAINT ck_product_name CHECK ((btrim((name)::text) <> ''::text)),
     CONSTRAINT ck_product_quality_tier CHECK (((quality_tier)::text = ANY ((ARRAY['ALTA'::character varying, 'MEDIA'::character varying, 'BAJA'::character varying])::text[]))),
@@ -881,6 +1212,7 @@ CREATE TABLE public.product (
 CREATE TABLE public.product_brand (
     id integer NOT NULL,
     name character varying(50) NOT NULL,
+    active boolean DEFAULT true NOT NULL,
     CONSTRAINT ck_product_brand_name CHECK ((btrim((name)::text) <> ''::text))
 );
 
@@ -912,6 +1244,7 @@ ALTER SEQUENCE public.product_brand_id_seq OWNED BY public.product_brand.id;
 CREATE TABLE public.product_category (
     id integer NOT NULL,
     name character varying(50) NOT NULL,
+    active boolean DEFAULT true NOT NULL,
     CONSTRAINT ck_product_category_name CHECK ((btrim((name)::text) <> ''::text))
 );
 
@@ -1003,6 +1336,9 @@ CREATE TABLE public.purchase_invoice (
     due_date date,
     discount_amount numeric(12,2) DEFAULT 0 NOT NULL,
     received_by_user_id integer NOT NULL,
+    purchase_trip_id integer,
+    notes character varying(200),
+    created_at timestamp(0) with time zone DEFAULT CURRENT_TIMESTAMP(0) NOT NULL,
     CONSTRAINT ck_purchase_invoice_discount_amount CHECK ((discount_amount >= (0)::numeric)),
     CONSTRAINT ck_purchase_invoice_due_date CHECK (((((payment_terms)::text = 'CREDITO'::text) = (due_date IS NOT NULL)) AND ((due_date IS NULL) OR (due_date >= purchase_date)))),
     CONSTRAINT ck_purchase_invoice_invoice_number CHECK ((btrim((invoice_number)::text) <> ''::text)),
@@ -1065,6 +1401,89 @@ CREATE SEQUENCE public.purchase_invoice_line_id_seq
 --
 
 ALTER SEQUENCE public.purchase_invoice_line_id_seq OWNED BY public.purchase_invoice_line.id;
+
+
+--
+-- Name: purchase_trip; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.purchase_trip (
+    id integer NOT NULL,
+    trip_date date DEFAULT CURRENT_DATE NOT NULL,
+    destination character varying(80) DEFAULT 'Managua'::character varying NOT NULL,
+    traveler character varying(100),
+    cash_taken numeric(12,2) DEFAULT 0 NOT NULL,
+    taken_at timestamp(0) with time zone,
+    other_funds numeric(12,2) DEFAULT 0 NOT NULL,
+    notes character varying(200),
+    status character varying(20) DEFAULT 'ABIERTO'::character varying NOT NULL,
+    created_at timestamp(0) with time zone DEFAULT CURRENT_TIMESTAMP(0) NOT NULL,
+    created_by_user_id integer NOT NULL,
+    cash_returned numeric(12,2),
+    closed_at timestamp(0) with time zone,
+    closed_by_user_id integer,
+    closing_notes character varying(200),
+    CONSTRAINT ck_purchase_trip_amounts CHECK (((cash_taken >= (0)::numeric) AND (other_funds >= (0)::numeric) AND ((cash_returned IS NULL) OR (cash_returned >= (0)::numeric)))),
+    CONSTRAINT ck_purchase_trip_closed_complete CHECK (((((status)::text = 'ABIERTO'::text) AND (cash_returned IS NULL) AND (closed_at IS NULL) AND (closed_by_user_id IS NULL)) OR (((status)::text = 'CERRADO'::text) AND (cash_returned IS NOT NULL) AND (closed_at IS NOT NULL) AND (closed_by_user_id IS NOT NULL)))),
+    CONSTRAINT ck_purchase_trip_status CHECK (((status)::text = ANY ((ARRAY['ABIERTO'::character varying, 'CERRADO'::character varying])::text[]))),
+    CONSTRAINT ck_purchase_trip_taken_at CHECK (((cash_taken > (0)::numeric) = (taken_at IS NOT NULL)))
+);
+
+
+--
+-- Name: purchase_trip_expense; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.purchase_trip_expense (
+    id integer NOT NULL,
+    purchase_trip_id integer NOT NULL,
+    trip_expense_type_id integer NOT NULL,
+    amount numeric(12,2) NOT NULL,
+    description character varying(200),
+    created_at timestamp(0) with time zone DEFAULT CURRENT_TIMESTAMP(0) NOT NULL,
+    created_by_user_id integer NOT NULL,
+    CONSTRAINT ck_purchase_trip_expense_amount CHECK ((amount > (0)::numeric))
+);
+
+
+--
+-- Name: purchase_trip_expense_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.purchase_trip_expense_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: purchase_trip_expense_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.purchase_trip_expense_id_seq OWNED BY public.purchase_trip_expense.id;
+
+
+--
+-- Name: purchase_trip_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.purchase_trip_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: purchase_trip_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.purchase_trip_id_seq OWNED BY public.purchase_trip.id;
 
 
 --
@@ -1241,6 +1660,22 @@ ALTER SEQUENCE public.sale_invoice_line_id_seq OWNED BY public.sale_invoice_line
 
 
 --
+-- Name: sale_invoice_void; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sale_invoice_void (
+    sale_invoice_id integer NOT NULL,
+    voided_at timestamp(0) with time zone DEFAULT CURRENT_TIMESTAMP(0) NOT NULL,
+    voided_by_user_id integer NOT NULL,
+    reason character varying(200) NOT NULL,
+    refund_amount numeric(12,2) DEFAULT 0 NOT NULL,
+    customer_return_id integer,
+    CONSTRAINT ck_sale_invoice_void_reason CHECK ((length(btrim((reason)::text)) >= 5)),
+    CONSTRAINT ck_sale_invoice_void_refund CHECK ((refund_amount >= (0)::numeric))
+);
+
+
+--
 -- Name: service_category; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1248,6 +1683,7 @@ CREATE TABLE public.service_category (
     id integer NOT NULL,
     name character varying(40) NOT NULL,
     sort_order smallint DEFAULT 100 NOT NULL,
+    active boolean DEFAULT true NOT NULL,
     CONSTRAINT ck_service_category_name CHECK ((btrim((name)::text) <> ''::text))
 );
 
@@ -1433,7 +1869,7 @@ CREATE TABLE public.staff (
     active boolean DEFAULT true NOT NULL,
     kind character varying(20) DEFAULT 'MECANICO'::character varying NOT NULL,
     can_repair boolean DEFAULT true NOT NULL,
-    CONSTRAINT ck_staff_commission_rate CHECK (((commission_rate > (0)::numeric) AND (commission_rate <= (1)::numeric))),
+    CONSTRAINT ck_staff_commission_rate CHECK (((commission_rate > (0)::numeric) AND (commission_rate < (1)::numeric))),
     CONSTRAINT ck_staff_kind CHECK (((kind)::text = ANY ((ARRAY['DUENO'::character varying, 'MECANICO'::character varying, 'ENCARGADO'::character varying])::text[]))),
     CONSTRAINT ck_staff_name CHECK ((btrim((name)::text) <> ''::text)),
     CONSTRAINT ck_staff_owner_no_commission CHECK ((((kind)::text <> 'DUENO'::text) OR (commission_rate IS NULL))),
@@ -1585,9 +2021,16 @@ CREATE TABLE public.supplier_payment (
     amount numeric(12,2) NOT NULL,
     currency character varying(3) DEFAULT 'NIO'::character varying NOT NULL,
     exchange_rate numeric(10,4),
+    source character varying(20) DEFAULT 'FUERA_DE_CAJA'::character varying NOT NULL,
+    paid_at timestamp(0) with time zone DEFAULT CURRENT_TIMESTAMP(0) NOT NULL,
+    registered_by_user_id integer,
+    notes character varying(200),
+    purchase_trip_id integer,
     CONSTRAINT ck_supplier_payment_amount CHECK ((amount > (0)::numeric)),
     CONSTRAINT ck_supplier_payment_currency CHECK (((currency)::text = ANY ((ARRAY['NIO'::character varying, 'USD'::character varying])::text[]))),
-    CONSTRAINT ck_supplier_payment_exchange CHECK (((((currency)::text = 'NIO'::text) AND (exchange_rate IS NULL)) OR (((currency)::text = 'USD'::text) AND (exchange_rate IS NOT NULL) AND (exchange_rate > (0)::numeric))))
+    CONSTRAINT ck_supplier_payment_exchange CHECK (((((currency)::text = 'NIO'::text) AND (exchange_rate IS NULL)) OR (((currency)::text = 'USD'::text) AND (exchange_rate IS NOT NULL) AND (exchange_rate > (0)::numeric)))),
+    CONSTRAINT ck_supplier_payment_source CHECK (((source)::text = ANY ((ARRAY['CAJA'::character varying, 'FUERA_DE_CAJA'::character varying, 'VIAJE'::character varying])::text[]))),
+    CONSTRAINT ck_supplier_payment_trip CHECK ((((source)::text = 'VIAJE'::text) = (purchase_trip_id IS NOT NULL)))
 );
 
 
@@ -1684,6 +2127,37 @@ ALTER SEQUENCE public.supplier_return_line_id_seq OWNED BY public.supplier_retur
 
 
 --
+-- Name: trip_expense_type; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.trip_expense_type (
+    id integer NOT NULL,
+    name character varying(50) NOT NULL,
+    active boolean DEFAULT true NOT NULL
+);
+
+
+--
+-- Name: trip_expense_type_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.trip_expense_type_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: trip_expense_type_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.trip_expense_type_id_seq OWNED BY public.trip_expense_type.id;
+
+
+--
 -- Name: v_invoice_balance; Type: VIEW; Schema: public; Owner: -
 --
 
@@ -1696,12 +2170,18 @@ CREATE VIEW public.v_invoice_balance AS
     t.total,
     r.returned,
     p.paid,
-    ((t.total - r.returned) - p.paid) AS balance,
         CASE
-            WHEN ((((t.total - r.returned) - p.paid) > (0)::numeric) AND (COALESCE(si.extended_due_date, si.due_date) < CURRENT_DATE)) THEN (CURRENT_DATE - COALESCE(si.extended_due_date, si.due_date))
+            WHEN (v.sale_invoice_id IS NOT NULL) THEN (0)::numeric
+            ELSE (((t.total - r.returned) - p.paid) + rf.refunded)
+        END AS balance,
+        CASE
+            WHEN ((v.sale_invoice_id IS NULL) AND ((((t.total - r.returned) - p.paid) + rf.refunded) > (0)::numeric) AND (COALESCE(si.extended_due_date, si.due_date) < CURRENT_DATE)) THEN (CURRENT_DATE - COALESCE(si.extended_due_date, si.due_date))
             ELSE NULL::integer
-        END AS days_overdue
-   FROM (((public.sale_invoice si
+        END AS days_overdue,
+    (v.sale_invoice_id IS NOT NULL) AS voided,
+    rf.refunded
+   FROM (((((public.sale_invoice si
+     LEFT JOIN public.sale_invoice_void v ON ((v.sale_invoice_id = si.id)))
      CROSS JOIN LATERAL ( SELECT COALESCE(sum((((l.quantity)::numeric * l.unit_price) - l.discount_amount)), (0)::numeric) AS total
            FROM public.sale_invoice_line l
           WHERE (l.sale_invoice_id = si.id)) t)
@@ -1711,7 +2191,10 @@ CREATE VIEW public.v_invoice_balance AS
           WHERE (rl.sale_invoice_id = si.id)) r)
      CROSS JOIN LATERAL ( SELECT COALESCE(sum(a.amount), (0)::numeric) AS paid
            FROM public.customer_payment_allocation a
-          WHERE (a.sale_invoice_id = si.id)) p);
+          WHERE (a.sale_invoice_id = si.id)) p)
+     CROSS JOIN LATERAL ( SELECT COALESCE(sum(cr.refund_amount), (0)::numeric) AS refunded
+           FROM public.customer_return cr
+          WHERE (cr.sale_invoice_id = si.id)) rf);
 
 
 --
@@ -1816,7 +2299,364 @@ CREATE VIEW public.v_mechanic_unpaid_commission AS
            FROM (public.sale_invoice si
              JOIN public.sale_invoice_line l ON ((l.sale_invoice_id = si.id)))
           WHERE ((si.service_order_id = so.id) AND ((l.line_type)::text = 'MANO_OBRA'::text))) lab)
-  WHERE ((so.staff_payout_id IS NULL) AND (so.applied_commission_rate IS NOT NULL) AND (so.mechanic_staff_id IS NOT NULL) AND (d.delivered_at IS NOT NULL));
+  WHERE ((so.staff_payout_id IS NULL) AND (so.applied_commission_rate IS NOT NULL) AND (so.mechanic_staff_id IS NOT NULL) AND (d.delivered_at IS NOT NULL) AND (NOT (EXISTS ( SELECT 1
+           FROM (public.sale_invoice si
+             JOIN public.sale_invoice_void v ON ((v.sale_invoice_id = si.id)))
+          WHERE (si.service_order_id = so.id)))));
+
+
+--
+-- Name: warranty_claim; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.warranty_claim (
+    id integer NOT NULL,
+    original_service_order_id integer NOT NULL,
+    claimed_on date DEFAULT CURRENT_DATE NOT NULL,
+    description character varying(500) NOT NULL,
+    outcome character varying(20) NOT NULL,
+    part_paid_by character varying(20),
+    refund_amount numeric(12,2),
+    attended_by_user_id integer NOT NULL,
+    new_service_order_id integer,
+    part_sale_invoice_id integer,
+    CONSTRAINT ck_warranty_claim_description CHECK ((btrim((description)::text) <> ''::text)),
+    CONSTRAINT ck_warranty_claim_new_service_order CHECK (((new_service_order_id IS NULL) OR (((outcome)::text = 'FALLA_DISTINTA'::text) AND (new_service_order_id <> original_service_order_id)))),
+    CONSTRAINT ck_warranty_claim_outcome CHECK (((outcome)::text = ANY ((ARRAY['CUBIERTO'::character varying, 'FALLA_DISTINTA'::character varying, 'FUERA_DE_PLAZO'::character varying, 'REEMBOLSO'::character varying])::text[]))),
+    CONSTRAINT ck_warranty_claim_part_paid_by CHECK (((part_paid_by)::text = ANY ((ARRAY['TIENDA'::character varying, 'CLIENTE'::character varying])::text[]))),
+    CONSTRAINT ck_warranty_claim_part_sale_invoice CHECK (((part_sale_invoice_id IS NULL) OR ((COALESCE(part_paid_by, ''::character varying))::text = 'CLIENTE'::text))),
+    CONSTRAINT ck_warranty_claim_refund CHECK ((((outcome)::text = 'REEMBOLSO'::text) = (refund_amount IS NOT NULL))),
+    CONSTRAINT ck_warranty_claim_refund_amount CHECK ((refund_amount > (0)::numeric))
+);
+
+
+--
+-- Name: v_money_movement; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_money_movement AS
+ WITH pay AS (
+         SELECT cp.id,
+            cp.paid_at,
+            cp.amount,
+            cp.currency,
+            cp.exchange_rate,
+            cp.received_by_user_id,
+            pm.name AS method,
+            (lower((pm.name)::text) = 'efectivo'::text) AS is_cash,
+                CASE
+                    WHEN ((cp.currency)::text = 'USD'::text) THEN round((cp.amount * cp.exchange_rate), 2)
+                    ELSE cp.amount
+                END AS pay_nio
+           FROM (public.customer_payment cp
+             JOIN public.payment_method pm ON ((pm.id = cp.payment_method_id)))
+        ), alloc AS (
+         SELECT a.id,
+            a.customer_payment_id,
+            a.amount,
+                CASE
+                    WHEN (a.customer_opening_balance_id IS NOT NULL) THEN 'ABONO_CLIENTE'::text
+                    WHEN ((si.payment_terms)::text = 'CREDITO'::text) THEN 'ABONO_CLIENTE'::text
+                    WHEN (si.service_order_id IS NOT NULL) THEN 'COBRO_TALLER'::text
+                    ELSE 'COBRO_VENTA'::text
+                END AS kind,
+            COALESCE(si.customer_id, ob.customer_id) AS customer_id,
+            a.sale_invoice_id,
+            a.customer_opening_balance_id,
+            sum(a.amount) OVER (PARTITION BY a.customer_payment_id ORDER BY a.id) AS cum,
+            sum(a.amount) OVER (PARTITION BY a.customer_payment_id) AS total_alloc
+           FROM ((public.customer_payment_allocation a
+             LEFT JOIN public.sale_invoice si ON ((si.id = a.sale_invoice_id)))
+             LEFT JOIN public.customer_opening_balance ob ON ((ob.id = a.customer_opening_balance_id)))
+        ), alloc_share AS (
+         SELECT al.id AS alloc_id,
+            al.customer_payment_id,
+            al.kind,
+            al.customer_id,
+            al.sale_invoice_id,
+            al.amount AS alloc_amount,
+            al.cum,
+            al.total_alloc,
+            p.paid_at,
+            p.amount AS pay_amount,
+            p.currency,
+            p.is_cash,
+            p.method,
+            p.received_by_user_id,
+            p.pay_nio,
+                CASE
+                    WHEN ((p.pay_nio - al.total_alloc) < (COALESCE(p.exchange_rate, (1)::numeric) * 0.01)) THEN al.total_alloc
+                    ELSE p.pay_nio
+                END AS base
+           FROM (alloc al
+             JOIN pay p ON ((p.id = al.customer_payment_id)))
+        ), payout AS (
+         SELECT sp.id,
+            sp.staff_id,
+            sp.paid_on,
+            sp.paid_by_user_id,
+            GREATEST((( SELECT COALESCE(sum(round((lab.labor * so.applied_commission_rate), 2)), (0)::numeric) AS "coalesce"
+                   FROM (public.service_order so
+                     CROSS JOIN LATERAL ( SELECT COALESCE(sum((((l.quantity)::numeric * l.unit_price) - l.discount_amount)), (0)::numeric) AS labor
+                           FROM (public.sale_invoice si
+                             JOIN public.sale_invoice_line l ON ((l.sale_invoice_id = si.id)))
+                          WHERE ((si.service_order_id = so.id) AND ((l.line_type)::text = 'MANO_OBRA'::text))) lab)
+                  WHERE ((so.staff_payout_id = sp.id) AND (so.applied_commission_rate IS NOT NULL))) - ( SELECT COALESCE(sum(a.amount), (0)::numeric) AS "coalesce"
+                   FROM public.staff_advance a
+                  WHERE (a.staff_payout_id = sp.id))), (0)::numeric) AS net
+           FROM public.staff_payout sp
+          WHERE (sp.paid_on IS NOT NULL)
+        )
+ SELECT ((s.paid_at AT TIME ZONE 'America/Managua'::text))::date AS business_day,
+    s.paid_at AS occurred_at,
+    s.kind,
+    'ENTRADA'::text AS direction,
+    s.is_cash AS in_drawer,
+    s.method,
+    s.currency,
+    (round(((s.pay_amount * s.cum) / s.base), 2) - round(((s.pay_amount * (s.cum - s.alloc_amount)) / s.base), 2)) AS amount,
+    s.alloc_amount AS amount_nio,
+    'customer_payment'::text AS ref_table,
+    s.customer_payment_id AS ref_id,
+    s.sale_invoice_id,
+    s.customer_id,
+    NULL::integer AS supplier_id,
+        CASE
+            WHEN (s.sale_invoice_id IS NOT NULL) THEN ('Factura '::text || s.sale_invoice_id)
+            ELSE 'Saldo anterior'::text
+        END AS detail,
+    s.received_by_user_id AS user_id
+   FROM alloc_share s
+UNION ALL
+ SELECT ((p.paid_at AT TIME ZONE 'America/Managua'::text))::date AS business_day,
+    p.paid_at AS occurred_at,
+    'COBRO_SIN_REPARTIR'::text AS kind,
+    'ENTRADA'::text AS direction,
+    p.is_cash AS in_drawer,
+    p.method,
+    p.currency,
+    (p.amount - COALESCE(round(((p.amount * t.total_alloc) / NULLIF(t.base, (0)::numeric)), 2), (0)::numeric)) AS amount,
+    (p.pay_nio - COALESCE(t.total_alloc, (0)::numeric)) AS amount_nio,
+    'customer_payment'::text AS ref_table,
+    p.id AS ref_id,
+    NULL::integer AS sale_invoice_id,
+    NULL::integer AS customer_id,
+    NULL::integer AS supplier_id,
+    'Cobro sin repartir'::text AS detail,
+    p.received_by_user_id AS user_id
+   FROM (pay p
+     LEFT JOIN ( SELECT DISTINCT alloc_share.customer_payment_id,
+            alloc_share.total_alloc,
+            alloc_share.base
+           FROM alloc_share) t ON ((t.customer_payment_id = p.id)))
+  WHERE ((p.amount - COALESCE(round(((p.amount * t.total_alloc) / NULLIF(t.base, (0)::numeric)), 2), (0)::numeric)) > (0)::numeric)
+UNION ALL
+ SELECT ((t.closed_at AT TIME ZONE 'America/Managua'::text))::date AS business_day,
+    t.closed_at AS occurred_at,
+    'VUELTO_VIAJE'::text AS kind,
+    'ENTRADA'::text AS direction,
+    true AS in_drawer,
+    'Efectivo'::character varying AS method,
+    'NIO'::character varying AS currency,
+    t.cash_returned AS amount,
+    t.cash_returned AS amount_nio,
+    'purchase_trip'::text AS ref_table,
+    t.id AS ref_id,
+    NULL::integer AS sale_invoice_id,
+    NULL::integer AS customer_id,
+    NULL::integer AS supplier_id,
+    ('Viaje a '::text || (t.destination)::text) AS detail,
+    t.closed_by_user_id AS user_id
+   FROM public.purchase_trip t
+  WHERE (((t.status)::text = 'CERRADO'::text) AND (t.cash_returned > (0)::numeric))
+UNION ALL
+ SELECT ((t.taken_at AT TIME ZONE 'America/Managua'::text))::date AS business_day,
+    t.taken_at AS occurred_at,
+    'DINERO_VIAJE'::text AS kind,
+    'SALIDA'::text AS direction,
+    true AS in_drawer,
+    'Efectivo'::character varying AS method,
+    'NIO'::character varying AS currency,
+    t.cash_taken AS amount,
+    t.cash_taken AS amount_nio,
+    'purchase_trip'::text AS ref_table,
+    t.id AS ref_id,
+    NULL::integer AS sale_invoice_id,
+    NULL::integer AS customer_id,
+    NULL::integer AS supplier_id,
+    ('Viaje a '::text || (t.destination)::text) AS detail,
+    t.created_by_user_id AS user_id
+   FROM public.purchase_trip t
+  WHERE (t.cash_taken > (0)::numeric)
+UNION ALL
+ SELECT t.trip_date AS business_day,
+    e.created_at AS occurred_at,
+    'GASTO_VIAJE'::text AS kind,
+    'SALIDA'::text AS direction,
+    false AS in_drawer,
+    'Dinero del viaje'::character varying AS method,
+    'NIO'::character varying AS currency,
+    e.amount,
+    e.amount AS amount_nio,
+    'purchase_trip_expense'::text AS ref_table,
+    e.id AS ref_id,
+    NULL::integer AS sale_invoice_id,
+    NULL::integer AS customer_id,
+    NULL::integer AS supplier_id,
+    ((et.name)::text || COALESCE((' · '::text || (e.description)::text), ''::text)) AS detail,
+    e.created_by_user_id AS user_id
+   FROM ((public.purchase_trip_expense e
+     JOIN public.purchase_trip t ON ((t.id = e.purchase_trip_id)))
+     JOIN public.trip_expense_type et ON ((et.id = e.trip_expense_type_id)))
+UNION ALL
+ SELECT w.withdrawn_on AS business_day,
+    w.created_at AS occurred_at,
+    'RETIRO'::text AS kind,
+    'SALIDA'::text AS direction,
+    true AS in_drawer,
+    'Efectivo'::character varying AS method,
+    'NIO'::character varying AS currency,
+    w.amount,
+    w.amount AS amount_nio,
+    'cash_withdrawal'::text AS ref_table,
+    w.id AS ref_id,
+    NULL::integer AS sale_invoice_id,
+    NULL::integer AS customer_id,
+    NULL::integer AS supplier_id,
+    ((r.name)::text || COALESCE((' · '::text || (w.description)::text), ''::text)) AS detail,
+    w.withdrawn_by_user_id AS user_id
+   FROM (public.cash_withdrawal w
+     JOIN public.cash_withdrawal_reason r ON ((r.id = w.cash_withdrawal_reason_id)))
+  WHERE (w.voided_at IS NULL)
+UNION ALL
+ SELECT a.given_on AS business_day,
+    NULL::timestamp with time zone AS occurred_at,
+    'ADELANTO_MECANICO'::text AS kind,
+    'SALIDA'::text AS direction,
+    true AS in_drawer,
+    'Efectivo'::character varying AS method,
+    'NIO'::character varying AS currency,
+    a.amount,
+    a.amount AS amount_nio,
+    'staff_advance'::text AS ref_table,
+    a.id AS ref_id,
+    NULL::integer AS sale_invoice_id,
+    NULL::integer AS customer_id,
+    NULL::integer AS supplier_id,
+    st.name AS detail,
+    a.given_by_user_id AS user_id
+   FROM (public.staff_advance a
+     JOIN public.staff st ON ((st.id = a.staff_id)))
+UNION ALL
+ SELECT p.paid_on AS business_day,
+    NULL::timestamp with time zone AS occurred_at,
+    'PAGO_MECANICO'::text AS kind,
+    'SALIDA'::text AS direction,
+    true AS in_drawer,
+    'Efectivo'::character varying AS method,
+    'NIO'::character varying AS currency,
+    p.net AS amount,
+    p.net AS amount_nio,
+    'staff_payout'::text AS ref_table,
+    p.id AS ref_id,
+    NULL::integer AS sale_invoice_id,
+    NULL::integer AS customer_id,
+    NULL::integer AS supplier_id,
+    st.name AS detail,
+    p.paid_by_user_id AS user_id
+   FROM (payout p
+     JOIN public.staff st ON ((st.id = p.staff_id)))
+  WHERE (p.net > (0)::numeric)
+UNION ALL
+ SELECT ((v.voided_at AT TIME ZONE 'America/Managua'::text))::date AS business_day,
+    v.voided_at AS occurred_at,
+    'REEMBOLSO_ANULACION'::text AS kind,
+    'SALIDA'::text AS direction,
+    true AS in_drawer,
+    'Efectivo'::character varying AS method,
+    'NIO'::character varying AS currency,
+    v.refund_amount AS amount,
+    v.refund_amount AS amount_nio,
+    'sale_invoice_void'::text AS ref_table,
+    v.sale_invoice_id AS ref_id,
+    v.sale_invoice_id,
+    si.customer_id,
+    NULL::integer AS supplier_id,
+    ('Factura '::text || v.sale_invoice_id) AS detail,
+    v.voided_by_user_id AS user_id
+   FROM (public.sale_invoice_void v
+     JOIN public.sale_invoice si ON ((si.id = v.sale_invoice_id)))
+  WHERE (v.refund_amount > (0)::numeric)
+UNION ALL
+ SELECT ((cr.returned_at AT TIME ZONE 'America/Managua'::text))::date AS business_day,
+    cr.returned_at AS occurred_at,
+    'REEMBOLSO_DEVOLUCION'::text AS kind,
+    'SALIDA'::text AS direction,
+    true AS in_drawer,
+    'Efectivo'::character varying AS method,
+    'NIO'::character varying AS currency,
+    cr.refund_amount AS amount,
+    cr.refund_amount AS amount_nio,
+    'customer_return'::text AS ref_table,
+    cr.id AS ref_id,
+    cr.sale_invoice_id,
+    si.customer_id,
+    NULL::integer AS supplier_id,
+    ('Factura '::text || cr.sale_invoice_id) AS detail,
+    cr.registered_by_user_id AS user_id
+   FROM (public.customer_return cr
+     JOIN public.sale_invoice si ON ((si.id = cr.sale_invoice_id)))
+  WHERE (cr.refund_amount > (0)::numeric)
+UNION ALL
+ SELECT w.claimed_on AS business_day,
+    NULL::timestamp with time zone AS occurred_at,
+    'REEMBOLSO_GARANTIA'::text AS kind,
+    'SALIDA'::text AS direction,
+    true AS in_drawer,
+    'Efectivo'::character varying AS method,
+    'NIO'::character varying AS currency,
+    w.refund_amount AS amount,
+    w.refund_amount AS amount_nio,
+    'warranty_claim'::text AS ref_table,
+    w.id AS ref_id,
+    NULL::integer AS sale_invoice_id,
+    NULL::integer AS customer_id,
+    NULL::integer AS supplier_id,
+    ('Orden '::text || w.original_service_order_id) AS detail,
+    w.attended_by_user_id AS user_id
+   FROM public.warranty_claim w
+  WHERE (((w.outcome)::text = 'REEMBOLSO'::text) AND (w.refund_amount > (0)::numeric))
+UNION ALL
+ SELECT ((sp.paid_at AT TIME ZONE 'America/Managua'::text))::date AS business_day,
+    sp.paid_at AS occurred_at,
+    'PAGO_PROVEEDOR'::text AS kind,
+    'SALIDA'::text AS direction,
+    ((sp.source)::text = 'CAJA'::text) AS in_drawer,
+        CASE sp.source
+            WHEN 'CAJA'::text THEN 'Efectivo'::text
+            WHEN 'VIAJE'::text THEN 'Dinero del viaje'::text
+            ELSE 'Fuera de caja'::text
+        END AS method,
+    sp.currency,
+    sp.amount,
+        CASE
+            WHEN ((sp.currency)::text = 'USD'::text) THEN round((sp.amount * sp.exchange_rate), 2)
+            ELSE sp.amount
+        END AS amount_nio,
+    'supplier_payment'::text AS ref_table,
+    sp.id AS ref_id,
+    NULL::integer AS sale_invoice_id,
+    NULL::integer AS customer_id,
+    sp.supplier_id,
+    ((s.name)::text ||
+        CASE
+            WHEN (pi.invoice_number IS NOT NULL) THEN (' · factura '::text || (pi.invoice_number)::text)
+            ELSE ' · saldo anterior'::text
+        END) AS detail,
+    sp.registered_by_user_id AS user_id
+   FROM ((public.supplier_payment sp
+     JOIN public.supplier s ON ((s.id = sp.supplier_id)))
+     LEFT JOIN public.purchase_invoice pi ON ((pi.id = sp.purchase_invoice_id)));
 
 
 --
@@ -1942,6 +2782,48 @@ CREATE VIEW public.v_purchase_invoice_balance AS
 
 
 --
+-- Name: v_purchase_trip_summary; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.v_purchase_trip_summary AS
+ SELECT t.id AS purchase_trip_id,
+    t.cash_taken,
+    t.other_funds,
+    (COALESCE(inv.invoices, (0)::bigint))::integer AS invoices,
+    COALESCE(inv.total, (0)::numeric) AS purchases_total,
+    COALESCE(inv.cash_total, (0)::numeric) AS purchases_cash,
+    COALESCE(inv.credit_total, (0)::numeric) AS purchases_credit,
+    COALESCE(pp.paid_from_trip, (0)::numeric) AS paid_from_trip,
+    COALESCE(ex.expenses, (0)::numeric) AS expenses,
+    (COALESCE(ex.expense_lines, (0)::bigint))::integer AS expense_lines,
+    (((t.cash_taken + t.other_funds) - COALESCE(pp.paid_from_trip, (0)::numeric)) - COALESCE(ex.expenses, (0)::numeric)) AS expected_back,
+    t.cash_returned,
+        CASE
+            WHEN ((t.status)::text = 'CERRADO'::text) THEN (t.cash_returned - (((t.cash_taken + t.other_funds) - COALESCE(pp.paid_from_trip, (0)::numeric)) - COALESCE(ex.expenses, (0)::numeric)))
+            ELSE NULL::numeric
+        END AS difference
+   FROM (((public.purchase_trip t
+     LEFT JOIN LATERAL ( SELECT count(*) AS invoices,
+            sum(b.total) AS total,
+            sum(b.total) FILTER (WHERE ((b.payment_terms)::text = 'CONTADO'::text)) AS cash_total,
+            sum(b.total) FILTER (WHERE ((b.payment_terms)::text = 'CREDITO'::text)) AS credit_total
+           FROM (public.purchase_invoice pi
+             JOIN public.v_purchase_invoice_balance b ON ((b.purchase_invoice_id = pi.id)))
+          WHERE (pi.purchase_trip_id = t.id)) inv ON (true))
+     LEFT JOIN LATERAL ( SELECT sum(
+                CASE
+                    WHEN ((sp.currency)::text = 'USD'::text) THEN round((sp.amount * sp.exchange_rate), 2)
+                    ELSE sp.amount
+                END) AS paid_from_trip
+           FROM public.supplier_payment sp
+          WHERE (sp.purchase_trip_id = t.id)) pp ON (true))
+     LEFT JOIN LATERAL ( SELECT sum(e.amount) AS expenses,
+            count(*) AS expense_lines
+           FROM public.purchase_trip_expense e
+          WHERE (e.purchase_trip_id = t.id)) ex ON (true));
+
+
+--
 -- Name: v_service_order_status; Type: VIEW; Schema: public; Owner: -
 --
 
@@ -1975,31 +2857,6 @@ CREATE VIEW public.v_supplier_balance AS
             COALESCE(sum(b.balance) FILTER (WHERE (b.days_overdue > 0)), (0)::numeric) AS overdue
            FROM public.v_purchase_invoice_balance b
           WHERE (b.supplier_id = s.id)) pu);
-
-
---
--- Name: warranty_claim; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.warranty_claim (
-    id integer NOT NULL,
-    original_service_order_id integer NOT NULL,
-    claimed_on date DEFAULT CURRENT_DATE NOT NULL,
-    description character varying(500) NOT NULL,
-    outcome character varying(20) NOT NULL,
-    part_paid_by character varying(20),
-    refund_amount numeric(12,2),
-    attended_by_user_id integer NOT NULL,
-    new_service_order_id integer,
-    part_sale_invoice_id integer,
-    CONSTRAINT ck_warranty_claim_description CHECK ((btrim((description)::text) <> ''::text)),
-    CONSTRAINT ck_warranty_claim_new_service_order CHECK (((new_service_order_id IS NULL) OR (((outcome)::text = 'FALLA_DISTINTA'::text) AND (new_service_order_id <> original_service_order_id)))),
-    CONSTRAINT ck_warranty_claim_outcome CHECK (((outcome)::text = ANY ((ARRAY['CUBIERTO'::character varying, 'FALLA_DISTINTA'::character varying, 'FUERA_DE_PLAZO'::character varying, 'REEMBOLSO'::character varying])::text[]))),
-    CONSTRAINT ck_warranty_claim_part_paid_by CHECK (((part_paid_by)::text = ANY ((ARRAY['TIENDA'::character varying, 'CLIENTE'::character varying])::text[]))),
-    CONSTRAINT ck_warranty_claim_part_sale_invoice CHECK (((part_sale_invoice_id IS NULL) OR ((COALESCE(part_paid_by, ''::character varying))::text = 'CLIENTE'::text))),
-    CONSTRAINT ck_warranty_claim_refund CHECK ((((outcome)::text = 'REEMBOLSO'::text) = (refund_amount IS NOT NULL))),
-    CONSTRAINT ck_warranty_claim_refund_amount CHECK ((refund_amount > (0)::numeric))
-);
 
 
 --
@@ -2044,10 +2901,31 @@ ALTER TABLE ONLY public.app_user ALTER COLUMN id SET DEFAULT nextval('public.app
 
 
 --
+-- Name: cash_session id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_session ALTER COLUMN id SET DEFAULT nextval('public.cash_session_id_seq'::regclass);
+
+
+--
+-- Name: cash_session_change id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_session_change ALTER COLUMN id SET DEFAULT nextval('public.cash_session_change_id_seq'::regclass);
+
+
+--
 -- Name: cash_withdrawal id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.cash_withdrawal ALTER COLUMN id SET DEFAULT nextval('public.cash_withdrawal_id_seq'::regclass);
+
+
+--
+-- Name: cash_withdrawal_change id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_withdrawal_change ALTER COLUMN id SET DEFAULT nextval('public.cash_withdrawal_change_id_seq'::regclass);
 
 
 --
@@ -2191,6 +3069,20 @@ ALTER TABLE ONLY public.purchase_invoice_line ALTER COLUMN id SET DEFAULT nextva
 
 
 --
+-- Name: purchase_trip id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_trip ALTER COLUMN id SET DEFAULT nextval('public.purchase_trip_id_seq'::regclass);
+
+
+--
+-- Name: purchase_trip_expense id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_trip_expense ALTER COLUMN id SET DEFAULT nextval('public.purchase_trip_expense_id_seq'::regclass);
+
+
+--
 -- Name: return_reason id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2303,6 +3195,13 @@ ALTER TABLE ONLY public.supplier_return_line ALTER COLUMN id SET DEFAULT nextval
 
 
 --
+-- Name: trip_expense_type id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.trip_expense_type ALTER COLUMN id SET DEFAULT nextval('public.trip_expense_type_id_seq'::regclass);
+
+
+--
 -- Name: warranty_claim id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2342,11 +3241,35 @@ ALTER TABLE ONLY public.app_user
 
 
 --
+-- Name: cash_session pk_cash_session; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_session
+    ADD CONSTRAINT pk_cash_session PRIMARY KEY (id);
+
+
+--
+-- Name: cash_session_change pk_cash_session_change; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_session_change
+    ADD CONSTRAINT pk_cash_session_change PRIMARY KEY (id);
+
+
+--
 -- Name: cash_withdrawal pk_cash_withdrawal; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.cash_withdrawal
     ADD CONSTRAINT pk_cash_withdrawal PRIMARY KEY (id);
+
+
+--
+-- Name: cash_withdrawal_change pk_cash_withdrawal_change; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_withdrawal_change
+    ADD CONSTRAINT pk_cash_withdrawal_change PRIMARY KEY (id);
 
 
 --
@@ -2510,6 +3433,22 @@ ALTER TABLE ONLY public.purchase_invoice_line
 
 
 --
+-- Name: purchase_trip pk_purchase_trip; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_trip
+    ADD CONSTRAINT pk_purchase_trip PRIMARY KEY (id);
+
+
+--
+-- Name: purchase_trip_expense pk_purchase_trip_expense; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_trip_expense
+    ADD CONSTRAINT pk_purchase_trip_expense PRIMARY KEY (id);
+
+
+--
 -- Name: return_reason pk_return_reason; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2547,6 +3486,14 @@ ALTER TABLE ONLY public.sale_invoice
 
 ALTER TABLE ONLY public.sale_invoice_line
     ADD CONSTRAINT pk_sale_invoice_line PRIMARY KEY (id);
+
+
+--
+-- Name: sale_invoice_void pk_sale_invoice_void; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice_void
+    ADD CONSTRAINT pk_sale_invoice_void PRIMARY KEY (sale_invoice_id);
 
 
 --
@@ -2646,6 +3593,14 @@ ALTER TABLE ONLY public.supplier_return_line
 
 
 --
+-- Name: trip_expense_type pk_trip_expense_type; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.trip_expense_type
+    ADD CONSTRAINT pk_trip_expense_type PRIMARY KEY (id);
+
+
+--
 -- Name: warranty_claim pk_warranty_claim; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2661,6 +3616,20 @@ CREATE INDEX ix_app_session_app_user_id ON public.app_session USING btree (app_u
 
 
 --
+-- Name: ix_cash_session_change_cash_session_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_cash_session_change_cash_session_id ON public.cash_session_change USING btree (cash_session_id);
+
+
+--
+-- Name: ix_cash_withdrawal_change_cash_withdrawal_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_cash_withdrawal_change_cash_withdrawal_id ON public.cash_withdrawal_change USING btree (cash_withdrawal_id);
+
+
+--
 -- Name: ix_customer_name_trgm; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2668,10 +3637,38 @@ CREATE INDEX ix_customer_name_trgm ON public.customer USING gin (public.mirm_nor
 
 
 --
+-- Name: ix_product_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_product_active ON public.product USING btree (active);
+
+
+--
 -- Name: ix_product_name_trgm; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX ix_product_name_trgm ON public.product USING gin (public.mirm_norm((name)::text) public.gin_trgm_ops);
+
+
+--
+-- Name: ix_purchase_invoice_purchase_trip_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_purchase_invoice_purchase_trip_id ON public.purchase_invoice USING btree (purchase_trip_id);
+
+
+--
+-- Name: ix_purchase_trip_expense_purchase_trip_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_purchase_trip_expense_purchase_trip_id ON public.purchase_trip_expense USING btree (purchase_trip_id);
+
+
+--
+-- Name: ix_purchase_trip_trip_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_purchase_trip_trip_date ON public.purchase_trip USING btree (trip_date);
 
 
 --
@@ -2686,6 +3683,13 @@ CREATE INDEX ix_service_order_item_service_type_id ON public.service_order_item 
 --
 
 CREATE INDEX ix_service_type_name_trgm ON public.service_type USING gin (public.mirm_norm((name)::text) public.gin_trgm_ops);
+
+
+--
+-- Name: ix_supplier_payment_purchase_trip_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_supplier_payment_purchase_trip_id ON public.supplier_payment USING btree (purchase_trip_id);
 
 
 --
@@ -2721,6 +3725,20 @@ CREATE UNIQUE INDEX uq_app_user_staff_id ON public.app_user USING btree (staff_i
 --
 
 CREATE UNIQUE INDEX uq_app_user_username ON public.app_user USING btree (lower((username)::text));
+
+
+--
+-- Name: uq_cash_session_business_day; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_cash_session_business_day ON public.cash_session USING btree (business_day);
+
+
+--
+-- Name: uq_cash_session_one_open; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_cash_session_one_open ON public.cash_session USING btree ((true)) WHERE (closed_at IS NULL);
 
 
 --
@@ -2983,6 +4001,13 @@ CREATE UNIQUE INDEX uq_sale_invoice_service_order_id ON public.sale_invoice USIN
 
 
 --
+-- Name: uq_sale_invoice_void_customer_return_id_sale_invoice_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_sale_invoice_void_customer_return_id_sale_invoice_id ON public.sale_invoice_void USING btree (customer_return_id, sale_invoice_id);
+
+
+--
 -- Name: uq_service_category_name; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3053,6 +4078,13 @@ CREATE UNIQUE INDEX uq_supplier_return_line_supplier_return_id_line_no ON public
 
 
 --
+-- Name: uq_trip_expense_type_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_trip_expense_type_name ON public.trip_expense_type USING btree (lower((name)::text));
+
+
+--
 -- Name: uq_warranty_claim_new_service_order_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3064,6 +4096,48 @@ CREATE UNIQUE INDEX uq_warranty_claim_new_service_order_id ON public.warranty_cl
 --
 
 CREATE UNIQUE INDEX uq_warranty_claim_part_sale_invoice_id ON public.warranty_claim USING btree (part_sale_invoice_id);
+
+
+--
+-- Name: cash_session_change tg_cash_session_change_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tg_cash_session_change_append_only BEFORE DELETE OR UPDATE ON public.cash_session_change FOR EACH ROW EXECUTE FUNCTION public.fn_cash_session_change_append_only();
+
+
+--
+-- Name: cash_session tg_cash_session_no_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tg_cash_session_no_delete BEFORE DELETE ON public.cash_session FOR EACH ROW EXECUTE FUNCTION public.fn_cash_session_no_delete();
+
+
+--
+-- Name: cash_withdrawal_change tg_cash_withdrawal_change_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tg_cash_withdrawal_change_append_only BEFORE DELETE OR UPDATE ON public.cash_withdrawal_change FOR EACH ROW EXECUTE FUNCTION public.fn_cash_withdrawal_change_append_only();
+
+
+--
+-- Name: cash_withdrawal tg_cash_withdrawal_no_delete; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tg_cash_withdrawal_no_delete BEFORE DELETE ON public.cash_withdrawal FOR EACH ROW EXECUTE FUNCTION public.fn_cash_withdrawal_no_delete();
+
+
+--
+-- Name: customer_payment_allocation tg_customer_payment_allocation_not_voided; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tg_customer_payment_allocation_not_voided BEFORE INSERT ON public.customer_payment_allocation FOR EACH ROW EXECUTE FUNCTION public.fn_sale_invoice_not_voided();
+
+
+--
+-- Name: customer_return tg_customer_return_not_voided; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tg_customer_return_not_voided BEFORE INSERT ON public.customer_return FOR EACH ROW EXECUTE FUNCTION public.fn_sale_invoice_not_voided();
 
 
 --
@@ -3088,6 +4162,34 @@ CREATE TRIGGER tg_product_guard_stock BEFORE INSERT OR UPDATE ON public.product 
 
 
 --
+-- Name: purchase_invoice tg_purchase_invoice_trip_open; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tg_purchase_invoice_trip_open BEFORE INSERT OR UPDATE OF purchase_trip_id ON public.purchase_invoice FOR EACH ROW EXECUTE FUNCTION public.fn_purchase_trip_open_check();
+
+
+--
+-- Name: purchase_trip_expense tg_purchase_trip_expense_trip_open; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tg_purchase_trip_expense_trip_open BEFORE INSERT OR UPDATE ON public.purchase_trip_expense FOR EACH ROW EXECUTE FUNCTION public.fn_purchase_trip_open_check();
+
+
+--
+-- Name: sale_invoice_line tg_sale_invoice_line_min_price; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tg_sale_invoice_line_min_price BEFORE INSERT OR UPDATE OF quantity, unit_price, discount_amount, product_id ON public.sale_invoice_line FOR EACH ROW EXECUTE FUNCTION public.fn_sale_invoice_line_min_price();
+
+
+--
+-- Name: sale_invoice_void tg_sale_invoice_void_check; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tg_sale_invoice_void_check BEFORE INSERT OR DELETE OR UPDATE ON public.sale_invoice_void FOR EACH ROW EXECUTE FUNCTION public.fn_sale_invoice_void_check();
+
+
+--
 -- Name: service_order tg_service_order_check_responsible; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -3106,6 +4208,13 @@ CREATE CONSTRAINT TRIGGER tg_service_order_has_items AFTER INSERT ON public.serv
 --
 
 CREATE CONSTRAINT TRIGGER tg_service_order_item_keep_one AFTER DELETE OR UPDATE OF service_order_id ON public.service_order_item DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.fn_service_order_has_items();
+
+
+--
+-- Name: service_order_status_change tg_service_order_status_guard; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER tg_service_order_status_guard BEFORE INSERT ON public.service_order_status_change FOR EACH ROW EXECUTE FUNCTION public.fn_service_order_status_guard();
 
 
 --
@@ -3141,11 +4250,67 @@ ALTER TABLE ONLY public.app_user
 
 
 --
+-- Name: cash_session_change fk_cash_session_change_cash_session_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_session_change
+    ADD CONSTRAINT fk_cash_session_change_cash_session_id FOREIGN KEY (cash_session_id) REFERENCES public.cash_session(id) ON UPDATE CASCADE ON DELETE SET NULL;
+
+
+--
+-- Name: cash_session_change fk_cash_session_change_changed_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_session_change
+    ADD CONSTRAINT fk_cash_session_change_changed_by_user_id FOREIGN KEY (changed_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: cash_session fk_cash_session_closed_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_session
+    ADD CONSTRAINT fk_cash_session_closed_by_user_id FOREIGN KEY (closed_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: cash_session fk_cash_session_opened_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_session
+    ADD CONSTRAINT fk_cash_session_opened_by_user_id FOREIGN KEY (opened_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
 -- Name: cash_withdrawal fk_cash_withdrawal_cash_withdrawal_reason_id; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.cash_withdrawal
     ADD CONSTRAINT fk_cash_withdrawal_cash_withdrawal_reason_id FOREIGN KEY (cash_withdrawal_reason_id) REFERENCES public.cash_withdrawal_reason(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: cash_withdrawal_change fk_cash_withdrawal_change_cash_withdrawal_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_withdrawal_change
+    ADD CONSTRAINT fk_cash_withdrawal_change_cash_withdrawal_id FOREIGN KEY (cash_withdrawal_id) REFERENCES public.cash_withdrawal(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: cash_withdrawal_change fk_cash_withdrawal_change_changed_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_withdrawal_change
+    ADD CONSTRAINT fk_cash_withdrawal_change_changed_by_user_id FOREIGN KEY (changed_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: cash_withdrawal fk_cash_withdrawal_voided_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.cash_withdrawal
+    ADD CONSTRAINT fk_cash_withdrawal_voided_by_user_id FOREIGN KEY (voided_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
 
 
 --
@@ -3381,6 +4546,14 @@ ALTER TABLE ONLY public.purchase_invoice_line
 
 
 --
+-- Name: purchase_invoice fk_purchase_invoice_purchase_trip_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_invoice
+    ADD CONSTRAINT fk_purchase_invoice_purchase_trip_id FOREIGN KEY (purchase_trip_id) REFERENCES public.purchase_trip(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
 -- Name: purchase_invoice fk_purchase_invoice_received_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3394,6 +4567,46 @@ ALTER TABLE ONLY public.purchase_invoice
 
 ALTER TABLE ONLY public.purchase_invoice
     ADD CONSTRAINT fk_purchase_invoice_supplier_id FOREIGN KEY (supplier_id) REFERENCES public.supplier(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: purchase_trip fk_purchase_trip_closed_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_trip
+    ADD CONSTRAINT fk_purchase_trip_closed_by_user_id FOREIGN KEY (closed_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: purchase_trip fk_purchase_trip_created_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_trip
+    ADD CONSTRAINT fk_purchase_trip_created_by_user_id FOREIGN KEY (created_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: purchase_trip_expense fk_purchase_trip_expense_created_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_trip_expense
+    ADD CONSTRAINT fk_purchase_trip_expense_created_by_user_id FOREIGN KEY (created_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: purchase_trip_expense fk_purchase_trip_expense_purchase_trip_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_trip_expense
+    ADD CONSTRAINT fk_purchase_trip_expense_purchase_trip_id FOREIGN KEY (purchase_trip_id) REFERENCES public.purchase_trip(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: purchase_trip_expense fk_purchase_trip_expense_trip_expense_type_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.purchase_trip_expense
+    ADD CONSTRAINT fk_purchase_trip_expense_trip_expense_type_id FOREIGN KEY (trip_expense_type_id) REFERENCES public.trip_expense_type(id) ON UPDATE CASCADE ON DELETE RESTRICT;
 
 
 --
@@ -3498,6 +4711,30 @@ ALTER TABLE ONLY public.sale_invoice_line
 
 ALTER TABLE ONLY public.sale_invoice
     ADD CONSTRAINT fk_sale_invoice_service_order_id FOREIGN KEY (service_order_id) REFERENCES public.service_order(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: sale_invoice_void fk_sale_invoice_void_customer_return; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice_void
+    ADD CONSTRAINT fk_sale_invoice_void_customer_return FOREIGN KEY (customer_return_id, sale_invoice_id) REFERENCES public.customer_return(id, sale_invoice_id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: sale_invoice_void fk_sale_invoice_void_sale_invoice_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice_void
+    ADD CONSTRAINT fk_sale_invoice_void_sale_invoice_id FOREIGN KEY (sale_invoice_id) REFERENCES public.sale_invoice(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: sale_invoice_void fk_sale_invoice_void_voided_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sale_invoice_void
+    ADD CONSTRAINT fk_sale_invoice_void_voided_by_user_id FOREIGN KEY (voided_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
 
 
 --
@@ -3610,6 +4847,22 @@ ALTER TABLE ONLY public.staff_payout
 
 ALTER TABLE ONLY public.supplier_payment
     ADD CONSTRAINT fk_supplier_payment_purchase_invoice_id_supplier_id FOREIGN KEY (purchase_invoice_id, supplier_id) REFERENCES public.purchase_invoice(id, supplier_id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: supplier_payment fk_supplier_payment_purchase_trip_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_payment
+    ADD CONSTRAINT fk_supplier_payment_purchase_trip_id FOREIGN KEY (purchase_trip_id) REFERENCES public.purchase_trip(id) ON UPDATE CASCADE ON DELETE RESTRICT;
+
+
+--
+-- Name: supplier_payment fk_supplier_payment_registered_by_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_payment
+    ADD CONSTRAINT fk_supplier_payment_registered_by_user_id FOREIGN KEY (registered_by_user_id) REFERENCES public.app_user(id) ON UPDATE CASCADE ON DELETE RESTRICT;
 
 
 --

@@ -60,6 +60,28 @@ export const SUPPLIER_RETURN_RESOLUTIONS = ["REPOSICION", "DINERO", "DESCUENTO"]
 export const MOVEMENT_TYPES_IN = ["COMPRA", "DEVOLUCION_CLIENTE", "INVENTARIO_INICIAL", "AJUSTE_ENTRADA"] as const;
 export const MOVEMENT_TYPES_OUT = ["VENTA", "USO_SERVICIO", "DEVOLUCION_PROVEEDOR", "GARANTIA", "AJUSTE_SALIDA"] as const;
 export const MOVEMENT_TYPES = [...MOVEMENT_TYPES_IN, ...MOVEMENT_TYPES_OUT] as const;
+/** ck_supplier_payment_source (migration 9f, DEC-058): where the money to pay a supplier came from. */
+export const SUPPLIER_PAYMENT_SOURCES = ["CAJA", "FUERA_DE_CAJA", "VIAJE"] as const;
+/** ck_purchase_trip_status (migration 9f, DEC-059). */
+export const TRIP_STATUSES = ["ABIERTO", "CERRADO"] as const;
+/**
+ * Kinds of v_money_movement (migration 9f, DEC-058), in the order the arqueo
+ * shows them. ENTRADA = money comes in; SALIDA = money goes out.
+ */
+export const MONEY_IN_KINDS = ["COBRO_VENTA", "COBRO_TALLER", "ABONO_CLIENTE", "COBRO_SIN_REPARTIR", "VUELTO_VIAJE"] as const;
+export const MONEY_OUT_KINDS = [
+  "RETIRO",
+  "PAGO_PROVEEDOR",
+  "DINERO_VIAJE",
+  "GASTO_VIAJE",
+  "ADELANTO_MECANICO",
+  "PAGO_MECANICO",
+  "REEMBOLSO_DEVOLUCION",
+  "REEMBOLSO_ANULACION",
+  "REEMBOLSO_GARANTIA",
+] as const;
+export const MONEY_KINDS = [...MONEY_IN_KINDS, ...MONEY_OUT_KINDS] as const;
+export type MoneyKind = (typeof MONEY_KINDS)[number];
 
 export type PaymentTerms = (typeof PAYMENT_TERMS)[number];
 export type StaffKind = (typeof STAFF_KINDS)[number];
@@ -103,6 +125,29 @@ export const LABELS = {
     AJUSTE_SALIDA: "Ajuste (salida)",
   },
   faultDecision: { PENDIENTE: "Pendiente", ACEPTADA: "Aceptada", RECHAZADA: "Rechazada" },
+  /** What each line of the arqueo / Comprobantes is (v_money_movement). */
+  moneyKind: {
+    COBRO_VENTA: "Ventas de mostrador",
+    COBRO_TALLER: "Cobros del taller",
+    ABONO_CLIENTE: "Abonos de clientes",
+    COBRO_SIN_REPARTIR: "Cobros sin repartir",
+    VUELTO_VIAJE: "Vuelto de viajes de compra",
+    RETIRO: "Retiros de caja",
+    PAGO_PROVEEDOR: "Pagos a proveedores",
+    DINERO_VIAJE: "Dinero llevado a viajes de compra",
+    GASTO_VIAJE: "Gastos de viajes de compra",
+    ADELANTO_MECANICO: "Adelantos a mecánicos",
+    PAGO_MECANICO: "Pago de periodo a mecánicos",
+    REEMBOLSO_DEVOLUCION: "Reembolsos por devoluciones",
+    REEMBOLSO_ANULACION: "Reembolsos por facturas anuladas",
+    REEMBOLSO_GARANTIA: "Reembolsos de garantía",
+  },
+  supplierPaymentSource: {
+    CAJA: "Efectivo de la caja",
+    FUERA_DE_CAJA: "Fuera de la caja (dueño, transferencia)",
+    VIAJE: "Dinero del viaje de compras",
+  },
+  tripStatus: { ABIERTO: "En curso", CERRADO: "Cerrado" },
   warrantyOutcome: {
     CUBIERTO: "Cubierto",
     FALLA_DISTINTA: "Falla distinta",

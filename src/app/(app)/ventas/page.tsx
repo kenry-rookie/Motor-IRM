@@ -22,7 +22,7 @@ import { ServiceCatalogPicker } from "~/app/_components/service-catalog";
 import { cleanTerms, TermsForm } from "~/app/_components/terms-form";
 import { Alert, Badge, Button, Card, cx, Dialog, EmptyState, Input, Kbd, PageTitle } from "~/app/_components/ui";
 import { errorMessage } from "~/lib/errors";
-import { docNumber } from "~/lib/business";
+import { docNo, invoiceNo } from "~/lib/business";
 import { dec, formatDay, money } from "~/lib/format";
 import { LABELS, type ServiceOrderStatus } from "~/server/domain/constants";
 import { api } from "~/trpc/react";
@@ -72,7 +72,7 @@ function Caja({ username, perms }: { username: string; perms: string[] }) {
   const t = useTabs(username);
   const searchRef = useRef<ProductPickerHandle>(null);
   const chargeRef = useRef<() => void>(() => undefined);
-  const [receipt, setReceipt] = useState<{ id: number; total: string; label: string } | null>(null);
+  const [receipt, setReceipt] = useState<{ id: number; total: string; label: string; credit: boolean } | null>(null);
   const [askPrint, setAskPrint] = useState(false);
   const [mounted, setMounted] = useState(false);
 
@@ -101,7 +101,12 @@ function Caja({ username, perms }: { username: string; perms: string[] }) {
 
   const onCharged = useCallback(
     (tab: Tab, invoiceId: number, total: string) => {
-      setReceipt({ id: invoiceId, total, label: tab.kind === "sale" ? `Venta ${tab.number}` : `Orden #${tab.orderId}` });
+      setReceipt({
+        id: invoiceId,
+        total,
+        label: tab.kind === "sale" ? `Venta ${tab.number}` : `Orden ${docNo("orden", tab.orderId)}`,
+        credit: tab.terms.paymentTerms === "CREDITO",
+      });
       setAskPrint(true);
       t.close(tab.id);
       setTimeout(() => searchRef.current?.focus(), 50);
@@ -180,17 +185,17 @@ function Caja({ username, perms }: { username: string; perms: string[] }) {
       {receipt && (
         <div className="mb-4">
           <Alert kind="ok">
-            {receipt.label} cobrada: {money(receipt.total)}.{" "}
+            {receipt.label} {receipt.credit ? "facturada al crédito" : "cobrada"}: {money(receipt.total)}.{" "}
             <Link className="font-medium underline" href={`/ventas/${receipt.id}`}>
-              Ver la factura N.º {docNumber(receipt.id)}
+              Ver la factura {invoiceNo(receipt)}
             </Link>
           </Alert>
         </div>
       )}
       <PrintPrompt
         open={askPrint && !!receipt}
-        title="Cobro registrado"
-        message={receipt ? `${receipt.label} cobrada: ${money(receipt.total)}. ¿El cliente quiere factura impresa?` : ""}
+        title={receipt?.credit ? "Factura al crédito registrada" : "Cobro registrado"}
+        message={receipt ? `${receipt.label} ${receipt.credit ? "facturada al crédito" : "cobrada"}: ${money(receipt.total)}. ¿El cliente quiere factura impresa?` : ""}
         printLabel="Imprimir factura"
         href={receipt ? `/imprimir/factura/${receipt.id}?imprimir=1` : ""}
         onClose={() => {
@@ -261,7 +266,7 @@ function PendingOrders({ onOpen }: { onOpen: (orderId: number, title: string, cu
                 >
                   <span className="min-w-0">
                     <span className="block truncate text-sm font-medium">
-                      #{o.id} · {o.motorcycle.customer.name}
+                      {docNo("orden", o.id)} · {o.motorcycle.customer.name}
                     </span>
                     <span className="block truncate text-xs text-neutral-500">
                       {o.motorcycle.model.brand.name} {o.motorcycle.model.name} · {o.mechanic?.name ?? "sin mecánico"}
@@ -506,17 +511,20 @@ function ChargePanel({
   cta: string;
   confirm: ConfirmProps;
 }) {
+  // Al crédito no se cobra: se FACTURA (Kenry, 23-nov). El botón dice lo que pasa.
+  const credit = confirm.terms.paymentTerms === "CREDITO";
+  const label = credit ? cta.replace(/^Cobrar/, "Facturar") : cta;
   return (
-    <Card title={title} className="lg:sticky lg:top-20">
+    <Card title={credit && title === "Cobro" ? "Facturar al crédito" : title} className="lg:sticky lg:top-20">
       <div className="space-y-4">
         {children}
         <div className="flex items-end justify-between border-t border-dashed border-neutral-700 pt-4">
-          <span className="text-sm text-neutral-400">Total a cobrar</span>
+          <span className="text-sm text-neutral-400">{credit ? "Total a facturar" : "Total a cobrar"}</span>
           <span className="font-display text-4xl font-semibold tracking-tight text-neutral-50 tabular-nums">{money(total)}</span>
         </div>
         <Alert>{error && !confirm.open ? errorMessage(error) : null}</Alert>
         <Button className="h-12 w-full text-base" disabled={disabled || pending} onClick={onCharge}>
-          {cta} <Kbd>F9</Kbd>
+          {label} <Kbd>F9</Kbd>
         </Button>
       </div>
       <ConfirmCharge {...confirm} total={total} pending={pending} error={error} />
@@ -555,7 +563,7 @@ function ConfirmCharge({
       ? `Crédito${terms.dueDate ? ` · vence ${formatDay(terms.dueDate)}` : ""}`
       : `Contado${method ? ` · ${method}` : ""}${terms.payment?.currency === "USD" ? " · en dólares" : ""}`;
   return (
-    <Dialog open={open} onClose={() => !pending && onCancel()} title="Realizar cobro">
+    <Dialog open={open} onClose={() => !pending && onCancel()} title={terms.paymentTerms === "CREDITO" ? "Facturar al crédito" : "Realizar cobro"}>
       <dl className="space-y-2 text-base">
         <div className="flex justify-between gap-4">
           <dt className="text-neutral-400">Cliente</dt>
@@ -584,7 +592,7 @@ function ConfirmCharge({
           Cancelar
         </Button>
         <Button autoFocus className="h-11 px-6" disabled={pending} onClick={onConfirm}>
-          {pending ? "Cobrando…" : "Cobrar"}
+          {terms.paymentTerms === "CREDITO" ? (pending ? "Facturando…" : "Facturar") : pending ? "Cobrando…" : "Cobrar"}
         </Button>
       </div>
     </Dialog>

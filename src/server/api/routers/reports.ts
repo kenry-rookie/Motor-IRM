@@ -115,8 +115,11 @@ export const reportsRouter = createTRPCRouter({
             ((SELECT coalesce(sum(CASE WHEN currency = 'USD' THEN round(amount * exchange_rate, 2) ELSE amount END), 0) FROM customer_payment
               WHERE (paid_at AT TIME ZONE 'America/Managua')::date BETWEEN ${f}::date AND ${t}::date)
              - (SELECT coalesce(sum(refund_amount), 0) FROM sale_invoice_void
-              WHERE (voided_at AT TIME ZONE 'America/Managua')::date BETWEEN ${f}::date AND ${t}::date))::text AS received,
-            (SELECT coalesce(sum(amount), 0) FROM cash_withdrawal WHERE withdrawn_on BETWEEN ${f}::date AND ${t}::date)::text AS withdrawals,
+              WHERE (voided_at AT TIME ZONE 'America/Managua')::date BETWEEN ${f}::date AND ${t}::date)
+             - (SELECT coalesce(sum(refund_amount), 0) FROM customer_return
+              WHERE (returned_at AT TIME ZONE 'America/Managua')::date BETWEEN ${f}::date AND ${t}::date))::text AS received,
+            (SELECT coalesce(sum(amount), 0) FROM cash_withdrawal
+              WHERE voided_at IS NULL AND withdrawn_on BETWEEN ${f}::date AND ${t}::date)::text AS withdrawals,
             (SELECT count(*) FROM service_order_status_change WHERE status = 'ENTREGADA'
               AND (changed_at AT TIME ZONE 'America/Managua')::date BETWEEN ${f}::date AND ${t}::date)::int AS delivered`;
         return r!;
@@ -129,17 +132,15 @@ export const reportsRouter = createTRPCRouter({
          WHERE (cp.paid_at AT TIME ZONE 'America/Managua')::date BETWEEN ${from}::date AND ${to}::date
          GROUP BY pm.name
          ORDER BY 2 DESC`;
-      // Money in and out of the drawer in the period; for "today" the net is what should be in the cash box.
-      const [cashOut] = await ctx.db.$queryRaw<{ withdrawals: string; advances: string; net: string }[]>`
-        WITH m AS (
-          SELECT (SELECT coalesce(sum(CASE WHEN currency = 'USD' THEN round(amount * exchange_rate, 2) ELSE amount END), 0)
-                    FROM customer_payment WHERE (paid_at AT TIME ZONE 'America/Managua')::date BETWEEN ${from}::date AND ${to}::date) AS received,
-                 (SELECT coalesce(sum(amount), 0) FROM cash_withdrawal WHERE withdrawn_on BETWEEN ${from}::date AND ${to}::date) AS withdrawals,
-                 (SELECT coalesce(sum(amount), 0) FROM staff_advance WHERE given_on BETWEEN ${from}::date AND ${to}::date) AS advances,
-                 (SELECT coalesce(sum(refund_amount), 0) FROM sale_invoice_void
-                   WHERE (voided_at AT TIME ZONE 'America/Managua')::date BETWEEN ${from}::date AND ${to}::date) AS refunds
-        )
-        SELECT withdrawals::text, advances::text, (received - withdrawals - advances - refunds)::text AS net FROM m`;
+      // Money in and out of the DRAWER in the period, from the same view as the
+      // arqueo (v_money_movement, DEC-058): only cash of the drawer counts.
+      const [cashOut] = await ctx.db.$queryRaw<{ withdrawals: string; advances: string; other_out: string; net: string }[]>`
+        SELECT coalesce(sum(amount_nio) FILTER (WHERE kind = 'RETIRO'), 0)::text AS withdrawals,
+               coalesce(sum(amount_nio) FILTER (WHERE kind IN ('ADELANTO_MECANICO', 'PAGO_MECANICO')), 0)::text AS advances,
+               coalesce(sum(amount_nio) FILTER (WHERE direction = 'SALIDA' AND kind NOT IN ('RETIRO', 'ADELANTO_MECANICO', 'PAGO_MECANICO')), 0)::text AS other_out,
+               coalesce(sum(CASE WHEN direction = 'ENTRADA' THEN amount_nio ELSE -amount_nio END), 0)::text AS net
+          FROM v_money_movement
+         WHERE in_drawer AND business_day BETWEEN ${from}::date AND ${to}::date`;
       const [orders] = await ctx.db.$queryRaw<{ open: number }[]>`
         SELECT count(*)::int AS open FROM v_service_order_status WHERE status NOT IN ('ENTREGADA', 'CANCELADA')`;
       const lowStock = await ctx.db.product.findMany({
@@ -172,6 +173,7 @@ export const reportsRouter = createTRPCRouter({
         receivedByMethod: byMethod,
         withdrawals: cashOut!.withdrawals,
         advances: cashOut!.advances,
+        otherOut: cashOut!.other_out,
         cashNet: cashOut!.net,
         openOrders: Number(orders!.open),
         lowStock,

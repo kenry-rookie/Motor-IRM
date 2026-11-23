@@ -21,8 +21,8 @@ export function ProductForm({
   initialName?: string;
 }) {
   const utils = api.useUtils();
-  const categories = api.admin.catalog.useQuery({ kind: "productCategory" });
-  const brands = api.admin.catalog.useQuery({ kind: "productBrand" });
+  const categories = api.admin.catalog.useQuery({ kind: "productCategory", onlyActive: true });
+  const brands = api.admin.catalog.useQuery({ kind: "productBrand", onlyActive: true });
   const [f, setF] = useState({
     name: initialName,
     barcode: "",

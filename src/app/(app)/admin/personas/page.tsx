@@ -23,13 +23,26 @@ type Person = RouterOutputs["staff"]["list"][number];
 function People({ canEdit }: { canEdit: boolean }) {
   const staff = api.staff.list.useQuery({ includeInactive: true });
   const [editing, setEditing] = useState<Person | "new" | null>(null);
+  const [showInactive, setShowInactive] = useState(false);
+  const rows = staff.data?.filter((p) => p.active !== showInactive);
+  const inactive = staff.data?.filter((p) => !p.active).length ?? 0;
   return (
-    <Card title="Personas" actions={canEdit && <Button onClick={() => setEditing("new")}>+ Agregar persona</Button>}>
+    <Card
+      title="Personas"
+      actions={
+        <div className="flex gap-2">
+          <Button variant={showInactive ? "primary" : "secondary"} onClick={() => setShowInactive((v) => !v)}>
+            {showInactive ? "← Volver a los activos" : `Ver desactivados (${inactive})`}
+          </Button>
+          {canEdit && <Button onClick={() => setEditing("new")}>+ Agregar persona</Button>}
+        </div>
+      }
+    >
       <p className="mb-3 text-sm text-neutral-400">
         El responsable de una moto puede ser un mecánico o un dueño. Un dueño nunca cobra comisión.
       </p>
-      <Table head={["Nombre", "Tipo", "Repara motos", "Comisión", "Estado", ""]} empty={staff.data?.length === 0}>
-        {staff.data?.map((p) => (
+      <Table head={["Nombre", "Tipo", "Repara motos", "Comisión", "Estado", ""]} empty={rows?.length === 0}>
+        {rows?.map((p) => (
           <tr key={p.id}>
             <td>
               {p.name}
