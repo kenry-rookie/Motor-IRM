@@ -6,7 +6,9 @@ import { customerInvoiceBalances, openingBalances } from "~/server/domain/balanc
 import { estimatedInterest } from "~/server/domain/billing";
 import { dayToDate, zDay, zId, zOptText, pageFields, zPhone, zPositiveMoney, zRate, zText } from "~/server/domain/constants";
 import { sum } from "~/server/domain/money";
-import { Sql } from "~/server/domain/sql";
+import { fail } from "~/server/api/errors";
+import { motorcyclesInWorkshop } from "~/server/domain/search";
+import { intList, Sql } from "~/server/domain/sql";
 
 /** Customers, motorcycles, opening balances and the account statement (API-014). */
 const view = permissionProcedure("clientes.ver");
@@ -41,14 +43,14 @@ export const customerRouter = createTRPCRouter({
   get: view.input(z.object({ id: zId })).query(({ ctx, input }) =>
     ctx.db.customer.findUniqueOrThrow({
       where: { id: input.id },
-      include: { motorcycles: { include: { model: { include: { brand: true } } } } },
+      include: { motorcycles: { where: { releasedAt: null }, include: { model: { include: { brand: true } } } } },
     }),
   ),
 
   /** Motorcycle by plate (API-021). */
   motorcycleByPlate: view.input(z.object({ plate: zText(15) })).query(({ ctx, input }) =>
     ctx.db.motorcycle.findFirst({
-      where: { plate: { equals: input.plate, mode: "insensitive" } },
+      where: { plate: { equals: input.plate, mode: "insensitive" }, releasedAt: null },
       include: { customer: true, model: { include: { brand: true } } },
     }),
   ),
@@ -82,10 +84,46 @@ export const customerRouter = createTRPCRouter({
 
   updateMotorcycle: manage
     .input(zMotorcycle.extend({ id: zId, customerId: zId }))
-    .mutation(({ ctx, input }) => {
+    .mutation(async ({ ctx, input }) => {
       const { id, ...data } = input;
+      const moto = await ctx.db.motorcycle.findUniqueOrThrow({ where: { id } });
+      if (moto.releasedAt) throw fail("Esta moto ya no es del cliente; vuelva a ponerla como suya antes de editarla.");
+      if (moto.customerId !== input.customerId) throw fail("La moto no es de este cliente.");
       return ctx.db.motorcycle.update({ where: { id }, data: { ...data, plate: data.plate ?? null } });
     }),
+
+  /**
+   * DEC-064 — «Quitar moto» (Kenry, 23-nov: «si la vende y compra otra, la
+   * primera queda ligada a ese cliente de por vida»):
+   *  - never in the workshop → it is deleted (it was registered by mistake or
+   *    never used);
+   *  - with workshop history → it is RELEASED: it stops showing in his lists and
+   *    in reception, its orders and bills stay with him (that work was his), and
+   *    the plate is free to register the motorcycle with its new owner.
+   * Not while it is in the workshop.
+   */
+  removeMotorcycle: manage
+    .input(z.object({ id: zId, note: zOptText(200) }))
+    .mutation(({ ctx, input }) =>
+      ctx.db.$transaction(async (tx) => {
+        await tx.$queryRawUnsafe(`SELECT id FROM motorcycle WHERE id = ${intList([input.id])} FOR UPDATE`);
+        const moto = await tx.motorcycle.findUniqueOrThrow({ where: { id: input.id }, include: { _count: { select: { serviceOrders: true } } } });
+        if (moto.releasedAt) throw fail("Esa moto ya se había quitado del cliente.");
+        const open = await motorcyclesInWorkshop(tx, [moto.id]);
+        if (open.size) throw fail("La moto está en el taller: entréguela o cancele la orden antes de quitarla.");
+        if (moto._count.serviceOrders === 0) {
+          await tx.motorcycle.delete({ where: { id: moto.id } });
+          return { deleted: true };
+        }
+        await tx.motorcycle.update({ where: { id: moto.id }, data: { releasedAt: new Date(), releasedNote: input.note ?? null } });
+        return { deleted: false };
+      }),
+    ),
+
+  /** Undo «Quitar moto» when it was a mistake (fails if the plate is already used by its new owner). */
+  restoreMotorcycle: manage.input(z.object({ id: zId })).mutation(({ ctx, input }) =>
+    ctx.db.motorcycle.update({ where: { id: input.id }, data: { releasedAt: null, releasedNote: null } }),
+  ),
 
   /** Debt the customer had before the system existed (paper/phone notes). */
   addOpeningBalance: manage
@@ -218,10 +256,11 @@ export const customerRouter = createTRPCRouter({
         invoiceIds: p.allocations.flatMap((a) => (a.saleInvoiceId ? [a.saleInvoiceId] : [])),
         toOpeningBalance: p.allocations.some((a) => a.customerOpeningBalanceId != null),
       }));
+    // Released ones too (DEC-064): the page shows them apart as «motos que ya no son suyas».
     const motorcycles = await ctx.db.motorcycle.findMany({
       where: { customerId: input.customerId },
       include: { model: { include: { brand: true } } },
-      orderBy: { id: "asc" },
+      orderBy: [{ releasedAt: { sort: "desc", nulls: "first" } }, { id: "asc" }],
     });
     const q2 = new Sql();
     const orders = await q2.run<

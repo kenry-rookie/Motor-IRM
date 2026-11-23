@@ -509,6 +509,18 @@ export const salesRouter = createTRPCRouter({
         if (allocated.gt(paymentNio)) {
           throw fail(`Se reparten C$ ${allocated.toFixed(2)} pero el pago equivale a C$ ${paymentNio.toFixed(2)}.`);
         }
+        // DEC-065 (Kenry, 23-nov: «cobró 1000 dólares por una deuda de 1430 córdobas»):
+        // the payment is only what pays debts. What the customer hands over above
+        // that is CHANGE (vuelto) and never enters the system as money received.
+        // Tolerance: one cent of the payment's currency (a dollar amount is rounded UP
+        // to the cent, like a sale) plus the córdoba rounding of the conversion.
+        const tolerance = input.currency === "USD" ? D(input.exchangeRate!).times("0.01").plus("0.01") : D(0);
+        if (paymentNio.minus(allocated).gt(tolerance)) {
+          throw fail(
+            `El abono equivale a C$ ${paymentNio.toFixed(2)} pero solo se aplican C$ ${allocated.toFixed(2)} a las deudas. ` +
+              "Registre solo lo que se aplica; lo demás es vuelto para el cliente.",
+          );
+        }
         const invoiceIds = input.allocations.flatMap((a) => (a.saleInvoiceId ? [a.saleInvoiceId] : []));
         const openingIds = input.allocations.flatMap((a) => (a.customerOpeningBalanceId ? [a.customerOpeningBalanceId] : []));
         if (new Set(invoiceIds).size !== invoiceIds.length || new Set(openingIds).size !== openingIds.length) {

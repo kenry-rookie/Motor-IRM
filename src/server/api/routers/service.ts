@@ -10,6 +10,7 @@ import {
   FAULT_DECISIONS,
   FINAL_SERVICE_STATUSES,
   FINISHED_SERVICE_STATUSES,
+  LABELS,
   PART_PAID_BY,
   SERVICE_ORDER_STATUSES,
   type ServiceOrderStatus,
@@ -26,6 +27,8 @@ import {
 } from "~/server/domain/constants";
 import { recordMovement } from "~/server/domain/inventory";
 import { D } from "~/server/domain/money";
+import { intList, Sql } from "~/server/domain/sql";
+import { docNo } from "~/lib/business";
 
 type Tx = Prisma.TransactionClient;
 
@@ -88,6 +91,33 @@ async function responsibleRate(tx: Tx, staffId: number) {
   return { staff, appliedCommissionRate };
 }
 
+/**
+ * DEC-063 — A motorcycle that is already in the workshop (an order not
+ * ENTREGADA/CANCELADA) is not received again. The database checks it too
+ * (tg_service_order_one_open_per_motorcycle); this gives the order number first.
+ */
+async function assertNotInWorkshop(tx: Tx, motorcycleId: number) {
+  const moto = await tx.motorcycle.findUniqueOrThrow({ where: { id: motorcycleId }, include: { model: { include: { brand: true } } } });
+  if (moto.releasedAt) throw fail("Esa moto ya no es de ese cliente (la vendió). Regístrela con su dueño nuevo.");
+  const q = new Sql();
+  const [open] = await q.run<{ service_order_id: number; status: ServiceOrderStatus }[]>(
+    tx,
+    `SELECT so.id AS service_order_id, coalesce(st.status, 'RECIBIDA') AS status
+       FROM service_order so
+       LEFT JOIN v_service_order_status st ON st.service_order_id = so.id
+      WHERE so.motorcycle_id = ${q.p(motorcycleId, "int")}
+        AND coalesce(st.status, 'RECIBIDA') NOT IN ('ENTREGADA', 'CANCELADA')
+      LIMIT 1`,
+  );
+  if (open) {
+    const name = `${moto.model.brand.name} ${moto.model.name}${moto.plate ? ` placa ${moto.plate}` : ""}`;
+    throw fail(
+      `La ${name} ya está en el taller (orden ${docNo("orden", open.service_order_id)}, ${LABELS.serviceStatus[open.status].toLowerCase()}). No se recibe dos veces: búsquela en el tablero.`,
+      "CONFLICT",
+    );
+  }
+}
+
 const itemsInclude = {
   orderBy: { id: "asc" as const },
   include: { serviceType: { include: { category: true } } },
@@ -138,6 +168,26 @@ export const serviceRouter = createTRPCRouter({
         .filter((o) => (input.status ? o.status === input.status : input.includeClosed || !FINAL_SERVICE_STATUSES.includes(o.status)));
       return { items: rows.slice(0, limit), nextCursor: rows.length > limit ? rows[limit - 1]!.id : null };
     }),
+
+  /**
+   * How many motorcycles each responsible has in the workshop now (orders not
+   * ENTREGADA/CANCELADA), so the work is shared out instead of piling on one
+   * mechanic (Kenry, 23-nov). Only counts; the board has the detail.
+   */
+  workload: view.query(async ({ ctx }) => {
+    const rows = await new Sql().run<{ staff_id: number; open: number; ready: number }[]>(
+      ctx.db,
+      `SELECT so.mechanic_staff_id AS staff_id,
+              count(*)::int AS open,
+              count(*) FILTER (WHERE st.status IN ('TERMINADA', 'EN_PRUEBA'))::int AS ready
+         FROM service_order so
+         LEFT JOIN v_service_order_status st ON st.service_order_id = so.id
+        WHERE so.mechanic_staff_id IS NOT NULL
+          AND coalesce(st.status, 'RECIBIDA') NOT IN ('ENTREGADA', 'CANCELADA')
+        GROUP BY so.mechanic_staff_id`,
+    );
+    return rows.map((r) => ({ staffId: Number(r.staff_id), open: Number(r.open), ready: Number(r.ready) }));
+  }),
 
   get: view.input(z.object({ id: zId })).query(async ({ ctx, input }) => {
     const order = await ctx.db.serviceOrder.findUniqueOrThrow({ where: { id: input.id }, include: orderInclude });
@@ -209,6 +259,9 @@ export const serviceRouter = createTRPCRouter({
             })
           ).id;
         }
+        // Locks the motorcycle row so two receptions of the same moto at once wait in line.
+        await tx.$queryRawUnsafe(`SELECT id FROM motorcycle WHERE id = ${intList([motorcycleId!])} FOR UPDATE`);
+        await assertNotInWorkshop(tx, motorcycleId!);
         const appliedCommissionRate = input.mechanicStaffId
           ? (await responsibleRate(tx, input.mechanicStaffId)).appliedCommissionRate
           : null;
@@ -557,6 +610,7 @@ export const serviceRouter = createTRPCRouter({
         const original = await tx.serviceOrder.findUniqueOrThrow({ where: { id: input.originalServiceOrderId } });
         let newServiceOrderId: number | null = null;
         if (input.outcome === "FALLA_DISTINTA" && input.newOrderRequestedWork) {
+          await assertNotInWorkshop(tx, original.motorcycleId);
           const n = await tx.serviceOrder.create({
             data: {
               motorcycleId: original.motorcycleId,

@@ -3,6 +3,7 @@
 import { useParams } from "next/navigation";
 import { useState } from "react";
 
+import { confirmDialog } from "~/app/_components/confirm";
 import { PrintLink } from "~/app/_components/print-link";
 import { Alert, BackBar, Badge, Button, Card, Dialog, Field, Input, PageTitle, Select, Table, Textarea } from "~/app/_components/ui";
 import { docNo, invoiceNo } from "~/lib/business";
@@ -241,9 +242,17 @@ function ReturnForm({
       <Button
         className="w-full"
         disabled={!reasonId || chosen.length === 0 || ret.isPending || tooMuch}
-        onClick={() =>
-          ret.mutate({ saleInvoiceId: invoiceId, returnReasonId: reasonId, lines: chosen, refundAmount: owed.gt(0) ? dec(refundValue).toFixed(2) : "0" })
-        }
+        onClick={async () => {
+          const units = chosen.reduce((a, l) => a + l.quantity, 0);
+          const cash = owed.gt(0) && dec(refundValue).gt(0) ? `\nSe le entregan ${money(refundValue)} de la caja.` : "";
+          if (
+            await confirmDialog(`Regresan ${units} unidad${units === 1 ? "" : "es"} al inventario por ${money(value)}.${cash}`, {
+              title: "¿Registrar la devolución?",
+              confirmLabel: "Sí, registrar",
+            })
+          )
+            ret.mutate({ saleInvoiceId: invoiceId, returnReasonId: reasonId, lines: chosen, refundAmount: owed.gt(0) ? dec(refundValue).toFixed(2) : "0" });
+        }}
       >
         {owed.gt(0) && dec(refundValue).gt(0) ? `Registrar devolución y entregar ${money(refundValue)}` : "Registrar devolución"}
       </Button>
@@ -306,7 +315,16 @@ function VoidForm({
           variant="danger"
           className="h-11"
           disabled={reason.trim().length < 5 || voidIt.isPending}
-          onClick={() => voidIt.mutate({ saleInvoiceId: invoiceId, reason })}
+          onClick={async () => {
+            if (
+              await confirmDialog("La anulación no se puede deshacer: la factura queda anulada para siempre.", {
+                title: "¿Anular la factura?",
+                confirmLabel: "Sí, anular",
+                danger: true,
+              })
+            )
+              voidIt.mutate({ saleInvoiceId: invoiceId, reason });
+          }}
         >
           {voidIt.isPending ? "Anulando…" : "Anular factura"}
         </Button>

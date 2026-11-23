@@ -123,7 +123,16 @@ function CashWithdrawal() {
         <Button
           className="w-full"
           disabled={!f.reasonId || !f.amount || w.isPending}
-          onClick={() => w.mutate({ cashWithdrawalReasonId: f.reasonId, amount: f.amount, description: f.description || undefined })}
+          onClick={async () => {
+            const reason = reasons.data?.find((r) => r.id === f.reasonId)?.name ?? "";
+            if (
+              await confirmDialog(`Sacar ${money(f.amount)} de la caja por «${reason}»${f.description ? ` (${f.description})` : ""}.\nEl arqueo de hoy lo va a restar.`, {
+                title: "¿Registrar el retiro?",
+                confirmLabel: "Sí, registrar",
+              })
+            )
+              w.mutate({ cashWithdrawalReasonId: f.reasonId, amount: f.amount, description: f.description || undefined });
+          }}
         >
           Registrar retiro
         </Button>

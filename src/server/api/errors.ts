@@ -65,6 +65,8 @@ const MESSAGES: Record<string, string> = {
   tg_service_order_responsible_can_repair: "Esa persona no está activa o no repara motos; elija otro responsable.",
   tg_service_order_owner_no_commission: "Un dueño no cobra comisión: la orden queda sin porcentaje.",
   tg_service_order_status_closed: "La orden ya está entregada o cancelada: no cambia de estado.",
+  tg_service_order_one_open_per_motorcycle: "Esa moto ya está en el taller: búsquela en el tablero en vez de recibirla otra vez.",
+  tg_service_order_motorcycle_released: "Esa moto ya no es de ese cliente (la vendió). Regístrela con su dueño nuevo.",
   tg_service_order_cancel_finished: "Una orden terminada no se puede cancelar: el trabajo ya se hizo. Cóbrela en caja.",
   ck_staff_owner_no_commission: "Un dueño no cobra comisión; deje el porcentaje vacío.",
   ck_staff_kind: "El tipo de persona debe ser Dueño, Mecánico o Encargado.",

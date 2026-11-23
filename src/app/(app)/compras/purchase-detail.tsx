@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { SupplierPayment } from "~/app/(app)/compras/supplier-form";
+import { confirmDialog } from "~/app/_components/confirm";
 import { Alert, Badge, Button, Card, Dialog, Field, Input, Select, Stat, Table } from "~/app/_components/ui";
 import { docNo } from "~/lib/business";
 import { errorMessage } from "~/lib/errors";
@@ -258,7 +259,17 @@ function SupplierReturnForm({
       <Button
         className="w-full"
         disabled={!reasonId || !resolution || chosen.length === 0 || save.isPending}
-        onClick={() => resolution && save.mutate({ purchaseInvoiceId, returnReasonId: reasonId, resolution, lines: chosen })}
+        onClick={async () => {
+          if (!resolution) return;
+          const units = chosen.reduce((a, l) => a + l.quantity, 0);
+          if (
+            await confirmDialog(`Salen ${units} unidad${units === 1 ? "" : "es"} del inventario para devolverlas al proveedor.`, {
+              title: "¿Registrar la devolución?",
+              confirmLabel: "Sí, registrar",
+            })
+          )
+            save.mutate({ purchaseInvoiceId, returnReasonId: reasonId, resolution, lines: chosen });
+        }}
       >
         Registrar devolución al proveedor
       </Button>

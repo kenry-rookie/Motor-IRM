@@ -252,6 +252,7 @@ function CatalogBody({
           ← Volver al catálogo
         </Button>
         <ProductForm
+          onCancel={() => setCreating(false)}
           withInitialStock={!allowCreate}
           initialName={text}
           onDone={async (p) => {

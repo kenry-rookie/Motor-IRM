@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 
-import { Alert, Button, cx, Field, Input, PhoneInput, Select } from "~/app/_components/ui";
+import { confirmDialog } from "~/app/_components/confirm";
+import { Alert, Button, cx, Field, FormActions, FormSection, Input, PhoneInput, Select } from "~/app/_components/ui";
 import { docNo } from "~/lib/business";
 import { errorMessage, fieldErrors } from "~/lib/errors";
 import { formatDay, money } from "~/lib/format";
@@ -12,9 +13,11 @@ import { api } from "~/trpc/react";
 export function SupplierForm({
   supplier,
   onDone,
+  onCancel,
 }: {
   supplier?: { id: number; name: string; phone: string | null; contactPerson: string | null; givesWarranty: boolean | null };
   onDone: (s?: { id: number; name: string }) => void;
+  onCancel?: () => void;
 }) {
   const utils = api.useUtils();
   const [f, setF] = useState({
@@ -31,37 +34,47 @@ export function SupplierForm({
   });
   const errs = fieldErrors(save.error);
   return (
-    <div className="space-y-3">
-      <Field label="Nombre" error={errs.name}>
-        <Input autoFocus value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
-      </Field>
-      <Field label="Teléfono (opcional)" error={errs.phone} hint="8 dígitos; extranjero con +">
-        <PhoneInput value={f.phone} onValue={(v) => setF({ ...f, phone: v })} />
-      </Field>
-      <Field label="Persona de contacto (opcional)">
-        <Input value={f.contactPerson} onChange={(e) => setF({ ...f, contactPerson: e.target.value })} />
-      </Field>
-      <label className="flex min-h-10 items-center gap-2 text-sm">
-        <input type="checkbox" className="h-5 w-5" checked={f.givesWarranty} onChange={(e) => setF({ ...f, givesWarranty: e.target.checked })} /> Da
-        garantía en sus productos
-      </label>
+    <form
+      className="space-y-6"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!f.name.trim() || save.isPending) return;
+        save.mutate({
+          id: supplier?.id,
+          name: f.name,
+          phone: f.phone || undefined,
+          contactPerson: f.contactPerson || undefined,
+          givesWarranty: f.givesWarranty,
+        });
+      }}
+    >
+      <FormSection title="Datos del proveedor" description="La empresa o la persona que les vende la mercadería.">
+        <Field label="Nombre" error={errs.name}>
+          <Input className="h-11" autoFocus placeholder="Ej.: Repuestos Casa Pellas" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
+        </Field>
+        <Field label="Teléfono (opcional)" error={errs.phone} hint="8 dígitos; extranjero con +">
+          <PhoneInput className="h-11" value={f.phone} onValue={(v) => setF({ ...f, phone: v })} />
+        </Field>
+        <Field label="Persona de contacto (opcional)" hint="A quién se le llama para pedir">
+          <Input className="h-11" placeholder="Ej.: Don Carlos, vendedor" value={f.contactPerson} onChange={(e) => setF({ ...f, contactPerson: e.target.value })} />
+        </Field>
+      </FormSection>
+      <FormSection title="Garantía" columns={1}>
+        <label className="flex min-h-12 cursor-pointer items-center gap-3 rounded-lg border border-neutral-700 px-4 py-3 text-base hover:bg-neutral-800/50">
+          <input type="checkbox" className="h-5 w-5" checked={f.givesWarranty} onChange={(e) => setF({ ...f, givesWarranty: e.target.checked })} />
+          <span>
+            Da garantía en sus productos
+            <span className="block text-sm text-neutral-400">Si un repuesto sale malo, se le puede devolver.</span>
+          </span>
+        </label>
+      </FormSection>
       {save.error && <Alert>{errorMessage(save.error)}</Alert>}
-      <Button
-        className="w-full"
-        disabled={!f.name.trim() || save.isPending}
-        onClick={() =>
-          save.mutate({
-            id: supplier?.id,
-            name: f.name,
-            phone: f.phone || undefined,
-            contactPerson: f.contactPerson || undefined,
-            givesWarranty: f.givesWarranty,
-          })
-        }
-      >
-        Guardar proveedor
-      </Button>
-    </div>
+      <FormActions onCancel={onCancel} note={!f.name.trim() ? "Falta el nombre" : null}>
+        <Button type="submit" className="h-11 px-6" disabled={!f.name.trim() || save.isPending}>
+          {save.isPending ? "Guardando…" : "Guardar proveedor"}
+        </Button>
+      </FormActions>
+    </form>
   );
 }
 
@@ -175,8 +188,10 @@ export function SupplierPayment({
       <Button
         className="w-full"
         disabled={!!missing || pay.isPending}
-        onClick={() =>
-          source &&
+        onClick={async () => {
+          if (!source) return;
+          const from = { CAJA: "de la caja (el arqueo lo resta)", FUERA_DE_CAJA: "fuera de la caja", VIAJE: "con el dinero del viaje" }[source];
+          if (!(await confirmDialog(`Pagar ${money(amount)} al proveedor ${from}.`, { title: "¿Registrar el pago?", confirmLabel: "Sí, registrar" }))) return;
           pay.mutate({
             supplierId,
             purchaseInvoiceId,
@@ -184,8 +199,8 @@ export function SupplierPayment({
             source,
             purchaseTripId: source === "VIAJE" ? tripId : undefined,
             notes: notes.trim() || undefined,
-          })
-        }
+          });
+        }}
       >
         {pay.isPending ? "Registrando…" : "Registrar pago"}
       </Button>

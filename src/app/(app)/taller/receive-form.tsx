@@ -12,6 +12,7 @@ import {
 } from "~/app/_components/pickers";
 import { ServiceCatalogPicker, type ServiceType } from "~/app/_components/service-catalog";
 import { Alert, Button, Field, Input, Kbd, PhoneInput, Textarea } from "~/app/_components/ui";
+import { docNo } from "~/lib/business";
 import { errorMessage, fieldErrors } from "~/lib/errors";
 import { formatPhoneInput } from "~/lib/phone";
 import { api } from "~/trpc/react";
@@ -90,7 +91,10 @@ export function ReceiveForm({ onDone }: { onDone: (orderId: number) => void }) {
   });
   const errs = fieldErrors(receive.error);
   const hasCustomer = !!d.customer || !!d.newCustomer;
-  const ready = hasCustomer && d.items.length > 0;
+  // A draft restored from before could point to a motorcycle that is now in the workshop.
+  const busyMoto =
+    d.moto.kind === "existing" ? (d.customer?.motorcycles.find((m) => m.id === (d.moto as { motorcycleId: number }).motorcycleId)?.inWorkshop ?? null) : null;
+  const ready = hasCustomer && d.items.length > 0 && !busyMoto;
 
   const toggle = (t: ServiceType) =>
     set({ items: d.items.some((i) => i.id === t.id) ? d.items.filter((i) => i.id !== t.id) : [...d.items, { id: t.id, name: t.name }] });
@@ -163,7 +167,8 @@ export function ReceiveForm({ onDone }: { onDone: (orderId: number) => void }) {
             autoFocus
             value={d.customer}
             onChange={(c) => {
-              const first = c?.motorcycles[0];
+              // The first motorcycle that is NOT already in the workshop (DEC-063).
+              const first = c?.motorcycles.find((m) => !m.inWorkshop);
               set({ customer: c, moto: first ? { kind: "existing", motorcycleId: first.id } : NEW_MOTORCYCLE });
             }}
             onCreateNew={(typed) => {
@@ -181,6 +186,14 @@ export function ReceiveForm({ onDone }: { onDone: (orderId: number) => void }) {
         <section className="space-y-3">
           <h3 className="text-sm font-semibold text-neutral-200">2. Moto</h3>
           <MotorcyclePicker motorcycles={d.customer?.motorcycles ?? []} value={d.moto} onChange={(moto) => set({ moto })} errors={errs} />
+          {busyMoto && (
+            <Alert>
+              Esa moto ya está en el taller ({docNo("orden", busyMoto.orderId)}). No se recibe dos veces: elija otra moto o búsquela en el tablero.
+            </Alert>
+          )}
+          {d.customer && d.customer.motorcycles.length > 0 && d.customer.motorcycles.every((m) => m.inWorkshop) && d.moto.kind === "new" && (
+            <p className="text-sm text-neutral-400">Todas las motos de este cliente ya están en el taller. Si trae otra, regístrela aquí.</p>
+          )}
           <div className="grid gap-3 sm:grid-cols-2">
             {d.moto.kind === "new" && (
               <Field label="Número de chasis (opcional)" error={errs.chassisNumber}>
@@ -229,7 +242,7 @@ export function ReceiveForm({ onDone }: { onDone: (orderId: number) => void }) {
       {receive.error && <Alert>{errorMessage(receive.error)}</Alert>}
       <div className="sticky bottom-0 -mx-4 flex items-center justify-between gap-3 border-t border-neutral-800 bg-neutral-900 px-4 py-3">
         <span className="text-xs text-neutral-500">
-          {!hasCustomer ? "Falta el cliente" : d.items.length === 0 ? "Falta elegir el trabajo" : "Listo para recibir"} ·{" "}
+          {!hasCustomer ? "Falta el cliente" : busyMoto ? "Esa moto ya está en el taller" : d.items.length === 0 ? "Falta elegir el trabajo" : "Listo para recibir"} ·{" "}
           <Kbd>Ctrl</Kbd> + <Kbd>Enter</Kbd>
         </span>
         <Button type="submit" className="h-11 px-6" disabled={!ready || receive.isPending}>

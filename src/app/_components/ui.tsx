@@ -667,3 +667,54 @@ export function SearchField({
     </div>
   );
 }
+
+/**
+ * Forms with room to breathe (Kenry, 23-nov: «ventanas muy pequeñas… da la
+ * sensación de algo complicado o como si le faltara algo»). Each part of a form
+ * goes in a section with a title and one line that says what it is for.
+ */
+export function FormSection({
+  title,
+  description,
+  children,
+  columns = 2,
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+  columns?: 1 | 2;
+}) {
+  return (
+    <section className="space-y-4 border-b border-neutral-800 pb-6 last:border-0 last:pb-0">
+      <div>
+        <h3 className="font-display text-lg font-semibold text-neutral-100">{title}</h3>
+        {description && <p className="mt-0.5 text-sm text-neutral-400">{description}</p>}
+      </div>
+      <div className={cx("grid gap-4", columns === 2 && "sm:grid-cols-2")}>{children}</div>
+    </section>
+  );
+}
+
+/** Bottom bar of a form in a window: «Cancelar» and the main button, big, always visible. */
+export function FormActions({
+  onCancel,
+  children,
+  note,
+}: {
+  onCancel?: () => void;
+  children: ReactNode;
+  /** What is still missing, e.g. «Falta el nombre». */
+  note?: ReactNode;
+}) {
+  return (
+    <div className="sticky bottom-0 -mx-4 -mb-4 mt-6 flex flex-wrap items-center justify-end gap-3 border-t border-neutral-800 bg-neutral-900 px-4 py-3">
+      {note && <span className="mr-auto text-sm text-neutral-500">{note}</span>}
+      {onCancel && (
+        <Button type="button" variant="secondary" className="h-11 px-5" onClick={onCancel}>
+          Cancelar
+        </Button>
+      )}
+      {children}
+    </div>
+  );
+}

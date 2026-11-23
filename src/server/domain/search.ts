@@ -1,5 +1,5 @@
 import { type DbClient, type Prisma } from "~/server/db";
-import { Sql } from "~/server/domain/sql";
+import { intList, Sql } from "~/server/domain/sql";
 
 /**
  * API-021 v3 — ONE search service for products and customers (DEC-043), with
@@ -21,8 +21,26 @@ export type Ranked = { id: number; score: number; exact: boolean };
 /** What a product / customer row carries wherever it is listed or searched. */
 export const productInclude = { category: true, brand: true } satisfies Prisma.ProductInclude;
 export const customerInclude = {
-  motorcycles: { include: { model: { include: { brand: true } } } },
+  // A motorcycle the customer sold (released, DEC-064) is not offered any more.
+  motorcycles: { where: { releasedAt: null }, orderBy: { id: "asc" }, include: { model: { include: { brand: true } } } },
 } satisfies Prisma.CustomerInclude;
+
+/**
+ * DEC-063 — Which of these motorcycles are in the workshop right now (an order
+ * not ENTREGADA/CANCELADA), so reception can say «ya está en el taller».
+ */
+export async function motorcyclesInWorkshop(db: Db, motorcycleIds: number[]) {
+  if (!motorcycleIds.length) return new Map<number, { orderId: number; status: string }>();
+  const rows = await new Sql().run<{ motorcycle_id: number; id: number; status: string }[]>(
+    db,
+    `SELECT so.motorcycle_id, so.id, coalesce(st.status, 'RECIBIDA') AS status
+       FROM service_order so
+       LEFT JOIN v_service_order_status st ON st.service_order_id = so.id
+      WHERE so.motorcycle_id IN (${intList(motorcycleIds)})
+        AND coalesce(st.status, 'RECIBIDA') NOT IN ('ENTREGADA', 'CANCELADA')`,
+  );
+  return new Map(rows.map((r) => [Number(r.motorcycle_id), { orderId: Number(r.id), status: r.status }]));
+}
 
 /** Escapes LIKE wildcards so "50%" searches the text "50%". */
 const likeSafe = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
@@ -179,7 +197,7 @@ export async function searchCustomerIds(db: Db, f: CustomerFilters) {
               upper(coalesce(c.national_id, '')) AS nid,
               coalesce(string_agg(upper(regexp_replace(m.plate, '[^A-Za-z0-9]', '', 'g')), ' '), '') AS plates
          FROM customer c
-         LEFT JOIN motorcycle m ON m.customer_id = c.id
+         LEFT JOIN motorcycle m ON m.customer_id = c.id AND m.released_at IS NULL
         GROUP BY c.id
      )
      SELECT c.id, (${score})::float8 AS score, ${exact} AS exact, count(*) OVER ()::int AS total

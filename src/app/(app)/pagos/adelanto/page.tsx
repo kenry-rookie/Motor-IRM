@@ -3,6 +3,7 @@
 import { Suspense, useState } from "react";
 
 import { MechanicSelect, PendingSummary, useMechanic } from "~/app/(app)/pagos/shared";
+import { confirmDialog } from "~/app/_components/confirm";
 import { Alert, BackBar, Button, Card, Field, Input, PageTitle } from "~/app/_components/ui";
 import { errorMessage } from "~/lib/errors";
 import { dec, money } from "~/lib/format";
@@ -58,7 +59,15 @@ function Advance() {
               <Button
                 className="h-12 w-full text-base"
                 disabled={!dec(amount).gt(0) || tooMuch || give.isPending}
-                onClick={() => give.mutate({ staffId: m.selected!.id, amount })}
+                onClick={async () => {
+                  if (
+                    await confirmDialog(`Entregar ${money(amount)} de la caja a ${m.selected!.name}. Se le descuenta en su próximo pago.`, {
+                      title: "¿Dar el adelanto?",
+                      confirmLabel: "Sí, dar adelanto",
+                    })
+                  )
+                    give.mutate({ staffId: m.selected!.id, amount });
+                }}
               >
                 {give.isPending ? "Guardando…" : "Dar adelanto"}
               </Button>

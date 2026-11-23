@@ -114,8 +114,9 @@ function Purchases() {
       <Dialog open={newTrip} onClose={() => setNewTrip(false)} title="Nuevo viaje de compras">
         <TripForm onDone={(id) => router.push(`/compras/viajes/${id}`)} />
       </Dialog>
-      <Dialog open={newSupplier} onClose={() => setNewSupplier(false)} title="Nuevo proveedor">
+      <Dialog open={newSupplier} onClose={() => setNewSupplier(false)} title="Nuevo proveedor" size="lg">
         <SupplierForm
+          onCancel={() => setNewSupplier(false)}
           onDone={() => {
             setNewSupplier(false);
             setTab("proveedores");
@@ -128,9 +129,10 @@ function Purchases() {
 
 function Invoices({ canManage }: { canManage: boolean }) {
   const [terms, setTerms] = useState<"todas" | "CONTADO" | "CREDITO">("todas");
+  const [state, setState] = useState<"todas" | "SE_DEBEN" | "PAGADAS" | "VENCIDAS">("todas");
   // Paged by cursor (50 at a time) with «Cargar más», like the kardex.
   const invoices = api.purchasing.listInvoices.useInfiniteQuery(
-    { limit: 50, paymentTerms: terms === "todas" ? undefined : terms },
+    { limit: 50, paymentTerms: terms === "todas" ? undefined : terms, state: terms === "CREDITO" && state !== "todas" ? state : undefined },
     { getNextPageParam: (l) => l.nextCursor, initialCursor: null },
   );
   const items = invoices.data?.pages.flatMap((pg) => pg.items) ?? [];
@@ -138,17 +140,31 @@ function Invoices({ canManage }: { canManage: boolean }) {
   const [detail, setDetail] = useState<number | null>(null);
   return (
     <Card>
-      <Segmented
-        label="Tipo de compra"
-        className="mb-3"
-        value={terms}
-        onChange={setTerms}
-        options={[
-          { value: "todas", label: "Todas" },
-          { value: "CONTADO", label: "Contado" },
-          { value: "CREDITO", label: "Crédito" },
-        ]}
-      />
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <Segmented
+          label="Tipo de compra"
+          value={terms}
+          onChange={setTerms}
+          options={[
+            { value: "todas", label: "Todas" },
+            { value: "CONTADO", label: "Contado" },
+            { value: "CREDITO", label: "Crédito" },
+          ]}
+        />
+        {terms === "CREDITO" && (
+          <Segmented
+            label="Estado del crédito"
+            value={state}
+            onChange={setState}
+            options={[
+              { value: "todas", label: "Todas" },
+              { value: "SE_DEBEN", label: "Se deben" },
+              { value: "VENCIDAS", label: "Vencidas" },
+              { value: "PAGADAS", label: "Pagadas" },
+            ]}
+          />
+        )}
+      </div>
       {invoices.error && <Alert>{errorMessage(invoices.error)}</Alert>}
       <Table head={["N.º", "Proveedor", "Factura", "Fecha", "Tipo", "Vence", "Total", "Saldo", ""]} empty={!invoices.isLoading && items.length === 0}>
         {items.map((p) => (
@@ -169,7 +185,20 @@ function Invoices({ canManage }: { canManage: boolean }) {
             <td>{p.paymentTerms === "CREDITO" ? "Crédito" : "Contado"}</td>
             <td>{formatDay(p.dueDate)}</td>
             <td className="tabular-nums">{money(p.total)}</td>
-            <td className="font-semibold tabular-nums">{money(p.balance)}</td>
+            <td className="font-semibold tabular-nums">
+              {money(p.balance)}
+              {p.paymentTerms === "CREDITO" && (
+                <div className="mt-0.5">
+                  {dec(p.balance).lte(0) ? (
+                    <Badge tone="green">pagada</Badge>
+                  ) : (p.daysOverdue ?? 0) > 0 ? (
+                    <Badge tone="red">vencida</Badge>
+                  ) : (
+                    <Badge tone="amber">se debe</Badge>
+                  )}
+                </div>
+              )}
+            </td>
             <td className="text-right" onClick={(e) => e.stopPropagation()}>
               <div className="flex justify-end gap-1">
                 <Button variant="ghost" onClick={() => setDetail(p.id)}>

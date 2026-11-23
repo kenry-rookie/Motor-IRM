@@ -375,6 +375,8 @@ describe("trabajos del taller desde el catálogo (DEC-048)", () => {
     const o = await admin.service.get({ id: order.id });
     expect(o.items.map((i) => i.serviceType.id).sort()).toEqual([engrase, frenos].sort());
     expect(o.requestedWork).toBe("suena al frenar");
+    // The motorcycle leaves the workshop, so the next tests can receive it again (DEC-063).
+    await encargado.service.cancel({ serviceOrderId: order.id, notes: "Fin de la prueba" });
   });
 
   it("cobrar fuera del rango de precio pide la clave de un dueño", async () => {
@@ -439,9 +441,12 @@ describe("reportes por periodo", () => {
     expect(r.series).toHaveLength(1);
     expect(Number(r.current.sales)).toBeGreaterThan(0);
     expect(r.topProducts.length).toBeGreaterThan(0);
-    // "Hoy" is only a preset of the same report (DEC-043): money by method, cash net, workshop, low stock.
-    expect(r.receivedByMethod.length).toBeGreaterThan(0);
-    expect(typeof r.cashNet).toBe("string");
+    // "Hoy" is only a preset of the same report (DEC-043): money by reason, drawer net, workshop, low stock.
+    expect(r.money.drawerIn.length).toBeGreaterThan(0);
+    expect(typeof r.money.drawerNet).toBe("string");
+    // The drawer lines add up to the drawer total (Kenry, 23-nov).
+    const add = (ls: { amount: string }[]) => ls.reduce((a, l) => a.plus(l.amount), new Prisma.Decimal(0));
+    expect(add(r.money.drawerIn).minus(add(r.money.drawerOut)).toString()).toBe(new Prisma.Decimal(r.money.drawerNet).toString());
     expect(r.openOrders).toBeGreaterThanOrEqual(0);
     const m = await admin.reports.period({ from: `${today.slice(0, 5)}01-01`, to: today, granularity: "month" });
     expect(m.series.length).toBe(Number(today.slice(5, 7)));

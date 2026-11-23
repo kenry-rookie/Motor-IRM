@@ -99,6 +99,7 @@ Para verla con DBeaver, pgAdmin o TablePlus usa esos mismos datos.
 | `npm run db:seed` | Roles, permisos, catálogos, usuario admin (y demo si `SEED_DEMO=true`) |
 | `npm run db:setup` | `db:up` + `db:migrate` + `db:seed` |
 | `npm run db:reset` | **Borra todos los datos** y vuelve a crear la base desde cero |
+| `npm run db:demo-completo` | **Borra todos los datos** y carga la demo completa: un mes de trabajo (ventas, taller, compras, viajes, cajas con arqueo). Solo para mostrar o probar; en el negocio la base empieza vacía |
 | `npm run db:psql` | Consola SQL dentro del contenedor |
 | `npm run db:studio` | Prisma Studio (ver/editar datos en el navegador) |
 | `npm run db:logs` | Ver el log de PostgreSQL |

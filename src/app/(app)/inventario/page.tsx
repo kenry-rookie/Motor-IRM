@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   EMPTY_PRODUCT_FILTERS,
@@ -26,6 +26,13 @@ export default function InventoryPage() {
   const [text, setText] = useState("");
   const [filters, setFilters] = useState<ProductFilterState>(EMPTY_PRODUCT_FILTERS);
   const [creating, setCreating] = useState(false);
+  // Links from the Resumen notices and the global search: /inventario?stock=poco, /inventario?q=…
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    const stock = p.get("stock");
+    if (stock === "poco" || stock === "agotado" || stock === "disponible") setFilters((f) => ({ ...f, stock, sort: "stock_asc" }));
+    if (p.get("q")) setText(p.get("q")!);
+  }, []);
   const r = useProductSearch(text, filters, 50);
   const canManage = me.data?.permissions.includes("inventario.gestionar");
   const canSeeCost = me.data?.permissions.includes("compras.ver");
@@ -93,8 +100,8 @@ export default function InventoryPage() {
           </Button>
         )}
       </Card>
-      <Dialog open={creating} onClose={() => setCreating(false)} title="Nuevo producto">
-        <ProductForm onDone={() => setCreating(false)} />
+      <Dialog open={creating} onClose={() => setCreating(false)} title="Nuevo producto" size="lg">
+        <ProductForm onDone={() => setCreating(false)} onCancel={() => setCreating(false)} />
       </Dialog>
     </>
   );

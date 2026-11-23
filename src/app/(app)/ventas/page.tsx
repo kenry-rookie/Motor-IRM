@@ -20,10 +20,10 @@ import { CustomerPicker, type Product, ProductPicker, type ProductPickerHandle }
 import { PrintPrompt } from "~/app/_components/print-prompt";
 import { ServiceCatalogPicker } from "~/app/_components/service-catalog";
 import { cleanTerms, TermsForm } from "~/app/_components/terms-form";
-import { Alert, Badge, Button, Card, cx, Dialog, EmptyState, Input, Kbd, PageTitle } from "~/app/_components/ui";
+import { Alert, Badge, Button, Card, cx, Dialog, EmptyState, Field, Input, Kbd, PageTitle } from "~/app/_components/ui";
 import { errorMessage } from "~/lib/errors";
 import { docNo, invoiceNo } from "~/lib/business";
-import { dec, formatDay, money } from "~/lib/format";
+import { dec, formatDay, money, usdOf } from "~/lib/format";
 import { LABELS, type ServiceOrderStatus } from "~/server/domain/constants";
 import { api } from "~/trpc/react";
 
@@ -518,10 +518,7 @@ function ChargePanel({
     <Card title={credit && title === "Cobro" ? "Facturar al crédito" : title} className="lg:sticky lg:top-20">
       <div className="space-y-4">
         {children}
-        <div className="flex items-end justify-between border-t border-dashed border-neutral-700 pt-4">
-          <span className="text-sm text-neutral-400">{credit ? "Total a facturar" : "Total a cobrar"}</span>
-          <span className="font-display text-4xl font-semibold tracking-tight text-neutral-50 tabular-nums">{money(total)}</span>
-        </div>
+        <TotalLine label={credit ? "Total a facturar" : "Total a cobrar"} total={total} terms={confirm.terms} />
         <Alert>{error && !confirm.open ? errorMessage(error) : null}</Alert>
         <Button className="h-12 w-full text-base" disabled={disabled || pending} onClick={onCharge}>
           {label} <Kbd>F9</Kbd>
@@ -529,6 +526,77 @@ function ChargePanel({
       </div>
       <ConfirmCharge {...confirm} total={total} pending={pending} error={error} />
     </Card>
+  );
+}
+
+/**
+ * Kenry, 23-nov: when the customer pays in dollars the screen shows the price IN
+ * DOLLARS, big, with the córdobas beside it, small. Without a valid exchange rate
+ * it says so instead of guessing.
+ */
+function usdPay(total: ReturnType<typeof dec>, terms: TermsDraft) {
+  if (terms.paymentTerms !== "CONTADO" || terms.payment?.currency !== "USD") return null;
+  return { usd: usdOf(total, terms.payment.exchangeRate), rate: terms.payment.exchangeRate };
+}
+
+function TotalLine({ label, total, terms, big = "text-4xl" }: { label: string; total: ReturnType<typeof dec>; terms: TermsDraft; big?: string }) {
+  const usd = usdPay(total, terms);
+  return (
+    <div className="flex items-end justify-between gap-3 border-t border-dashed border-neutral-700 pt-4">
+      <span className="text-sm text-neutral-400">
+        {label}
+        {usd && <span className="block text-xs">en dólares</span>}
+      </span>
+      {usd ? (
+        <span className="text-right">
+          {usd.usd ? (
+            <>
+              <span className={cx("font-display block font-semibold tracking-tight text-neutral-50 tabular-nums", big)}>{money(usd.usd, "USD")}</span>
+              <span className="block text-sm text-neutral-400 tabular-nums">
+                = {money(total)} · T/C {dec(usd.rate).toFixed(2)}
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="text-warn-fg block text-sm font-medium">Escriba el tipo de cambio para ver el total en dólares</span>
+              <span className="block text-sm text-neutral-400 tabular-nums">{money(total)}</span>
+            </>
+          )}
+        </span>
+      ) : (
+        <span className={cx("font-display font-semibold tracking-tight text-neutral-50 tabular-nums", big)}>{money(total)}</span>
+      )}
+    </div>
+  );
+}
+
+/** «¿Con cuánto paga?» → the change, in the currency the customer pays with (only a helper; nothing is saved). */
+function ChangeHelper({ total, terms }: { total: ReturnType<typeof dec>; terms: TermsDraft }) {
+  const [given, setGiven] = useState("");
+  if (terms.paymentTerms !== "CONTADO") return null;
+  const usd = usdPay(total, terms);
+  if (usd && !usd.usd) return null;
+  const due = usd ? usd.usd! : total;
+  const cur = usd ? "USD" : "NIO";
+  const g = dec(given);
+  const change = g.minus(due);
+  // Change for a dollar payment is usually given in córdobas.
+  const changeNio = usd ? change.times(dec(usd.rate)).toDecimalPlaces(2) : change;
+  return (
+    <div className="mt-4 rounded-lg border border-neutral-800 p-3">
+      <Field label={`¿Con cuánto paga el cliente? (${usd ? "dólares" : "córdobas"}, opcional)`}>
+        <Input inputMode="decimal" placeholder={usd ? "US$" : "C$"} value={given} onChange={(e) => setGiven(e.target.value)} />
+      </Field>
+      {g.gt(0) &&
+        (change.gte(0) ? (
+          <p className="mt-2 text-base">
+            Vuelto: <span className="font-semibold tabular-nums">{money(change, cur)}</span>
+            {usd && <span className="text-neutral-400"> (= {money(changeNio)} si lo da en córdobas)</span>}
+          </p>
+        ) : (
+          <p className="text-bad-fg mt-2 text-sm">Faltan {money(change.abs(), cur)}.</p>
+        ))}
+    </div>
   );
 }
 
@@ -577,11 +645,9 @@ function ConfirmCharge({
           <dt className="text-neutral-400">Líneas</dt>
           <dd className="text-right font-medium">{items}</dd>
         </div>
-        <div className="flex items-end justify-between gap-4 border-t border-dashed border-neutral-700 pt-3">
-          <dt className="text-neutral-400">Total</dt>
-          <dd className="font-display text-4xl font-semibold tabular-nums">{money(total)}</dd>
-        </div>
       </dl>
+      <TotalLine label="Total" total={total} terms={terms} />
+      <ChangeHelper total={total} terms={terms} />
       {error ? (
         <div className="mt-3">
           <Alert>{errorMessage(error)}</Alert>

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { CustomerFilterBar, type CustomerFilterState, EMPTY_CUSTOMER_FILTERS, uniqueById } from "~/app/_components/catalog";
 import { Alert, Badge, Button, Card, Dialog, PageTitle, SearchField, Table } from "~/app/_components/ui";
@@ -20,6 +20,13 @@ export default function CustomersPage() {
   const [filters, setFilters] = useState<CustomerFilterState>(EMPTY_CUSTOMER_FILTERS);
   const [creating, setCreating] = useState(false);
   const [pages, setPages] = useState(1);
+  // Links from the Resumen notices and the global search: /clientes?deuda=vencida, /clientes?q=…
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    const debt = p.get("deuda");
+    if (debt === "vencida" || debt === "con_deuda" || debt === "al_dia" || debt === "sin_deuda") setFilters((f) => ({ ...f, debt }));
+    if (p.get("q")) setText(p.get("q")!);
+  }, []);
   const q = useDebounced(text.trim(), 200);
   // The database searches and filters (DEC-049); this screen only shows the page.
   // One request per page (the API allows at most 100 per request; see useProductSearch).
@@ -130,8 +137,8 @@ export default function CustomersPage() {
           )}
         </Card>
       </div>
-      <Dialog open={creating} onClose={() => setCreating(false)} title="Nuevo cliente">
-        <CustomerForm onDone={() => setCreating(false)} />
+      <Dialog open={creating} onClose={() => setCreating(false)} title="Nuevo cliente" size="lg">
+        <CustomerForm onDone={() => setCreating(false)} onCancel={() => setCreating(false)} />
       </Dialog>
     </>
   );

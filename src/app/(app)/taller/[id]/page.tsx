@@ -6,6 +6,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { queueServiceBill } from "~/app/(app)/ventas/tabs-store";
+import { confirmDialog } from "~/app/_components/confirm";
 import { ResponsibleSelect } from "~/app/_components/pickers";
 import { ServiceCatalogPicker } from "~/app/_components/service-catalog";
 import { cleanTerms, emptyTerms, type Terms, TermsForm } from "~/app/_components/terms-form";
@@ -160,7 +161,13 @@ export default function OrderPage() {
                 disabled={!canManage}
                 value={o.mechanicStaffId ?? 0}
                 emptyLabel="Sin asignar"
-                onChange={(id) => id && assign.mutate({ serviceOrderId: o.id, mechanicStaffId: id })}
+                onChange={async (id) => {
+                  if (!id) return;
+                  // Changing who is responsible moves the commission: ask only when someone was already assigned.
+                  if (o.mechanicStaffId && !(await confirmDialog("¿Cambiar el responsable de esta moto? La comisión será del nuevo responsable.", { title: "Cambiar responsable", confirmLabel: "Sí, cambiar" })))
+                    return;
+                  assign.mutate({ serviceOrderId: o.id, mechanicStaffId: id });
+                }}
               />
             </Field>
             <Field label="Cambiar estado">
@@ -322,9 +329,17 @@ function CancelForm({ orderId, onDone }: { orderId: number; onDone: () => void }
         variant="danger"
         className="w-full"
         disabled={!notes || cancel.isPending}
-        onClick={() =>
-          cancel.mutate({ serviceOrderId: orderId, notes, cancellationFee: fee || undefined, terms: fee ? cleanTerms(terms) : undefined })
-        }
+        onClick={async () => {
+          if (
+            await confirmDialog(`La orden queda cancelada y ya no cambia de estado.${fee ? `\nSe cobra ${money(fee)} por la cancelación.` : ""}`, {
+              title: "¿Cancelar la orden?",
+              confirmLabel: "Sí, cancelar orden",
+              cancelLabel: "No",
+              danger: true,
+            })
+          )
+            cancel.mutate({ serviceOrderId: orderId, notes, cancellationFee: fee || undefined, terms: fee ? cleanTerms(terms) : undefined });
+        }}
       >
         Cancelar orden
       </Button>

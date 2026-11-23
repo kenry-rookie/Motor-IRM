@@ -44,3 +44,14 @@ export const addDaysISO = (day: string, n: number) =>
 const timeFmt = new Intl.DateTimeFormat("es-NI", { timeZone: "America/Managua", timeStyle: "short" });
 /** Only the hour of an instant, in Managua time (e.g. "2:35 p. m."). */
 export const formatTime = (d: Date | string | null | undefined) => (d ? timeFmt.format(new Date(d)) : "—");
+
+/**
+ * What a bill in córdobas costs in dollars at a given rate — rounded UP to the
+ * cent, exactly like the server records a dollar payment (billing.createInvoice),
+ * so the screen and the receipt never differ by a cent. null = no valid rate yet.
+ */
+export function usdOf(nio: Amount, rate: Amount): Decimal | null {
+  const r = dec(rate);
+  if (r.lte(0)) return null;
+  return dec(nio).div(r).toDecimalPlaces(2, Decimal.ROUND_UP);
+}

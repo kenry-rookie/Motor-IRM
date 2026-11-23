@@ -352,7 +352,15 @@ function CloseTrip({ trip: t, onDone }: { trip: Trip; onDone: () => void }) {
       <Button
         className="w-full"
         disabled={returned === "" || close.isPending || (!diff.isZero() && !notes.trim())}
-        onClick={() => close.mutate({ id: t.id, cashReturned: returned, notes: notes.trim() || undefined })}
+        onClick={async () => {
+          if (
+            await confirmDialog(`Regresan ${money(returned)} a la caja. Después de cerrar ya no se agregan facturas ni gastos al viaje.`, {
+              title: "¿Cerrar el viaje?",
+              confirmLabel: "Sí, cerrar",
+            })
+          )
+            close.mutate({ id: t.id, cashReturned: returned, notes: notes.trim() || undefined });
+        }}
       >
         {close.isPending ? "Cerrando…" : "Cerrar viaje"}
       </Button>
@@ -444,9 +452,10 @@ function PayWithTrip(props: { supplierId: number; tripId: number; purchaseInvoic
       <Button
         className="w-full"
         disabled={!amount || pay.isPending}
-        onClick={() =>
-          pay.mutate({ supplierId: props.supplierId, purchaseInvoiceId: props.purchaseInvoiceId, amount, source: "VIAJE", purchaseTripId: props.tripId })
-        }
+        onClick={async () => {
+          if (await confirmDialog(`Pagar ${money(amount)} al proveedor con el dinero del viaje.`, { title: "¿Registrar el pago?", confirmLabel: "Sí, registrar" }))
+            pay.mutate({ supplierId: props.supplierId, purchaseInvoiceId: props.purchaseInvoiceId, amount, source: "VIAJE", purchaseTripId: props.tripId });
+        }}
       >
         Registrar pago
       </Button>

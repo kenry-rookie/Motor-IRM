@@ -97,7 +97,12 @@ export default function ProductPage() {
               <Button
                 className="col-span-2"
                 disabled={!adj.quantity || !adj.notes || adjust.isPending}
-                onClick={() => adjust.mutate({ productId, direction: adj.direction, quantity: Number(adj.quantity), notes: adj.notes })}
+                onClick={async () => {
+                  const q = Number(adj.quantity);
+                  const text = adj.direction === "SALIDA" ? `Se quitan ${q} del inventario (${adj.notes}).` : `Se agregan ${q} al inventario (${adj.notes}).`;
+                  if (await confirmDialog(text, { title: "¿Registrar el ajuste?", confirmLabel: "Sí, registrar" }))
+                    adjust.mutate({ productId, direction: adj.direction, quantity: q, notes: adj.notes });
+                }}
               >
                 Registrar ajuste
               </Button>
@@ -112,7 +117,10 @@ export default function ProductPage() {
             <Field label="Nuevo precio (C$)">
               <Input inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} />
             </Field>
-            <Button className="mt-3 w-full" disabled={!price || changePrice.isPending} onClick={() => changePrice.mutate({ productId, newPrice: price })}>
+            <Button className="mt-3 w-full" disabled={!price || changePrice.isPending} onClick={async () => {
+              if (await confirmDialog(`El precio de venta pasa a ${money(price)}. Las facturas ya hechas no cambian.`, { title: "¿Cambiar el precio?", confirmLabel: "Sí, cambiar" }))
+                changePrice.mutate({ productId, newPrice: price });
+            }}>
               Guardar precio
             </Button>
             <div className="mt-2">

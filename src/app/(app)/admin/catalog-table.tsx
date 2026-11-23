@@ -88,7 +88,20 @@ export function CatalogTable({
                   <Button variant="ghost" disabled={pending} onClick={() => setEditing({ id: r.id, name: r.name })}>
                     Editar
                   </Button>
-                  <Button variant="ghost" disabled={pending} onClick={() => onToggle(r.id, !r.active)}>
+                  <Button
+                    variant="ghost"
+                    disabled={pending}
+                    onClick={async () => {
+                      if (
+                        !r.active ||
+                        (await confirmDialog(`«${r.name}» deja de salir en las listas para elegir. Lo ya registrado no cambia y puede activarlo otra vez.`, {
+                          title: "¿Desactivar?",
+                          confirmLabel: "Sí, desactivar",
+                        }))
+                      )
+                        onToggle(r.id, !r.active);
+                    }}
+                  >
                     {r.active ? "Desactivar" : "Activar"}
                   </Button>
                   {onMerge && r.uses > 0 && (

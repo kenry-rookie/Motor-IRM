@@ -4,6 +4,7 @@ import { useEffect } from "react";
 
 import { type TermsDraft } from "~/app/(app)/ventas/tabs-store";
 import { Field, Input, Segmented, Select } from "~/app/_components/ui";
+import { rememberedRate, rememberRate } from "~/lib/exchange-rate";
 import { addDaysISO, todayISO } from "~/lib/format";
 import { api, type RouterInputs } from "~/trpc/react";
 
@@ -71,7 +72,13 @@ export function TermsForm({
           <Field label="Moneda">
             <Select
               value={terms.payment.currency}
-              onChange={(e) => onChange({ ...terms, payment: { ...terms.payment!, currency: e.target.value as "NIO" | "USD" } })}
+              onChange={(e) => {
+                const currency = e.target.value as "NIO" | "USD";
+                // The last rate used at this computer, so it isn't typed every time.
+                const typed = terms.payment!.exchangeRate?.trim();
+                const exchangeRate = currency === "USD" ? [typed, rememberedRate()].find((v) => !!v) : undefined;
+                onChange({ ...terms, payment: { ...terms.payment!, currency, exchangeRate } });
+              }}
             >
               <option value="NIO">Córdobas</option>
               <option value="USD">Dólares</option>
@@ -82,7 +89,10 @@ export function TermsForm({
               <Input
                 inputMode="decimal"
                 value={terms.payment.exchangeRate ?? ""}
-                onChange={(e) => onChange({ ...terms, payment: { ...terms.payment!, exchangeRate: e.target.value } })}
+                onChange={(e) => {
+                  rememberRate(e.target.value);
+                  onChange({ ...terms, payment: { ...terms.payment!, exchangeRate: e.target.value } });
+                }}
               />
             </Field>
           )}

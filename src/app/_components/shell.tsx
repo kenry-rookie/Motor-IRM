@@ -6,6 +6,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { ADMIN_OPTIONS, ADMIN_PERMISSIONS } from "~/app/(app)/admin/options";
 import { ConfirmHost } from "~/app/_components/confirm";
+import { GlobalSearch, GlobalSearchButton } from "~/app/_components/global-search";
 import { ThemeToggle } from "~/app/_components/theme-toggle";
 import { BrandMark, cx } from "~/app/_components/ui";
 import { api } from "~/trpc/react";
@@ -481,12 +482,18 @@ export function Shell({
             </Icon>
           </button>
 
-          <p className="font-display text-lg font-semibold tracking-wide">
-            {current?.label ?? "Motor IRM"}
+          <p className="font-display shrink-0 text-lg font-semibold tracking-wide">
+            {current?.label ?? (pathname.startsWith("/buscar") ? "Buscar" : "Motor IRM")}
           </p>
+
+          {/* Buscador general (Kenry, 23-nov): en todas las pantallas. */}
+          <div className="mx-auto flex min-w-0 flex-1 justify-center px-2">
+            {!pathname.startsWith("/buscar") && <GlobalSearch />}
+          </div>
 
           {/* Toggle de tema + cuenta */}
           <div className="ml-auto flex items-center gap-2">
+            <GlobalSearchButton />
             <ThemeToggle />
             <div ref={menuRef} className="relative">
               <button

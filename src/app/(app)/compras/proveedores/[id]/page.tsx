@@ -142,8 +142,8 @@ export default function SupplierPage() {
         </Table>
       </Card>
       <PurchaseDetailDialog id={detail} onClose={() => setDetail(null)} />
-      <Dialog open={editing} onClose={() => setEditing(false)} title="Editar proveedor">
-        <SupplierForm supplier={a.supplier} onDone={() => setEditing(false)} />
+      <Dialog open={editing} onClose={() => setEditing(false)} title="Editar proveedor" size="lg">
+        <SupplierForm supplier={a.supplier} onDone={() => setEditing(false)} onCancel={() => setEditing(false)} />
       </Dialog>
       <Dialog open={!!paying} onClose={() => setPaying(null)} title="Pago a proveedor">
         {paying && <SupplierPayment supplierId={supplierId} {...paying} onDone={() => setPaying(null)} />}

@@ -14,6 +14,9 @@ export default function AdminHome() {
   return (
     <>
       <PageTitle title="Administración" subtitle="Elija qué quiere administrar" />
+      {me.data && options.length === 0 && (
+        <p className="text-neutral-400">Su perfil no administra nada del sistema. Si necesita cambiar algo, pídaselo a un dueño.</p>
+      )}
       <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {options.map((o) => (
           <li key={o.href}>

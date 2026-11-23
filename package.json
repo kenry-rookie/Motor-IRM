@@ -12,6 +12,8 @@
     "check": "next lint && tsc --noEmit",
     "db:demo-cash": "tsx prisma/demo-cash.ts",
     "db:demo-extra": "tsx prisma/demo-extra.ts",
+    "db:demo-semanas": "tsx prisma/demo-semanas.ts",
+    "db:demo-completo": "SEED_DEMO=true prisma migrate reset --force && tsx prisma/demo-extra.ts && tsx prisma/demo-semanas.ts",
     "db:down": "docker compose down",
     "db:dump-schema": "node scripts/dump-schema.mjs",
     "db:logs": "docker compose logs -f db",

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { confirmDialog } from "~/app/_components/confirm";
 import { Alert, Badge, Button, Card, Dialog, Field, Input, PageTitle, Select, Table } from "~/app/_components/ui";
 import { errorMessage, fieldErrors } from "~/lib/errors";
 import { formatDateTime } from "~/lib/format";
@@ -57,7 +58,21 @@ export default function UsersPage() {
                   Cambiar contraseña
                 </Button>
                 {u.username !== me.data?.username && (
-                  <Button variant="ghost" disabled={update.isPending} onClick={() => update.mutate({ id: u.id, active: !u.active })}>
+                  <Button
+                    variant="ghost"
+                    disabled={update.isPending}
+                    onClick={async () => {
+                      if (
+                        !u.active ||
+                        (await confirmDialog(`${u.username} ya no podrá entrar al sistema hasta que lo active otra vez.`, {
+                          title: "¿Desactivar el usuario?",
+                          confirmLabel: "Sí, desactivar",
+                          danger: true,
+                        }))
+                      )
+                        update.mutate({ id: u.id, active: !u.active });
+                    }}
+                  >
                     {u.active ? "Desactivar" : "Activar"}
                   </Button>
                 )}
@@ -138,7 +153,10 @@ function ResetPassword({ user, onDone }: { user: User; onDone: () => void }) {
         <Input type="password" autoComplete="new-password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} />
       </Field>
       {update.error && <Alert>{errorMessage(update.error)}</Alert>}
-      <Button className="w-full" disabled={password.length < 8 || update.isPending} onClick={() => update.mutate({ id: user.id, newPassword: password })}>
+      <Button className="w-full" disabled={password.length < 8 || update.isPending} onClick={async () => {
+          if (await confirmDialog(`¿Cambiar la contraseña de ${user.username}? Tendrá que entrar con la nueva.`, { title: "Cambiar contraseña", confirmLabel: "Sí, cambiar" }))
+            update.mutate({ id: user.id, newPassword: password });
+        }}>
         Guardar contraseña
       </Button>
     </div>

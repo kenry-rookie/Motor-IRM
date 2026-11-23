@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { PurchaseDetailDialog } from "~/app/(app)/compras/purchase-detail";
 import { PrintLink } from "~/app/_components/print-link";
@@ -26,6 +26,14 @@ export default function VouchersPage() {
   const [drawer, setDrawer] = useState<"TODOS" | "CAJA" | "FUERA">("TODOS");
   const [direction, setDirection] = useState<"TODAS" | "ENTRADA" | "SALIDA">("TODAS");
   const [text, setText] = useState("");
+  // From the global search: /comprobantes?q=R-000045 → look for that number on any date.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get("q");
+    if (q) {
+      setText(q);
+      setRange({ from: "2000-01-01", to: todayISO() });
+    }
+  }, []);
   const list = api.money.list.useQuery({ ...range, kind: kind || undefined, drawer, direction, text: text.trim() || undefined });
   const [open, setOpen] = useState<Item | null>(null);
   const t = list.data?.totals;

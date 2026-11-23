@@ -271,9 +271,12 @@ model Motorcycle {
   customerId        Int     @map("customer_id")
   motorcycleModelId Int     @map("motorcycle_model_id")
   color             String  @db.VarChar(30)
-  plate             String? @db.VarChar(15) // unique on upper(plate): SQL migration
+  plate             String? @db.VarChar(15) // unique on upper(plate) among not released: SQL migration
   notes             String? @db.VarChar(200)
-  chassisNumber     String? @map("chassis_number") @db.VarChar(30) // unique on upper(): SQL migration
+  chassisNumber     String? @map("chassis_number") @db.VarChar(30) // unique on upper() among not released: SQL migration
+  /// Migration 9g (DEC-064): the customer sold it. Hidden from lists; its history stays with this customer.
+  releasedAt        DateTime? @map("released_at") @db.Timestamptz(0)
+  releasedNote      String?   @map("released_note") @db.VarChar(200)
 
   customer      Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict, map: "fk_motorcycle_customer_id")
   model         MotorcycleModel @relation(fields: [motorcycleModelId], references: [id], onDelete: Restrict, map: "fk_motorcycle_motorcycle_model_id")

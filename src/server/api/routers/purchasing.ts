@@ -125,7 +125,7 @@ async function writeSupplierPayment(
   });
 }
 
-const pick = (b: PurchaseBalance) => ({ total: b.total, returned: b.returned, paid: b.paid, balance: b.balance });
+const pick = (b: PurchaseBalance) => ({ total: b.total, returned: b.returned, paid: b.paid, balance: b.balance, daysOverdue: b.daysOverdue });
 
 const zSupplier = z.object({
   name: zText(100),
@@ -256,11 +256,29 @@ export const purchasingRouter = createTRPCRouter({
   ),
 
   listInvoices: view
-    .input(z.object({ supplierId: zId.optional(), paymentTerms: z.enum(PAYMENT_TERMS).optional(), ...pageFields }).default({}))
+    .input(
+      z
+        .object({
+          supplierId: zId.optional(),
+          paymentTerms: z.enum(PAYMENT_TERMS).optional(),
+          /** Kenry, 23-nov: of the credit purchases, the ones still owed, paid, or overdue. */
+          state: z.enum(["SE_DEBEN", "PAGADAS", "VENCIDAS"]).optional(),
+          ...pageFields,
+        })
+        .default({}),
+    )
     .query(async ({ ctx, input }) => {
       const { cursor, limit } = input;
+      // The balance lives in v_purchase_invoice_balance (DEC-042): the state filter is done there.
+      let stateIds: number[] | undefined;
+      if (input.state) {
+        const cond = { SE_DEBEN: "b.balance > 0", PAGADAS: "b.balance <= 0", VENCIDAS: "b.days_overdue > 0" }[input.state];
+        stateIds = (await new Sql().run<{ id: number }[]>(ctx.db, `SELECT b.purchase_invoice_id AS id FROM v_purchase_invoice_balance b WHERE ${cond}`)).map((r) =>
+          Number(r.id),
+        );
+      }
       const items = await ctx.db.purchaseInvoice.findMany({
-        where: { supplierId: input.supplierId, paymentTerms: input.paymentTerms },
+        where: { supplierId: input.supplierId, paymentTerms: input.paymentTerms, ...(stateIds ? { id: { in: stateIds } } : {}) },
         orderBy: { id: "desc" },
         include: { supplier: true },
         take: limit + 1,

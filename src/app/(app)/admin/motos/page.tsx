@@ -173,7 +173,20 @@ function BrandDialog({ brand, brands, onClose, onDone }: { brand: Brand | null; 
           </form>
           <p className="text-sm text-neutral-400">{brand.uses > 0 ? `La usan ${brand.uses} modelo(s) y motos.` : "Nadie la usa todavía."}</p>
           <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" disabled={busy} onClick={() => toggle.mutate({ kind: "motorcycleBrand", id: brand.id, active: !brand.active })}>
+            <Button
+              variant="secondary"
+              disabled={busy}
+              onClick={async () => {
+                if (
+                  !brand.active ||
+                  (await confirmDialog(`La marca «${brand.name}» deja de salir al recibir motos. Las motos ya registradas no cambian.`, {
+                    title: "¿Desactivar la marca?",
+                    confirmLabel: "Sí, desactivar",
+                  }))
+                )
+                  toggle.mutate({ kind: "motorcycleBrand", id: brand.id, active: !brand.active });
+              }}
+            >
               {brand.active ? "Desactivar marca" : "Activar marca"}
             </Button>
             {brand.uses > 0 ? (
@@ -268,7 +281,20 @@ function ModelDialog({
           </Button>
           <p className="text-sm text-neutral-400">{model.uses > 0 ? `${model.uses} moto(s) tienen este modelo.` : "Ninguna moto tiene este modelo."}</p>
           <div className="flex flex-wrap gap-2 border-t border-neutral-800 pt-3">
-            <Button variant="secondary" disabled={busy} onClick={() => toggle.mutate({ id: model.id, active: !model.active })}>
+            <Button
+              variant="secondary"
+              disabled={busy}
+              onClick={async () => {
+                if (
+                  !model.active ||
+                  (await confirmDialog(`El modelo «${model.name}» deja de salir al recibir motos. Las motos ya registradas no cambian.`, {
+                    title: "¿Desactivar el modelo?",
+                    confirmLabel: "Sí, desactivar",
+                  }))
+                )
+                  toggle.mutate({ id: model.id, active: !model.active });
+              }}
+            >
               {model.active ? "Desactivar" : "Activar"}
             </Button>
             {model.uses > 0 ? (

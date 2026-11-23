@@ -4,6 +4,7 @@ import { forwardRef, type ReactNode, useId, useImperativeHandle, useRef, useStat
 
 import { ProductCatalogDialog } from "~/app/_components/catalog";
 import { Alert, Badge, Button, cx, Dialog, Field, Input, SearchField, Select } from "~/app/_components/ui";
+import { docNo } from "~/lib/business";
 import { errorMessage } from "~/lib/errors";
 import { money } from "~/lib/format";
 import { useDebounced } from "~/lib/use-debounced";
@@ -514,14 +515,19 @@ export function MotorcyclePicker({
         <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Moto del cliente">
           {motorcycles.map((m) => {
             const checked = value.kind === "existing" && value.motorcycleId === m.id;
+            // DEC-063: a motorcycle already in the workshop can't be received again.
+            const busy = "inWorkshop" in m ? m.inWorkshop : null;
             return (
               <button
                 key={m.id}
                 type="button"
                 role="radio"
                 aria-checked={checked}
+                aria-disabled={!!busy}
+                disabled={!!busy}
+                title={busy ? "Esta moto ya está en el taller" : undefined}
                 onClick={() => onChange({ kind: "existing", motorcycleId: m.id })}
-                className={card(checked)}
+                className={cx(card(checked), busy && "cursor-not-allowed opacity-60 hover:bg-transparent")}
               >
                 <span className="block font-medium">
                   {m.model.brand.name} {m.model.name}
@@ -529,6 +535,11 @@ export function MotorcyclePicker({
                 <span className="block text-xs text-neutral-500">
                   {m.color} · {m.plate ?? "sin placa"}
                 </span>
+                {busy && (
+                  <span className="text-warn-fg mt-1 block text-xs font-medium">
+                    Ya está en el taller · {docNo("orden", busy.orderId)}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -591,31 +602,48 @@ export function ResponsibleSelect({
   compact?: boolean;
 }) {
   const staff = api.staff.list.useQuery({ onlyRepairers: true });
+  // How many motorcycles each one has now: the least busy mechanic goes first (Kenry, 23-nov).
+  const workload = api.service.workload.useQuery(undefined, { refetchInterval: 60_000 });
+  const load = new Map((workload.data ?? []).map((w) => [w.staffId, w.open]));
+  const busy = (id: number) => load.get(id) ?? 0;
+  const mechanics = (staff.data?.filter((s) => s.kind === "MECANICO") ?? []).sort((a, b) => busy(a.id) - busy(b.id) || a.name.localeCompare(b.name));
   const groups = [
-    { label: "Mecánicos", rows: staff.data?.filter((s) => s.kind === "MECANICO") ?? [] },
+    { label: "Mecánicos (el menos ocupado primero)", rows: mechanics },
     { label: "Dueños", rows: staff.data?.filter((s) => s.kind === "DUENO") ?? [] },
   ];
+  const motos = (n: number) => (n === 0 ? "libre" : `${n} moto${n === 1 ? "" : "s"} en el taller`);
+  const chosen = staff.data?.find((s) => s.id === value);
+  const least = mechanics[0];
+  const unbalanced = !compact && chosen?.kind === "MECANICO" && least && least.id !== chosen.id && busy(chosen.id) - busy(least.id) >= 2;
   return (
-    <Select
-      aria-label="Responsable"
-      className={compact ? "h-9 py-1 text-xs" : undefined}
-      value={value}
-      disabled={disabled}
-      onChange={(e) => onChange(Number(e.target.value))}
-    >
-      <option value={0}>{emptyLabel}</option>
-      {groups.map(
-        (g) =>
-          g.rows.length > 0 && (
-            <optgroup key={g.label} label={g.label}>
-              {g.rows.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {responsibleLabel(s)}
-                </option>
-              ))}
-            </optgroup>
-          ),
+    <div className="space-y-1">
+      <Select
+        aria-label="Responsable"
+        className={compact ? "h-9 py-1 text-xs" : undefined}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))}
+      >
+        <option value={0}>{emptyLabel}</option>
+        {groups.map(
+          (g) =>
+            g.rows.length > 0 && (
+              <optgroup key={g.label} label={g.label}>
+                {g.rows.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {responsibleLabel(s)} · {motos(busy(s.id))}
+                  </option>
+                ))}
+              </optgroup>
+            ),
+        )}
+      </Select>
+      {unbalanced && (
+        <p className="text-warn-fg text-xs">
+          {chosen.name} ya tiene {busy(chosen.id)} motos; {least.name} tiene {busy(least.id) === 0 ? "ninguna" : busy(least.id)}. Puede asignarla
+          igual si así lo decidieron.
+        </p>
       )}
-    </Select>
+    </div>
   );
 }

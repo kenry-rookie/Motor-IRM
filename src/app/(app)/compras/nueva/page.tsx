@@ -154,8 +154,16 @@ function NewPurchase() {
             ? "El viaje ya está cerrado"
             : null;
 
-  const submit = () => {
+  const submit = async () => {
     if (missing || create.isPending) return;
+    const how = d.paymentTerms === "CREDITO" ? "al crédito (queda como deuda con el proveedor)" : "de contado";
+    if (
+      !(await confirmDialog(`Entran ${units} unidades al inventario. Compra ${how} por ${money(total)}.`, {
+        title: "¿Registrar el ingreso?",
+        confirmLabel: "Sí, registrar",
+      }))
+    )
+      return;
     create.mutate({
       supplierId: d.supplierId,
       invoiceNumber: d.invoiceNumber,
@@ -409,7 +417,7 @@ function NewPurchase() {
               <Alert>{errorMessage(create.error)}</Alert>
             </div>
           )}
-          <Button className="mt-4 h-12 w-full text-base" disabled={!!missing || create.isPending} onClick={submit}>
+          <Button className="mt-4 h-12 w-full text-base" disabled={!!missing || create.isPending} onClick={() => void submit()}>
             {create.isPending ? "Registrando…" : "Registrar ingreso (entra al inventario)"}
           </Button>
           {missing && <p className="mt-2 text-center text-xs text-neutral-500">{missing}</p>}
@@ -435,8 +443,9 @@ function NewPurchase() {
         showCost
         supplierId={catalog === "supplier" ? d.supplierId : undefined}
       />
-      <Dialog open={newSupplier} onClose={() => setNewSupplier(false)} title="Nuevo proveedor">
+      <Dialog open={newSupplier} onClose={() => setNewSupplier(false)} title="Nuevo proveedor" size="lg">
         <SupplierForm
+          onCancel={() => setNewSupplier(false)}
           onDone={(s) => {
             setNewSupplier(false);
             if (s) set({ supplierId: s.id });

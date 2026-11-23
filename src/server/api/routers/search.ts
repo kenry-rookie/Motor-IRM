@@ -1,6 +1,7 @@
 import { z } from "zod";
 
-import { createTRPCRouter, permissionProcedure } from "~/server/api/trpc";
+import { createTRPCRouter, permissionProcedure, protectedProcedure } from "~/server/api/trpc";
+import { globalSearch, SEARCH_GROUPS } from "~/server/domain/global-search";
 import { type Prisma } from "~/server/db";
 import { QUALITY_TIERS, zId } from "~/server/domain/constants";
 import {
@@ -8,6 +9,7 @@ import {
   CUSTOMER_SORTS,
   customerInclude,
   inRankOrder,
+  motorcyclesInWorkshop,
   PRODUCT_SORTS,
   PRODUCT_STOCK_FILTERS,
   productInclude,
@@ -31,6 +33,14 @@ const zText = z.string().trim().max(100).optional();
 type Dec = Prisma.Decimal;
 
 export const searchRouter = createTRPCRouter({
+  /**
+   * Buscador general (Kenry, 23-nov): document numbers, customers, plates,
+   * products and suppliers from one box. `only` = the filter chips of /buscar.
+   */
+  global: protectedProcedure
+    .input(z.object({ q: z.string().trim().max(100), only: z.enum(SEARCH_GROUPS).optional(), limit: z.number().int().min(1).max(30).default(6) }))
+    .query(({ ctx, input }) => globalSearch(ctx.db, ctx.user, input.q, input.only, input.limit)),
+
   products: permissionProcedure("inventario.ver")
     .input(
       z.object({
@@ -100,10 +110,12 @@ export const searchRouter = createTRPCRouter({
           )
         ).map((r) => [r.customer_id, r]),
       );
+      const inWorkshop = await motorcyclesInWorkshop(ctx.db, rows.flatMap((c) => c.motorcycles.map((m) => m.id)));
       const items = inRankOrder(ranked, rows).map((c) => {
         const e = extra.get(c.id);
         return {
           ...c,
+          motorcycles: c.motorcycles.map((m) => ({ ...m, inWorkshop: inWorkshop.get(m.id) ?? null })),
           balance: e?.balance ?? null,
           overdue: e?.overdue ?? null,
           maxDaysOverdue: e?.max_days_overdue ?? null,

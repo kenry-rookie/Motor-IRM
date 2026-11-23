@@ -6,11 +6,13 @@ import { useState } from "react";
 
 import { MotorcycleModelSelect } from "~/app/_components/pickers";
 import { PrintLink } from "~/app/_components/print-link";
+import { confirmDialog } from "~/app/_components/confirm";
 import { PrintPrompt } from "~/app/_components/print-prompt";
 import { Alert, BackBar, Badge, Button, Card, Dialog, Field, Input, PageTitle, PhoneInput, SearchField, Segmented, Select, Table } from "~/app/_components/ui";
 import { docNo, invoiceNo, parseDocNo } from "~/lib/business";
 import { errorMessage, fieldErrors } from "~/lib/errors";
-import { addDaysISO, dec, formatDateTime, formatDay, money, todayISO } from "~/lib/format";
+import { useExchangeRate } from "~/lib/exchange-rate";
+import { addDaysISO, dec, formatDateTime, formatDay, money, todayISO, usdOf } from "~/lib/format";
 import { LABELS, type ServiceOrderStatus } from "~/server/domain/constants";
 import { api, type RouterOutputs } from "~/trpc/react";
 
@@ -28,17 +30,22 @@ export default function CustomerPage() {
   const customerId = Number(id);
   const me = api.auth.me.useQuery();
   const st = api.customer.statement.useQuery({ customerId });
+  const utils = api.useUtils();
   const [paying, setPaying] = useState(false);
   const [editing, setEditing] = useState(false);
   const [moto, setMoto] = useState<Statement["motorcycles"][number] | "new" | null>(null);
   const [opening, setOpening] = useState(false);
   const [paid, setPaid] = useState<{ id: number; amount: string; currency: string } | null>(null);
   const [f, setF] = useState({ text: "", state: "TODAS" as State, terms: "TODAS" as "TODAS" | "CONTADO" | "CREDITO", origin: "TODAS" as "TODAS" | "MOSTRADOR" | "TALLER", from: "", to: "" });
+  const removeMoto = api.customer.removeMotorcycle.useMutation({ onSuccess: () => void utils.customer.invalidate() });
+  const restoreMoto = api.customer.restoreMotorcycle.useMutation({ onSuccess: () => void utils.customer.invalidate() });
   if (st.error) return <Alert>{errorMessage(st.error)}</Alert>;
   const d = st.data;
   if (!d) return <p className="text-neutral-400">Cargando…</p>;
   const perms = me.data?.permissions ?? [];
   const canManage = perms.includes("clientes.gestionar");
+  const activeMotos = d.motorcycles.filter((m) => !m.releasedAt);
+  const oldMotos = d.motorcycles.filter((m) => m.releasedAt);
 
   const q = norm(f.text);
   const doc = parseDocNo(f.text);
@@ -107,7 +114,7 @@ export default function CustomerPage() {
           <p className="text-sm text-neutral-400">Compras y visitas</p>
           <p className="text-3xl font-bold">{d.invoices.length}</p>
           <p className="text-xs text-neutral-500">
-            {d.motorcycles.length} moto(s) · {d.orders.length} orden(es) de taller
+            {d.motorcycles.filter((m) => !m.releasedAt).length} moto(s) · {d.orders.length} orden(es) de taller
           </p>
         </Card>
       </div>
@@ -227,7 +234,7 @@ export default function CustomerPage() {
           </Table>
         </Card>
         <Card
-          title={`Motos (${d.motorcycles.length})`}
+          title={`Motos (${activeMotos.length})`}
           actions={
             canManage && (
               <Button variant="secondary" onClick={() => setMoto("new")}>
@@ -236,25 +243,86 @@ export default function CustomerPage() {
             )
           }
         >
-          <Table head={["Moto", "Color", "Placa", "Visitas al taller", ""]} empty={d.motorcycles.length === 0}>
-            {d.motorcycles.map((m) => (
-              <tr key={m.id}>
-                <td>
-                  {m.model.brand.name} {m.model.name}
-                </td>
-                <td>{m.color}</td>
-                <td>{m.plate ?? "—"}</td>
-                <td className="tabular-nums">{d.orders.filter((o) => o.motorcycleId === m.id).length}</td>
-                <td className="text-right">
-                  {canManage && (
-                    <Button variant="ghost" onClick={() => setMoto(m)}>
-                      Editar
-                    </Button>
-                  )}
-                </td>
-              </tr>
-            ))}
+          <Table head={["Moto", "Color", "Placa", "Visitas al taller", ""]} empty={activeMotos.length === 0}>
+            {activeMotos.map((m) => {
+              const visits = d.orders.filter((o) => o.motorcycleId === m.id);
+              const inShop = visits.some((o) => o.status !== "ENTREGADA" && o.status !== "CANCELADA");
+              return (
+                <tr key={m.id}>
+                  <td>
+                    {m.model.brand.name} {m.model.name}
+                    {inShop && (
+                      <span className="ml-2">
+                        <Badge tone="amber">en el taller</Badge>
+                      </span>
+                    )}
+                  </td>
+                  <td>{m.color}</td>
+                  <td>{m.plate ?? "—"}</td>
+                  <td className="tabular-nums">{visits.length}</td>
+                  <td className="text-right whitespace-nowrap">
+                    {canManage && (
+                      <>
+                        <Button variant="ghost" onClick={() => setMoto(m)}>
+                          Editar
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          disabled={inShop || removeMoto.isPending}
+                          title={inShop ? "Está en el taller: entréguela o cancele la orden primero" : undefined}
+                          onClick={async () => {
+                            const name = `${m.model.brand.name} ${m.model.name}${m.plate ? ` (${m.plate})` : ""}`;
+                            const msg =
+                              visits.length === 0
+                                ? `La ${name} nunca entró al taller: se elimina del cliente.`
+                                : `La ${name} deja de salir en las motos de ${d.customer.name} y al recibir motos.\n\n` +
+                                  `Sus ${visits.length} visita(s) al taller y sus facturas se quedan en su historial, porque ese trabajo sí fue suyo.\n` +
+                                  "La placa queda libre para registrarla con su dueño nuevo.";
+                            if (await confirmDialog(msg, { title: "¿Quitar la moto?", confirmLabel: "Sí, quitarla", danger: true }))
+                              removeMoto.mutate({ id: m.id, note: "Ya no es del cliente" });
+                          }}
+                        >
+                          Quitar
+                        </Button>
+                      </>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </Table>
+          {removeMoto.error && (
+            <div className="mt-2">
+              <Alert>{errorMessage(removeMoto.error)}</Alert>
+            </div>
+          )}
+          {oldMotos.length > 0 && (
+            <div className="mt-4">
+              <p className="mb-1 text-sm font-medium text-neutral-400">Motos que ya no son suyas (su historial se conserva)</p>
+              <ul className="space-y-1 text-sm">
+                {oldMotos.map((m) => (
+                  <li key={m.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-neutral-800/30 px-3 py-1.5">
+                    <span className="text-neutral-400">
+                      {m.model.brand.name} {m.model.name} · {m.color} · {m.plate ?? "sin placa"} · quitada el {formatDateTime(m.releasedAt)}
+                    </span>
+                    {canManage && (
+                      <Button
+                        variant="ghost"
+                        disabled={restoreMoto.isPending}
+                        onClick={async () => {
+                          if (await confirmDialog("¿Volver a poner esta moto como del cliente? Úselo solo si se quitó por error.", { title: "Devolver la moto", confirmLabel: "Sí, es suya" }))
+                            restoreMoto.mutate({ id: m.id });
+                        }}
+                      >
+                        Es suya otra vez
+                      </Button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              {restoreMoto.error && <Alert>{errorMessage(restoreMoto.error)}</Alert>}
+            </div>
+          )}
         </Card>
       </div>
 
@@ -315,7 +383,7 @@ export default function CustomerPage() {
         </Table>
       </Card>
 
-      <Dialog open={paying} onClose={() => setPaying(false)} title={`Abono de ${d.customer.name}`}>
+      <Dialog open={paying} onClose={() => setPaying(false)} title={`Abono de ${d.customer.name}`} size="lg">
         <PaymentForm
           customerId={customerId}
           onDone={(p) => {
@@ -324,13 +392,13 @@ export default function CustomerPage() {
           }}
         />
       </Dialog>
-      <Dialog open={editing} onClose={() => setEditing(false)} title="Editar datos del cliente">
+      <Dialog open={editing} onClose={() => setEditing(false)} title="Editar datos del cliente" size="lg">
         {editing && <EditCustomer customer={d.customer} onDone={() => setEditing(false)} />}
       </Dialog>
-      <Dialog open={moto !== null} onClose={() => setMoto(null)} title={moto === "new" ? "Agregar moto" : "Editar moto"}>
+      <Dialog open={moto !== null} onClose={() => setMoto(null)} title={moto === "new" ? "Agregar moto" : "Editar moto"} size="lg">
         {moto !== null && <MotoForm customerId={customerId} moto={moto === "new" ? null : moto} onDone={() => setMoto(null)} />}
       </Dialog>
-      <Dialog open={opening} onClose={() => setOpening(false)} title="Saldo inicial (deuda de antes del sistema)">
+      <Dialog open={opening} onClose={() => setOpening(false)} title="Saldo inicial (deuda de antes del sistema)" size="lg">
         {opening && <OpeningBalanceForm customerId={customerId} onDone={() => setOpening(false)} />}
       </Dialog>
       <PrintPrompt
@@ -473,7 +541,10 @@ function OpeningBalanceForm({ customerId, onDone }: { customerId: number; onDone
       <Button
         className="sm:col-span-2"
         disabled={!f.amount || save.isPending}
-        onClick={() => save.mutate({ customerId, asOfDate: f.asOfDate, amount: f.amount, dueDate: f.dueDate, notes: f.notes || undefined })}
+        onClick={async () => {
+          if (await confirmDialog(`El cliente queda debiendo ${money(f.amount)} más (deuda de antes del sistema).`, { title: "¿Agregar el saldo inicial?", confirmLabel: "Sí, agregar" }))
+            save.mutate({ customerId, asOfDate: f.asOfDate, amount: f.amount, dueDate: f.dueDate, notes: f.notes || undefined });
+        }}
       >
         Guardar saldo inicial
       </Button>
@@ -491,11 +562,12 @@ function PaymentForm({
   const utils = api.useUtils();
   const pending = api.sales.pendingForCustomer.useQuery({ customerId });
   const methods = api.admin.catalog.useQuery({ kind: "paymentMethod", onlyActive: true });
-  const [amount, setAmount] = useState("");
+  const [received, setReceived] = useState("");
   const [currency, setCurrency] = useState<"NIO" | "USD">("NIO");
-  const [rate, setRate] = useState("");
+  const [rate, setRate] = useExchangeRate();
   const [methodId, setMethodId] = useState(0);
-  const [alloc, setAlloc] = useState<Record<string, string>>({});
+  // Automatic: the oldest debt first, until the money runs out. Typing an amount by hand turns it off.
+  const [manual, setManual] = useState<Record<string, string> | null>(null);
   const pay = api.sales.registerPayment.useMutation({
     onSuccess: (p) => {
       void utils.customer.invalidate();
@@ -503,99 +575,194 @@ function PaymentForm({
       onDone({ id: p.id, amount: p.amount.toString(), currency: p.currency });
     },
   });
-  const nio = currency === "USD" ? dec(amount || 0).times(dec(rate || 0)) : dec(amount || 0);
-  const allocated = Object.values(alloc).reduce((a, v) => a.plus(dec(v || 0)), dec(0));
+  const firstCash = methods.data?.find((m) => m.active && m.name.toLowerCase() === "efectivo")?.id;
+  const method = methodId > 0 ? methodId : (firstCash ?? 0);
 
-  /** Oldest debt first, until the payment runs out. */
-  const autoSpread = () => {
-    let left = nio;
-    const next: Record<string, string> = {};
-    for (const p of pending.data ?? []) {
+  const debts = pending.data ?? [];
+  const owed = debts.reduce((a, p) => a.plus(dec(p.balance)), dec(0));
+  const usdRate = currency === "USD" ? dec(rate) : null;
+  const rateMissing = currency === "USD" && !usdRate?.gt(0);
+  /** What the customer handed over, in córdobas. */
+  const receivedNio = rateMissing ? dec(0) : currency === "USD" ? dec(received).times(usdRate!).toDecimalPlaces(2) : dec(received);
+  /** What pays debts: never more than what is owed (DEC-065). */
+  const toApply = receivedNio.gt(owed) ? owed : receivedNio;
+
+  const auto: Record<string, string> = {};
+  {
+    let left = toApply;
+    for (const p of debts) {
       if (left.lte(0)) break;
       const take = dec(p.balance).lt(left) ? dec(p.balance) : left;
-      next[`${p.kind}-${p.id}`] = take.toFixed(2);
+      auto[`${p.kind}-${p.id}`] = take.toFixed(2);
       left = left.minus(take);
     }
-    setAlloc(next);
+  }
+  const alloc = manual ?? auto;
+  const allocated = Object.values(alloc).reduce((a, v) => a.plus(dec(v || 0)), dec(0));
+  /** What is recorded as the payment: exactly what is applied (in dollars, rounded up to the cent like a sale). */
+  const recorded = currency === "USD" ? (usdOf(allocated, rate) ?? dec(0)) : allocated;
+  const change = currency === "USD" ? dec(received).minus(recorded) : receivedNio.minus(allocated);
+  const changeNio = currency === "USD" && usdRate?.gt(0) ? change.times(usdRate).toDecimalPlaces(2) : change;
+  const overAllocated = allocated.gt(receivedNio) && !rateMissing;
+  const tooMuchOnOne = debts.some((p) => dec(alloc[`${p.kind}-${p.id}`] ?? 0).gt(dec(p.balance)));
+  const owedAfter = owed.minus(allocated);
+  const cur = currency === "USD" ? "USD" : "NIO";
+
+  const submit = async () => {
+    const lines = Object.entries(alloc)
+      .filter(([, v]) => dec(v || 0).gt(0))
+      .map(([k, v]) => {
+        const [kind, id] = k.split("-");
+        return kind === "FACTURA"
+          ? { saleInvoiceId: Number(id), amount: dec(v).toFixed(2) }
+          : { customerOpeningBalanceId: Number(id), amount: dec(v).toFixed(2) };
+      });
+    const text =
+      `Abono de ${money(recorded, cur)}${currency === "USD" ? ` (= ${money(allocated)})` : ""} a ${lines.length} deuda${lines.length === 1 ? "" : "s"}.\n` +
+      `Después del abono debe: ${money(owedAfter)}.` +
+      (change.gt(0) ? `\n\nVuelto para el cliente: ${money(change, cur)}${currency === "USD" ? ` (= ${money(changeNio)} en córdobas)` : ""}.` : "");
+    if (!(await confirmDialog(text, { title: "¿Registrar el abono?", confirmLabel: "Sí, registrar" }))) return;
+    pay.mutate({
+      customerId,
+      amount: recorded.toFixed(2),
+      currency,
+      exchangeRate: currency === "USD" ? rate : undefined,
+      paymentMethodId: method,
+      allocations: lines,
+    });
   };
 
   return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Monto recibido">
-          <Input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
-        </Field>
-        <Field label="Moneda">
-          <Select value={currency} onChange={(e) => setCurrency(e.target.value as "NIO" | "USD")}>
-            <option value="NIO">Córdobas</option>
-            <option value="USD">Dólares</option>
-          </Select>
-        </Field>
-        {currency === "USD" && (
-          <Field label="Tipo de cambio">
-            <Input inputMode="decimal" value={rate} onChange={(e) => setRate(e.target.value)} />
+    <div className="space-y-5">
+      <div className="rounded-lg bg-neutral-800/40 px-4 py-3">
+        <p className="text-sm text-neutral-400">Este cliente debe</p>
+        <p className="font-display text-3xl font-semibold tabular-nums">{money(owed)}</p>
+        {debts.length === 0 && !pending.isLoading && <p className="text-sm text-neutral-400">No tiene deudas pendientes.</p>}
+      </div>
+
+      <section className="space-y-3">
+        <h3 className="text-sm font-semibold text-neutral-200">1. ¿Cuánto entrega el cliente?</h3>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <p className="mb-1 text-sm font-medium text-neutral-300">Moneda</p>
+            <Segmented
+              label="Moneda"
+              className="w-full [&>button]:flex-1 [&>button]:py-2"
+              value={currency}
+              onChange={(c) => {
+                setCurrency(c);
+                setManual(null);
+              }}
+              options={[
+                { value: "NIO", label: "Córdobas" },
+                { value: "USD", label: "Dólares" },
+              ]}
+            />
+          </div>
+          {currency === "USD" && (
+            <Field label="Tipo de cambio" hint="Córdobas por dólar (se recuerda el último)">
+              <Input inputMode="decimal" value={rate} onChange={(e) => setRate(e.target.value)} />
+            </Field>
+          )}
+          <Field label={`Monto que entrega (${currency === "USD" ? "US$" : "C$"})`}>
+            <Input
+              autoFocus
+              inputMode="decimal"
+              className="h-12 text-lg"
+              value={received}
+              onChange={(e) => {
+                setReceived(e.target.value);
+                setManual(null);
+              }}
+            />
           </Field>
+          <Field label="Cómo paga">
+            <Select value={method} onChange={(e) => setMethodId(Number(e.target.value))}>
+              <option value={0}>Elegir…</option>
+              {methods.data
+                ?.filter((m) => m.active)
+                .map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                  </option>
+                ))}
+            </Select>
+          </Field>
+        </div>
+        {rateMissing && <p className="text-warn-fg text-sm">Escriba el tipo de cambio para calcular cuánto son esos dólares en córdobas.</p>}
+        {currency === "USD" && !rateMissing && dec(received).gt(0) && (
+          <p className="text-sm text-neutral-400">
+            {money(received, "USD")} = <span className="font-medium text-neutral-100">{money(receivedNio)}</span>
+          </p>
         )}
-        <Field label="Método">
-          <Select value={methodId} onChange={(e) => setMethodId(Number(e.target.value))}>
-            <option value={0}>Elegir…</option>
-            {methods.data
-              ?.filter((m) => m.active)
-              .map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-          </Select>
-        </Field>
-      </div>
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold">Aplicar a (en córdobas)</h3>
-        <Button variant="secondary" onClick={autoSpread} disabled={nio.lte(0)}>
-          Repartir de la más vieja a la más nueva
-        </Button>
-      </div>
-      <Table head={["Deuda", "Vence", "Saldo", "Abono"]}>
-        {pending.data?.map((p) => {
-          const key = `${p.kind}-${p.id}`;
-          return (
-            <tr key={key}>
-              <td>{p.kind === "FACTURA" ? `Factura ${invoiceNo({ id: p.id })}` : `Saldo inicial (${formatDay(p.date)})`}</td>
-              <td>{formatDay(p.dueDate)}</td>
-              <td>{money(p.balance)}</td>
-              <td>
-                <Input className="w-28" inputMode="decimal" value={alloc[key] ?? ""} onChange={(e) => setAlloc({ ...alloc, [key]: e.target.value })} />
-              </td>
-            </tr>
-          );
-        })}
-      </Table>
-      <p className="text-sm text-neutral-400">
-        Pago: {money(nio)} · repartido: {money(allocated)}
-      </p>
+        {receivedNio.gt(owed) && owed.gt(0) && (
+          <Alert kind="info">
+            El cliente entrega más de lo que debe. Se cobran solo {money(owed)}
+            {currency === "USD" ? ` (${money(usdOf(owed, rate), "USD")})` : ""} y el resto es su vuelto.
+          </Alert>
+        )}
+      </section>
+
+      <section className="space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-neutral-200">2. A qué deudas se aplica (en córdobas)</h3>
+          {manual ? (
+            <Button variant="ghost" onClick={() => setManual(null)}>
+              Repartir solo (la más vieja primero)
+            </Button>
+          ) : (
+            <span className="text-xs text-neutral-500">Se reparte solo, de la más vieja a la más nueva. Puede cambiar los montos.</span>
+          )}
+        </div>
+        <Table head={["Deuda", "Vence", "Saldo", "Se aplica"]}>
+          {debts.map((p) => {
+            const key = `${p.kind}-${p.id}`;
+            const over = dec(alloc[key] ?? 0).gt(dec(p.balance));
+            return (
+              <tr key={key}>
+                <td>{p.kind === "FACTURA" ? `Factura ${invoiceNo({ id: p.id })}` : `Saldo inicial (${formatDay(p.date)})`}</td>
+                <td>{formatDay(p.dueDate)}</td>
+                <td className="tabular-nums">{money(p.balance)}</td>
+                <td>
+                  <Input
+                    className="w-32"
+                    inputMode="decimal"
+                    aria-invalid={over}
+                    value={alloc[key] ?? ""}
+                    onChange={(e) => setManual({ ...alloc, [key]: e.target.value })}
+                  />
+                  {over && <p className="text-bad-fg text-xs">Solo debe {money(p.balance)}</p>}
+                </td>
+              </tr>
+            );
+          })}
+        </Table>
+      </section>
+
+      <dl className="grid gap-2 rounded-lg border border-neutral-800 p-4 text-base sm:grid-cols-3">
+        <div>
+          <dt className="text-sm text-neutral-400">Se registra como abono</dt>
+          <dd className="font-display text-2xl font-semibold tabular-nums">{money(recorded, cur)}</dd>
+          {currency === "USD" && <dd className="text-sm text-neutral-400 tabular-nums">= {money(allocated)}</dd>}
+        </div>
+        <div>
+          <dt className="text-sm text-neutral-400">Vuelto para el cliente</dt>
+          <dd className="font-display text-2xl font-semibold tabular-nums">{change.gt(0) ? money(change, cur) : money(0, cur)}</dd>
+          {currency === "USD" && change.gt(0) && <dd className="text-sm text-neutral-400 tabular-nums">= {money(changeNio)} en córdobas</dd>}
+        </div>
+        <div>
+          <dt className="text-sm text-neutral-400">Después del abono debe</dt>
+          <dd className="font-display text-2xl font-semibold tabular-nums">{money(owedAfter.gt(0) ? owedAfter : 0)}</dd>
+        </div>
+      </dl>
+      {overAllocated && <Alert>Se aplican {money(allocated)} pero el cliente solo entrega {money(receivedNio)}.</Alert>}
       <Alert>{pay.error && errorMessage(pay.error)}</Alert>
       <Button
-        className="w-full"
-        disabled={!amount || !methodId || allocated.lte(0) || pay.isPending}
-        onClick={() =>
-          pay.mutate({
-            customerId,
-            amount,
-            currency,
-            exchangeRate: currency === "USD" ? rate : undefined,
-            paymentMethodId: methodId,
-            allocations: Object.entries(alloc)
-              .filter(([, v]) => dec(v || 0).gt(0))
-              .map(([k, v]) => {
-                const [kind, id] = k.split("-");
-                return kind === "FACTURA"
-                  ? { saleInvoiceId: Number(id), amount: dec(v).toFixed(2) }
-                  : { customerOpeningBalanceId: Number(id), amount: dec(v).toFixed(2) };
-              }),
-          })
-        }
+        className="h-12 w-full text-base"
+        disabled={!method || rateMissing || allocated.lte(0) || overAllocated || tooMuchOnOne || pay.isPending}
+        onClick={() => void submit()}
       >
-        Registrar abono
+        {pay.isPending ? "Registrando…" : `Registrar abono de ${money(recorded, cur)}`}
       </Button>
     </div>
   );
